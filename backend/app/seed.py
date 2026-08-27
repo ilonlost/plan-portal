@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
 from app.models.entities import PlanningRule, ProductionLine, ProductionPlan, User
+from app.services.plan_service import PlanService
 
 
 WORKSHOPS = {
@@ -29,6 +30,9 @@ def seed() -> None:
         existing_users = set(db.scalars(select(User.username)))
         db.add_all(user for user in demo_users if user.username not in existing_users)
         if db.scalar(select(ProductionLine.id).limit(1)):
+            active_plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
+            if active_plan:
+                PlanService(db).recalculate_load(active_plan)
             db.commit()
             return
         priority = 10
@@ -37,9 +41,9 @@ def seed() -> None:
                 db.add(ProductionLine(
                     code=f"FK-{workshop_code}-{priority:02d}", name=line_name,
                     workshop_code=workshop_code, workshop_name=workshop_name,
-                    working_hours=Decimal("24"), default_capacity=Decimal("0"),
+                    working_hours=Decimal("22"), default_capacity=Decimal("0"),
                     capacity_unit="кг/день", priority=priority,
-                    comments="Структура из файла «План производства 12.08.2026»",
+                    comments="Структура из файла «План производства 12.08.2026» · 22 ч производства + 2 ч обеда",
                 ))
                 priority += 10
         db.add_all([

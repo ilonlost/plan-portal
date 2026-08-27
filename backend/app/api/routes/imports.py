@@ -158,10 +158,10 @@ def _upsert_capability(db: Session, product: Product, row) -> LineCapability | N
         digest = sha1(row.line_hint.encode("utf-8")).hexdigest()[:6].upper()
         workshop_code, workshop_name = _workshop_for_line(row.line_hint)
         line = ProductionLine(
-            code=f"FK-{clean}-{digest}", name=row.line_hint, working_hours=24,
+            code=f"FK-{clean}-{digest}", name=row.line_hint, working_hours=22,
             workshop_code=workshop_code, workshop_name=workshop_name,
-            default_capacity=Decimal(row.speed_kg_hour) * Decimal("24"), capacity_unit="кг/день",
-            comments="Импортировано из справочника ФК",
+            default_capacity=Decimal(row.speed_kg_hour) * Decimal("22"), capacity_unit="кг/день",
+            comments="Импортировано из справочника ФК · 22 ч производства + 2 ч обеда",
         )
         db.add(line)
         db.flush()
@@ -201,8 +201,8 @@ def _ensure_shift_capacities(db: Session, demands: list[DemandItem], start, end)
                 if (line_id, day, shift) not in existing:
                     db.add(LineCapacity(
                         line_id=line_id, capacity_date=day, shift=shift,
-                        available_hours=Decimal("12"), available=True,
-                        note="Автоматически создано: дневная/ночная смена",
+                        available_hours=Decimal("11"), available=True,
+                        note="11 ч производства + 1 ч обед",
                     ))
         day += timedelta(days=1)
 

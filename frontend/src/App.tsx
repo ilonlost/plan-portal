@@ -8,6 +8,8 @@ import "./styles.css";
 
 type Page = "plan" | "catalog" | "import" | "sources" | "admin";
 type ViewDays = 1 | 7 | 21;
+type Theme = "dark" | "light";
+type DayLayout = "cards" | "table";
 
 const sourceLabels: Record<string, string> = { ohl: "ОХЛ", zam: "ЗАМ", generic: "Прочее" };
 const executionLabels: Record<string, string> = {
@@ -30,6 +32,8 @@ export default function App() {
   const [selectedItem, setSelectedItem] = useState<ScheduleItem | null>(null);
   const [viewDate, setViewDate] = useState(today());
   const [viewDays, setViewDays] = useState<ViewDays>(1);
+  const [dayLayout, setDayLayout] = useState<DayLayout>(() => (localStorage.getItem("plan-day-layout") as DayLayout) || "cards");
+  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("plan-theme") as Theme) || "dark");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -43,6 +47,11 @@ export default function App() {
       setLoading(false);
     });
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("plan-theme", theme);
+  }, [theme]);
 
   const matrixParams = () => {
     const params = new URLSearchParams({ start: viewDate, days: String(viewDays) });
@@ -108,6 +117,7 @@ export default function App() {
         <div><small>PLAN PORTAL · ФК</small><h1>{pageTitle(page)}</h1></div>
         <div className="top-actions">
           <span className="live-dot">● Система работает</span>
+          <button className="theme-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀ Светлая" : "◐ Тёмная"}</button>
           {page === "plan" && matrix && canPlan(user) && <button className="button secondary" onClick={() => void sendCsb()}>Передать завтра в CSB</button>}
           {page === "plan" && matrix && <a className="button primary" href={api.exportUrl(matrix.plan.id)}>Выгрузить Excel</a>}
         </div>
@@ -117,10 +127,12 @@ export default function App() {
       <div className="content">{loading ? <Loading /> : <>
         {page === "plan" && <PlanView matrix={matrix} workshops={workshops} lines={lines} user={user}
           selectedWorkshop={selectedWorkshop} selectedLine={selectedLine} viewDate={viewDate} viewDays={viewDays}
+          dayLayout={dayLayout}
           onWorkshop={value => { setSelectedWorkshop(value); setSelectedLine(null); }}
           onLine={(workshop, id) => { setSelectedWorkshop(workshop); setSelectedLine(id); }}
           onReset={() => { setSelectedWorkshop(null); setSelectedLine(null); }}
           onDate={setViewDate} onDays={setViewDays} onPrevious={() => navigateDate(-1)} onNext={() => navigateDate(1)}
+          onLayout={value => { setDayLayout(value); localStorage.setItem("plan-day-layout", value); }}
           onItem={setSelectedItem} onUpload={() => setPage("import")} />}
         {page === "catalog" && catalog && <CatalogView data={catalog} user={user} onSaved={async text => { setNotice(text); await refreshPlan(); }} />}
         {page === "import" && <ImportView user={user} onImported={async text => { setNotice(text); await refreshPlan(); setPage("plan"); }} />}
@@ -153,11 +165,13 @@ function Nav({ active, icon, label, onClick }: { active: boolean; icon: string; 
   return <button className={active ? "active" : ""} onClick={onClick}><i>{icon}</i>{label}</button>;
 }
 
-function PlanView({ matrix, workshops, lines, user, selectedWorkshop, selectedLine, viewDate, viewDays, onWorkshop, onLine, onReset, onDate, onDays, onPrevious, onNext, onItem, onUpload }: {
+function PlanView({ matrix, workshops, lines, user, selectedWorkshop, selectedLine, viewDate, viewDays, dayLayout, onWorkshop, onLine, onReset, onDate, onDays, onPrevious, onNext, onLayout, onItem, onUpload }: {
   matrix: MatrixData | null; workshops: WorkshopData[]; lines: LineData[]; user: UserProfile;
   selectedWorkshop: string | null; selectedLine: number | null; viewDate: string; viewDays: ViewDays;
+  dayLayout: DayLayout;
   onWorkshop: (v: string) => void; onLine: (w: string, id: number) => void; onReset: () => void;
   onDate: (v: string) => void; onDays: (v: ViewDays) => void; onPrevious: () => void; onNext: () => void;
+  onLayout: (v: DayLayout) => void;
   onItem: (v: ScheduleItem) => void; onUpload: () => void;
 }) {
   if (!matrix) return <Empty title="Производственный план не загружен" text="Справочник сохранён. Загрузите недельный ОХЛ или квартальный ЗАМ, чтобы сформировать новый план." action={canPlan(user) ? <button className="button primary" onClick={onUpload}>Загрузить Excel</button> : undefined} />;
@@ -170,15 +184,17 @@ function PlanView({ matrix, workshops, lines, user, selectedWorkshop, selectedLi
   const currentLine = lines.find(line => line.id === selectedLine);
   return <div className="stack">
     <section className="plan-head card"><div className="plan-title"><div className="crumbs"><button onClick={onReset}>Общий план</button>{selectedWorkshop && <><span>›</span><button onClick={() => onWorkshop(selectedWorkshop)}>{workshops.find(w => w.code === selectedWorkshop)?.name}</button></>}{currentLine && <><span>›</span><b>{currentLine.name}</b></>}</div><h2>{currentLine ? currentLine.name : selectedWorkshop ? `Цех ${workshops.find(w => w.code === selectedWorkshop)?.name}` : matrix.plan.name}</h2><p>Версия {matrix.plan.version} · SKU раскрыты непосредственно в плане</p></div><div className="status-chip">{planStatus(matrix.plan.status)}</div></section>
-    <section className="date-toolbar card"><div className="range-buttons"><button onClick={onPrevious}>‹</button><input type="date" value={viewDate} onChange={e => onDate(e.target.value)} /><button onClick={() => onDate(today())}>Сегодня</button><button onClick={onNext}>›</button></div><div className="view-switch">{([1, 7, 21] as ViewDays[]).map(value => <button key={value} className={viewDays === value ? "active" : ""} onClick={() => onDays(value)}>{value === 1 ? "День" : value === 7 ? "Неделя" : "3 недели"}</button>)}</div></section>
+    <section className="date-toolbar card"><div className="range-buttons"><button onClick={onPrevious}>‹</button><input type="date" value={viewDate} onChange={e => onDate(e.target.value)} /><button onClick={() => onDate(today())}>Сегодня</button><button onClick={onNext}>›</button></div><div className="toolbar-switches"><div className="view-switch">{([1, 7, 21] as ViewDays[]).map(value => <button key={value} className={viewDays === value ? "active" : ""} onClick={() => onDays(value)}>{value === 1 ? "День" : value === 7 ? "Неделя" : "3 недели"}</button>)}</div>{viewDays === 1 && <div className="view-switch layout-switch"><button className={dayLayout === "cards" ? "active" : ""} onClick={() => onLayout("cards")}>▦ Карточки</button><button className={dayLayout === "table" ? "active" : ""} onClick={() => onLayout("table")}>☷ Таблица</button></div>}</div></section>
     <section className="metric-grid"><Metric label="Позиций в периоде" value={number(items.length)} note={`${number(totalKg)} кг`} tone="red" /><Metric label="ОХЛ" value={`${number(items.filter(i => i.source_kind === "ohl").reduce((s, i) => s + Number(i.quantity_kg || 0), 0))} кг`} note="по датам источника" tone="blue" /><Metric label="ЗАМ" value={`${number(items.filter(i => i.source_kind === "zam").reduce((s, i) => s + Number(i.quantity_kg || 0), 0))} кг`} note="в свободной мощности" tone="violet" /><Metric label="Загрузка" value={`${load.toFixed(1)}%`} note={`${number(Math.max(0, capacity - planned))} свободных ч`} tone={load >= 98 ? "green" : "amber"} /></section>
     {user.role !== "master" && <section className="workshop-strip"><button className={!selectedWorkshop ? "active" : ""} onClick={onReset}><b>Все цеха</b><small>{workshops.filter(w => w.code !== "UNASSIGNED").reduce((s, w) => s + w.lines.length, 0)} линий</small></button>{workshops.filter(w => w.code !== "UNASSIGNED").map(w => <button key={w.code} className={selectedWorkshop === w.code ? "active" : ""} onClick={() => onWorkshop(w.code)}><b>{w.name}</b><small>{w.lines.length} линий</small></button>)}</section>}
-    {viewDays === 1 ? <DailyBoard matrix={matrix} onLine={onLine} onItem={onItem} /> : <PlanMatrix matrix={matrix} onLine={onLine} onItem={onItem} />}
+    <div className="capacity-note"><b>22 часа производства на линию</b><span>две смены по 11 часов · 2 часа обеда в сутки</span></div>
+    {viewDays === 1 ? <DailyBoard matrix={matrix} layout={dayLayout} onLine={onLine} onItem={onItem} /> : <PlanMatrix matrix={matrix} onLine={onLine} onItem={onItem} />}
   </div>;
 }
 
-function DailyBoard({ matrix, onLine, onItem }: { matrix: MatrixData; onLine: (w: string, id: number) => void; onItem: (i: ScheduleItem) => void }) {
+function DailyBoard({ matrix, layout, onLine, onItem }: { matrix: MatrixData; layout: DayLayout; onLine: (w: string, id: number) => void; onItem: (i: ScheduleItem) => void }) {
   const date = matrix.dates[0];
+  if (layout === "table") return <DailyTable matrix={matrix} onItem={onItem} />;
   return <div className="daily-board stack">{matrix.workshops.map(workshop => <section className="card daily-workshop" key={workshop.code}><header><div><span>{workshop.code}</span><h3>{workshop.name}</h3></div><small>{formatDate(date)} · {workshop.lines.reduce((s, l) => s + l.cells[0].items.length, 0)} позиций</small></header>{workshop.lines.map(line => {
     const cell = line.cells[0]; return <article className="daily-line" key={line.id}><button className="daily-line-name" onClick={() => onLine(workshop.code, line.id)}><b>{line.name}</b><small>{cell.load_percent.toFixed(0)}% · {number(cell.planned_hours)} / {number(cell.capacity_hours)} ч</small><i><span style={{ width: `${Math.min(100, cell.load_percent)}%` }} /></i></button><div className="daily-items">{cell.items.length ? cell.items.map(item => <SkuCard key={item.id} item={item} onClick={() => onItem(item)} />) : <div className="free-slot"><b>Свободная мощность</b><small>{number(cell.gap_hours)} ч доступно</small></div>}</div></article>;
   })}</section>)}</div>;
@@ -189,7 +205,12 @@ function PlanMatrix({ matrix, onLine, onItem }: { matrix: MatrixData; onLine: (w
 }
 
 function SkuCard({ item, onClick }: { item: ScheduleItem; onClick: () => void }) {
-  return <button className="sku-card" onClick={onClick}><div className="sku-card-head"><span className={`source ${item.source_kind}`}>{sourceLabels[item.source_kind]}</span><b>{item.sku}</b><em className={item.execution_status}>{executionLabels[item.execution_status]}</em></div><h4>{item.product_name}</h4><div className="sku-facts"><span><small>Смена</small><b>{item.shift === "day" ? "День" : "Ночь"}</b></span><span><small>Задание</small><b>{number(item.quantity_kg || 0)} кг</b></span><span><small>Короба</small><b>{item.box_count == null ? "—" : number(item.box_count)}</b></span><span><small>Замесы</small><b>{item.batch_count == null ? "—" : number(item.batch_count)}</b></span><span><small>ДП</small><b>{shortDate(item.production_date || "")}</b></span><span><small>ДМ</small><b>{item.marking_date ? shortDate(item.marking_date) : "—"}</b></span></div></button>;
+  return <button className="sku-card" onClick={onClick}><div className="sku-card-head"><span className={`source ${item.source_kind}`}>{sourceLabels[item.source_kind]}</span><b>{item.sku}</b><em className={item.execution_status}>{executionLabels[item.execution_status]}</em></div><h4>{item.product_name}</h4><div className="sku-facts"><span><small>Смена</small><b>{item.shift === "day" ? "День" : "Ночь"}</b></span><span className="hours-fact"><small>Часы</small><b>{number(item.required_hours)} ч</b></span><span><small>Задание</small><b>{number(item.quantity_kg || 0)} кг</b></span><span><small>Короба</small><b>{item.box_count == null ? "—" : number(item.box_count)}</b></span><span><small>Замесы</small><b>{item.batch_count == null ? "—" : number(item.batch_count)}</b></span><span><small>ДП</small><b>{shortDate(item.production_date || "")}</b></span><span><small>ДМ</small><b>{item.marking_date ? shortDate(item.marking_date) : "—"}</b></span></div></button>;
+}
+
+function DailyTable({ matrix, onItem }: { matrix: MatrixData; onItem: (i: ScheduleItem) => void }) {
+  const rows = matrix.workshops.flatMap(workshop => workshop.lines.flatMap(line => line.cells[0].items.map(item => ({ workshop, line, cell: line.cells[0], item }))));
+  return <section className="card day-table"><header><div><h3>Табличный план ГП</h3><p>{formatDate(matrix.dates[0])} · {rows.length} позиций · максимум 22 производственных часа на линию</p></div></header><div className="table-scroll"><table><thead><tr><th>Цех</th><th>Линия</th><th>Источник</th><th>SKU / готовая продукция</th><th>Смена</th><th>Часы</th><th>Задание</th><th>Короба</th><th>Замесы</th><th>ДП</th><th>ДМ</th><th>Загрузка линии</th><th>Статус</th></tr></thead><tbody>{rows.map(({ workshop, line, cell, item }) => <tr className="clickable-row" key={item.id} onClick={() => onItem(item)}><td><span className="workshop-code">{workshop.name}</span></td><td><b>{line.name}</b><small>{line.code}</small></td><td><span className={`source ${item.source_kind}`}>{sourceLabels[item.source_kind]}</span></td><td><b>{item.sku}</b><small>{item.product_name}</small></td><td>{item.shift === "day" ? "День" : "Ночь"}</td><td><strong className="hours-value">{number(item.required_hours)} ч</strong></td><td><b>{number(item.quantity_kg || 0)} кг</b></td><td>{item.box_count == null ? "—" : number(item.box_count)}</td><td>{item.batch_count == null ? "—" : number(item.batch_count)}</td><td>{formatDate(item.production_date)}</td><td>{formatDate(item.marking_date)}</td><td><b>{cell.load_percent.toFixed(0)}%</b><small>{number(cell.planned_hours)} / {number(cell.capacity_hours)} ч</small></td><td><span className={`execution-badge ${item.execution_status}`}>{executionLabels[item.execution_status]}</span></td></tr>)}</tbody></table></div></section>;
 }
 
 function ItemDrawer({ item, planId, user, lines, onClose, onChanged, onError }: { item: ScheduleItem; planId: number; user: UserProfile; lines: LineData[]; onClose: () => void; onChanged: (t: string) => Promise<void>; onError: (t: string) => void }) {
