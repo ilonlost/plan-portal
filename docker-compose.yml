@@ -1,0 +1,91 @@
+name: production-planning-portal
+
+services:
+  ppp-postgres:
+    image: postgres:16-alpine
+    container_name: ppp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-production_planning}
+      POSTGRES_USER: ${POSTGRES_USER:-planner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_planner_password}
+    volumes:
+      - ppp-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  ppp-backend:
+    build: ./backend
+    container_name: ppp-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-planner}:${POSTGRES_PASSWORD:-local_planner_password}@ppp-postgres:5432/${POSTGRES_DB:-production_planning}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:18095,http://127.0.0.1:18095}
+      APP_URL: ${APP_URL:-http://127.0.0.1:18095}
+      AUTH_MODE: ${AUTH_MODE:-mock}
+      SESSION_SECRET: ${SESSION_SECRET:-local-development-secret-change-in-production}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      LDAP_SERVER_URL: ${LDAP_SERVER_URL:-}
+      LDAP_SERVER: ${LDAP_SERVER:-}
+      LDAP_PORT: ${LDAP_PORT:-389}
+      LDAP_USE_SSL: ${LDAP_USE_SSL:-false}
+      LDAP_START_TLS: ${LDAP_START_TLS:-false}
+      LDAP_BASE_DN: ${LDAP_BASE_DN:-}
+      LDAP_BIND_DN: ${LDAP_BIND_DN:-}
+      LDAP_BIND_PASSWORD: ${LDAP_BIND_PASSWORD:-}
+      LDAP_USER_FILTER: ${LDAP_USER_FILTER:-(sAMAccountName={username})}
+      LDAP_DOMAIN: ${LDAP_DOMAIN:-}
+      LDAP_UPN_SUFFIX: ${LDAP_UPN_SUFFIX:-}
+      LDAP_ADMIN_GROUP_DN: ${LDAP_ADMIN_GROUP_DN:-}
+      LDAP_PLANNER_GROUP_DN: ${LDAP_PLANNER_GROUP_DN:-}
+      LDAP_MASTER_GROUP_DN: ${LDAP_MASTER_GROUP_DN:-}
+      PORTAL_ADMIN_LOGINS: ${PORTAL_ADMIN_LOGINS:-}
+      LDAP_CA_FILE: ${LDAP_CA_FILE:-}
+      LDAP_TLS_VALIDATE: ${LDAP_TLS_VALIDATE:-true}
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-smtp.agrohold.ru}
+      SMTP_PORT: ${SMTP_PORT:-25}
+      SMTP_FROM: ${SMTP_FROM:-planfkportal@agrohold.ru}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-PLAN PORTAL}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_REQUIRE_TLS: ${SMTP_REQUIRE_TLS:-true}
+      SMTP_CA_FILE: ${SMTP_CA_FILE:-}
+      SMTP_TLS_VALIDATE: ${SMTP_TLS_VALIDATE:-true}
+      NOTIFICATION_EMAILS: ${NOTIFICATION_EMAILS:-}
+      CSB_TEST_MODE: ${CSB_TEST_MODE:-true}
+      CSB_ENDPOINT: ${CSB_ENDPOINT:-}
+      CSB_TOKEN: ${CSB_TOKEN:-}
+    volumes:
+      - ppp-files:/app/data
+    depends_on:
+      ppp-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  ppp-frontend:
+    build: ./frontend
+    container_name: ppp-frontend
+    restart: unless-stopped
+    ports:
+      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-18095}:80"
+    depends_on:
+      ppp-backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  ppp-postgres-data:
+  ppp-files:
