@@ -23,12 +23,18 @@ class Settings(BaseSettings):
     ldap_timeout: int = 10
     ldap_ca_file: str = ""
     ldap_tls_validate: bool = True
+    ldap_tls_servername: str = ""
+    ldap_tls_min_version: str = "TLSv1.2"
     ldap_base_dn: str = ""
     ldap_bind_dn: str = ""
     ldap_bind_password: str = ""
     ldap_user_filter: str = "(sAMAccountName={username})"
     ldap_domain: str = ""
     ldap_upn_suffix: str = ""
+    ldap_netbios_domain: str = ""
+    ldap_login_format: str = ""
+    ldap_bind_format: str = ""
+    ldap_user_attributes: str = "sAMAccountName,displayName,mail,memberOf,cn"
     ldap_admin_group_dn: str = ""
     ldap_planner_group_dn: str = ""
     ldap_master_group_dn: str = ""
@@ -41,12 +47,16 @@ class Settings(BaseSettings):
     smtp_reply_to: str = ""
     smtp_username: str = ""
     smtp_password: str = ""
+    smtp_auth_method: str = "login"
     smtp_secure: bool = False
     smtp_require_tls: bool = True
     smtp_timeout_ms: int = 10000
     smtp_ca_file: str = ""
     smtp_tls_validate: bool = True
+    smtp_tls_servername: str = ""
+    smtp_tls_min_version: str = "TLSv1.2"
     notification_emails: str = ""
+    settings_encryption_key: str = ""
     csb_test_mode: bool = True
     csb_endpoint: str = ""
     csb_token: str = ""

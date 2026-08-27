@@ -185,6 +185,15 @@ class PlanService:
 
 
 def schedule_item_dict(item: ProductionScheduleItem) -> dict:
+    quantity_units = None
+    if item.source_unit == "шт" and item.source_quantity is not None:
+        quantity_units = item.source_quantity
+    elif item.product:
+        unit_weight = Decimal(item.product.unit_weight_kg or 0)
+        if unit_weight <= 0 and item.product.box_weight_kg and item.product.units_per_box:
+            unit_weight = Decimal(item.product.box_weight_kg) / Decimal(item.product.units_per_box)
+        if unit_weight > 0:
+            quantity_units = (Decimal(item.quantity_kg or item.quantity or 0) / unit_weight).quantize(Decimal("0.001"))
     return {
         "id": item.id,
         "production_date": item.production_date,
@@ -200,6 +209,7 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "source_quantity": item.source_quantity,
         "source_unit": item.source_unit,
         "quantity_kg": item.quantity_kg,
+        "quantity_units": quantity_units,
         "box_count": item.box_count,
         "batch_count": item.batch_count,
         "schedule_kind": item.schedule_kind,

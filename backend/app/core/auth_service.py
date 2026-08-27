@@ -65,10 +65,8 @@ def _role(username: str, groups: list[str]) -> str:
     admins = {value.strip().lower() for value in settings.portal_admin_logins.split(",") if value.strip()}
     if username.lower() in admins or bool(settings.ldap_admin_group_dn and settings.ldap_admin_group_dn.lower() in normalized):
         return "admin"
-    if settings.ldap_planner_group_dn and settings.ldap_planner_group_dn.lower() in normalized:
-        return "planner"
-    if settings.ldap_master_group_dn and settings.ldap_master_group_dn.lower() in normalized:
-        return "master"
+    # Из окружения назначаются только первоначальные администраторы. Остальные
+    # права хранятся в БД и управляются через веб-админку.
     return "viewer"
 
 

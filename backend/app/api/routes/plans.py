@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -15,8 +16,16 @@ from app.schemas.common import ExecutionStatusUpdate, PlanApprovalRequest, Sched
 from app.services.export_service import ExcelExportService
 from app.services.plan_service import PlanService, plan_dict, schedule_item_dict
 from app.services.notification_service import send_notification
+from app.services.notification_service import build_plan_email_html
+from app.services.settings_service import get_mail_configuration
 
 router = APIRouter(prefix="/plans", tags=["plans"])
+
+
+class PlanEmailRequest(BaseModel):
+    recipients: list[str] = Field(default_factory=list)
+    start: date | None = None
+    end: date | None = None
 
 
 @router.get("/active")
@@ -178,3 +187,42 @@ def export_plan(plan_id: int, db: Session = Depends(get_db), user: UserContext =
         BytesIO(content), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="production-plan-{plan_id}.xlsx"'},
     )
+
+
+@router.post("/{plan_id}/email")
+def email_plan(
+    plan_id: int,
+    payload: PlanEmailRequest,
+    db: Session = Depends(get_db),
+    user: UserContext = Depends(require_planner),
+) -> dict:
+    plan = db.get(ProductionPlan, plan_id)
+    if not plan:
+        raise HTTPException(404, "План не найден")
+    start, end = payload.start or plan.horizon_start, payload.end or plan.horizon_end
+    if end < start:
+        raise HTTPException(422, "Дата окончания раньше даты начала")
+    items = list(db.scalars(select(ProductionScheduleItem).where(
+        ProductionScheduleItem.plan_id == plan.id,
+        ProductionScheduleItem.production_date >= start,
+        ProductionScheduleItem.production_date <= end,
+        ProductionScheduleItem.excluded.is_(False),
+    ).options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item)).order_by(
+        ProductionScheduleItem.production_date, ProductionScheduleItem.line_id, ProductionScheduleItem.shift, ProductionScheduleItem.sequence,
+    )))
+    configuration = get_mail_configuration(db)
+    try:
+        subject = str(configuration.get("plan_subject") or "План производства ФК · {start} — {end}").format(
+            start=start.strftime("%d.%m.%Y"), end=end.strftime("%d.%m.%Y"), plan=plan.name,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(422, "В шаблоне темы разрешены только {start}, {end} и {plan}") from exc
+    html = build_plan_email_html(configuration, plan.name, start, end, [schedule_item_dict(item) for item in items])
+    log = send_notification(
+        db, "production_plan_email", subject,
+        f"План «{plan.name}» за период {start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}. Позиций: {len(items)}.",
+        payload.recipients, html,
+    )
+    db.add(AuditEvent(username=user.username, action="production_plan_emailed", entity_type="production_plan", entity_id=str(plan.id), details={"start": start.isoformat(), "end": end.isoformat(), "item_count": len(items), "status": log.status, "recipients": log.recipients}))
+    db.commit()
+    return {"ok": True, "status": log.status, "recipients": log.recipients, "item_count": len(items), "error": log.error}

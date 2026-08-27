@@ -1,6 +1,6 @@
 import type {
   AdminOverview, CatalogData, CsbRun, ImportPreview, LineData, MatrixData,
-  PlanData, SessionMode, UserProfile, WorkshopData,
+  MailConfiguration, PlanData, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 
 const API = import.meta.env.VITE_API_URL || "/api";
@@ -59,6 +59,16 @@ export const api = {
   adminOverview: () => request<AdminOverview>("/admin/overview"),
   updateUserAccess: (userId: number, role: string, lineId: number | null, active = true) => request<{ ok: boolean }>(`/admin/users/${userId}`, {
     method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, line_id: lineId, active }),
+  }),
+  createUserAccess: (data: { username: string; display_name: string; email: string; role: string; line_id: number | null; active: boolean }) => request<{ ok: boolean; id: number }>("/admin/users", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+  }),
+  updateMailConfiguration: (configuration: MailConfiguration) => request<{ ok: boolean; configuration: MailConfiguration }>("/admin/mail-configuration", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),
+  }),
+  mailPreview: (start: string, end: string) => request<{ html: string; item_count: number; start: string; end: string }>(`/admin/mail-preview?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
+  emailPlan: (planId: number, recipients: string[], start: string, end: string) => request<{ ok: boolean; status: string; recipients: string[]; item_count: number; error: string | null }>(`/plans/${planId}/email`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients, start, end }),
   }),
   deletePlanData: (confirmation: string) => request<{ ok: boolean; plans_deleted: number; schedule_items_deleted: number }>("/admin/delete-plan-data", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmation }),

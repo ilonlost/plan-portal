@@ -13,7 +13,7 @@ export interface ScheduleItem {
   line_code: string | null; line_name: string | null; workshop_code: string | null; workshop_name: string | null;
   product_id: number | null; product_name: string; sku: string; quantity: number; required_hours: number;
   load_percent: number; shift: string; source_quantity: number | null; source_unit: string;
-  quantity_kg: number | null; box_count: number | null; batch_count: number | null;
+  quantity_kg: number | null; quantity_units: number | null; box_count: number | null; batch_count: number | null;
   schedule_kind: "production" | "downtime" | "maintenance" | "trial"; duration_hours: number | null;
   reason: string | null; actual_quantity_kg: number | null; status: Status; source_kind: "ohl" | "zam" | "generic";
   source: string; locked: boolean; excluded: boolean; due_date: string | null; warnings: string[];
@@ -94,10 +94,17 @@ export interface AdminOverview {
   active_plan: { id: number; name: string; status: string } | null;
   ldap: { status: string; configured: boolean };
   email: { enabled: boolean; configured: boolean; host: string };
+  mail_configuration: MailConfiguration;
+  smtp_password_configured: boolean;
   csb: { test_mode: boolean; configured: boolean };
   users: { id: number; username: string; display_name: string; email: string | null; role: string; workshop_code: string | null; line_name: string | null; active: boolean; last_login_at: string | null }[];
   lines: { id: number; workshop_code: string; workshop_name: string; name: string }[];
   recent_audit: AuditRow[]; recent_notifications: NotificationRow[]; recent_integrations: IntegrationRow[];
+}
+export interface MailConfiguration {
+  enabled: boolean; smtp_host: string; smtp_port: number; smtp_from: string; smtp_from_name: string;
+  smtp_reply_to: string; smtp_secure: boolean; smtp_require_tls: boolean; notification_emails: string;
+  plan_subject: string; plan_intro: string; plan_footer: string; accent_color: string; button_label: string;
 }
 export interface CsbRun {
   run_id: number; target_date: string; item_count: number; status: string;

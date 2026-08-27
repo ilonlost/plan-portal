@@ -44,4 +44,105 @@ label { display: grid; gap: 5px; margin-bottom: 9px; color: #565a61; font-size: 
 [data-theme="dark"] .cell-skus button small,[data-theme="dark"] .sku-card h4,[data-theme="dark"] .plan-title h2 { color: var(--text); }
 [data-theme="dark"] .capacity-note { color: #ffdce2; background: #30171c; border-color: #6a2935; }.capacity-note span { color: inherit; opacity: .75; }
 [data-theme="dark"] .execution-badge { color: #c4c6cb; background: #303137; }[data-theme="dark"] .execution-badge.completed { color: #80d6a3; background: #183426; }[data-theme="dark"] .execution-badge.not_shipped,[data-theme="dark"] .execution-badge.partially_shipped { color: #ff9bad; background: #411c23; }
+
+/* Единые цветовые поверхности: ни один блок не остаётся белым в тёмной теме. */
+body,main,.content { color: var(--text); background: var(--page); }
+.topbar,.card,.metric,.workshop-strip button,.sku-card,.plan-cell,.catalog-card,.modal,.empty,.drawer,.item-editor section { color: var(--text); background: var(--surface); border-color: var(--line); }
+.drawer { background: var(--surface-soft); }
+.item-editor dl div,.daily-line-name,.line-name,.free-slot,.notes,.catalog-card > footer { color: var(--text); background: var(--surface-soft); border-color: var(--line); }
+label { color: var(--text); }
+input,select,textarea,.range-buttons button,.view-switch button,.button.secondary,.theme-button { color: var(--text); background: var(--surface); border-color: var(--line); }
+input::placeholder,textarea::placeholder { color: var(--muted); opacity: 1; }
+.plan-title p,.matrix-toolbar p,.legend,.catalog-head p,.source-intro p,.preview-card p,.admin-panel p,.audit-card p,.mail-preview-card p,.settings-list em,.source-list small,.cell-load small,.cell-skus button em,.item-editor dt,.login-card > p,.login-card footer { color: var(--muted); }
+.source-flow span { color: var(--text); background: var(--surface-alt); }
+.workshop-code { color: var(--text); background: var(--surface-alt); }
+.icon-button { color: var(--text); background: var(--surface); border-color: var(--line); }
+.capacity-note span { color: inherit; opacity: .78; }
+
+/* Вход визуально цельный в обеих темах. */
+.login-page { color: var(--text); background: var(--page); }
+.login-brand { color: var(--text); }
+.login-card { color: var(--text); background: var(--surface); border: 1px solid var(--line); box-shadow: 0 20px 70px rgba(0,0,0,.24); }
+[data-theme="dark"] .login-page { background: #101114; }
+[data-theme="dark"] .login-card { background: #1a1b1f; }
+[data-theme="dark"] .login-card input { color: #f2f3f5; background: #24252a; border-color: #3a3c42; }
+
+/* Масштаб плана, не затрагивающий меню и верхнюю панель. */
+.plan-scale { zoom: var(--plan-zoom); transform-origin: left top; }
+.zoom-control { display: grid; grid-template-columns: 30px 52px 30px; align-items: center; min-height: 34px; overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.zoom-control button { height: 32px; border: 0; color: var(--text); background: transparent; font-size: 15px; font-weight: 800; }
+.zoom-control button:hover { background: var(--surface-alt); }
+.zoom-control span { color: var(--text); font-size: 9px; font-weight: 800; text-align: center; }
+
+/* Карточный план: название линии и окончание её блока хорошо заметны. */
+.daily-line { grid-template-columns: 220px 1fr; border-bottom: 3px solid var(--line); }
+.daily-line:last-child { border-bottom: 0; }
+.daily-line-name { position: relative; padding: 18px 16px 18px 20px; border-right: 2px solid var(--line); box-shadow: inset 4px 0 var(--red); }
+.daily-line-name b { color: var(--text); font-size: 13px; letter-spacing: -.01em; }
+.daily-line-name small { margin-top: 7px; color: var(--muted); font-size: 9px; font-weight: 700; }
+.daily-line-name i { height: 5px; margin-top: 13px; background: var(--surface-alt); }
+.daily-items { padding: 12px; }
+.sku-card { border-color: var(--line); }
+.sku-card h4 { color: var(--text); }
+
+/* Матрица: фиксированные названия линий и более сильные разделители. */
+.line-name { padding: 15px 14px 15px 18px; border-right: 2px solid var(--line); border-bottom: 2px solid var(--line); box-shadow: inset 4px 0 var(--red); }
+.line-name b { color: var(--text); font-size: 12px; }
+.line-name small { margin-top: 6px; color: var(--muted); font-size: 8px; font-weight: 700; }
+.plan-cell { border-bottom-width: 2px; }
+.cell-skus button { color: var(--text); background: var(--surface); border-color: var(--line); }
+.cell-skus button small { color: var(--text); }
+
+/* Таблица, повторяющая структуру исходного производственного плана. */
+.period-table .table-scroll { max-height: calc(100vh - 340px); }
+.period-table table { min-width: 1450px; }
+.period-table thead th { z-index: 5; }
+.date-group-row td,.workshop-group-row td,.line-group-row td { padding: 0; border-bottom: 0; }
+.date-group-row td { padding: 13px 14px; color: #fff; background: #202126; border-top: 4px solid var(--red); }
+.date-group-row b { display: inline; font-size: 12px; }
+.date-group-row span { margin-left: 10px; color: #c7c9ce; font-size: 8px; }
+.workshop-group-row td { padding: 9px 14px; color: #fff; background: #34363b; border-top: 1px solid #4c4f56; }
+.workshop-group-row b { display: inline; font-size: 10px; }
+.workshop-group-row span { float: right; color: #d2d4d8; font-size: 8px; }
+.line-group-row td { padding: 9px 14px 9px 18px; color: var(--text); background: var(--surface-alt); border-top: 2px solid var(--line); border-bottom: 2px solid var(--line); box-shadow: inset 5px 0 var(--red); }
+.line-group-content,.line-group-content > div { display: flex; align-items: center; }
+.line-group-content { justify-content: space-between; }
+.line-group-content > div { gap: 9px; }
+.line-group-row b { display: inline; font-size: 12px; }
+.line-group-row small { display: inline; margin: 0; color: var(--muted); font-size: 8px; }
+.line-group-row span { font-size: 9px; }
+.line-group-row strong { color: var(--red); }
+.item-row td { background: var(--surface); }
+.item-row td:nth-child(5),.item-row td:nth-child(6),.item-row td:nth-child(7) { font-size: 9px; }
+[data-theme="dark"] .item-row:hover td { background: #24252a; }
+
+/* Администрирование и HTML-письма. */
+.admin-tabs { display: flex; gap: 4px; padding: 6px; }
+.admin-tabs button { padding: 9px 14px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; font-size: 9px; font-weight: 800; }
+.admin-tabs button.active { color: #fff; background: var(--red); }
+.access-create { display: grid; grid-template-columns: 1.1fr 1.2fr 1.2fr .8fr 1.3fr auto; gap: 8px; align-items: end; padding: 14px; background: var(--surface-soft); border-bottom: 1px solid var(--line); }
+.access-create label { margin: 0; }
+.access-create .button { margin-bottom: 0; }
+.mail-admin-grid { display: grid; grid-template-columns: minmax(500px,.9fr) minmax(600px,1.1fr); gap: 14px; }
+.inline-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.mail-preview-card { overflow: hidden; }
+.mail-preview-card > header { padding: 16px; border-bottom: 1px solid var(--line); }
+.mail-preview-card h2 { margin: 0; font-size: 15px; }
+.mail-preview-card iframe { width: 100%; height: 680px; border: 0; background: #fff; }
+.preview-placeholder { min-height: 460px; display: grid; place-items: center; color: var(--muted); font-size: 10px; }
+.mail-modal { width: min(1180px,calc(100vw - 60px)); margin: 4vh auto; }
+.mail-compose { display: grid; grid-template-columns: 280px 1fr; gap: 14px; }
+.mail-compose iframe { width: 100%; height: 72vh; border: 1px solid var(--line); background: #fff; }
+.mail-fields { padding-right: 4px; }
+.mail-count { padding: 9px; color: var(--text); background: var(--surface-alt); border-radius: 4px; font-size: 9px; }
+.mail-status { display: inline-block; padding: 3px 6px; border-radius: 3px; color: #fff; background: #71757c; font-size: 7px; font-weight: 800; text-transform: uppercase; }
+.mail-status.sent { background: #27804f; }.mail-status.failed { background: var(--red); }.mail-status.skipped { color: #6e4d17; background: #f2d8a8; }
+
+[data-theme="dark"] .source.ohl { color: #9fd2fa; background: #18364d; }
+[data-theme="dark"] .source.zam { color: #c7b8f3; background: #352c50; }
+[data-theme="dark"] .source.generic { color: #d0d2d7; background: #35363b; }
+[data-theme="dark"] .warning-box,[data-theme="dark"] .inline-error { color: #ffb4c0; background: #3a1d23; border-color: #6a303a; }
+[data-theme="dark"] .live-dot { color: #9cdeb4; background: #183126; border-color: #315b42; }
+[data-theme="dark"] .preview-stats .valid { color: #9cdeb4; background: #183126; }
+[data-theme="dark"] .preview-stats .invalid { color: #ffafbc; background: #3a1d23; }
 @media (max-width: 1300px) { .daily-items { grid-template-columns: repeat(auto-fill,minmax(230px,1fr)); }.metric b { font-size: 16px; }.catalog-head { align-items: flex-start; }.filters { flex-direction: column; } }

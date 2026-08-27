@@ -12,6 +12,7 @@ from app.core.security import UserContext, require_planner
 from app.db.session import get_db
 from app.models.entities import AuditEvent, IntegrationRun, ProductionPlan, ProductionScheduleItem
 from app.services.notification_service import send_notification
+from app.services.plan_service import schedule_item_dict
 
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
@@ -46,19 +47,23 @@ def send_next_day_to_csb(
     if not production_items:
         raise HTTPException(422, f"На {target.strftime('%d.%m.%Y')} нет производственных заданий")
 
-    tasks = [{
-        "task_id": item.id,
-        "production_date": target.isoformat(),
-        "marking_date": item.marking_date.isoformat() if item.marking_date else None,
-        "workshop": item.line.workshop_code if item.line else None,
-        "line": item.line.name if item.line else None,
-        "shift": item.shift,
-        "sequence": item.sequence,
-        "sku": item.product.sku if item.product else None,
-        "product_name": item.product.name if item.product else None,
-        "quantity_kg": float(item.quantity_kg or item.quantity or 0),
-        "source": item.source_kind,
-    } for item in production_items]
+    tasks = []
+    for item in production_items:
+        serialized = schedule_item_dict(item)
+        tasks.append({
+            "task_id": item.id,
+            "production_date": target.isoformat(),
+            "marking_date": item.marking_date.isoformat() if item.marking_date else None,
+            "workshop": item.line.workshop_code if item.line else None,
+            "line": item.line.name if item.line else None,
+            "shift": item.shift,
+            "sequence": item.sequence,
+            "sku": item.product.sku if item.product else None,
+            "product_name": item.product.name if item.product else None,
+            "quantity_kg": float(item.quantity_kg or item.quantity or 0),
+            "quantity_units": float(serialized["quantity_units"]) if serialized["quantity_units"] is not None else None,
+            "source": item.source_kind,
+        })
     request_payload = {"plan_id": plan.id, "target_date": target.isoformat(), "tasks": tasks}
     response_payload = {
         "accepted": True,
