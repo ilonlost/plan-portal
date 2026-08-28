@@ -8,7 +8,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 class ExcelExportService:
     HEADERS = [
-        "Дата", "Смена", "Линия", "Тип записи", "Продукт", "Артикул",
+        "№", "Дата", "Смена", "Линия", "Тип записи", "Продукт", "Артикул",
         "Количество источника", "Ед. источника", "Задание, шт.", "Задание, кг", "Коробов", "Квантов",
         "Время, ч", "Загрузка смены, %", "Причина", "Статус", "Источник", "Предупреждения",
     ]
@@ -24,7 +24,7 @@ class ExcelExportService:
             cell.alignment = Alignment(horizontal="center")
         for item in items:
             sheet.append([
-                item.get("production_date"), "Ночь" if item.get("shift") == "night" else "День",
+                item.get("sequence"), item.get("production_date"), "Ночь" if item.get("shift") == "night" else "День",
                 item.get("line_name") or "—", item.get("schedule_kind"), item.get("product_name"), item.get("sku"),
                 self._float(item.get("source_quantity")), item.get("source_unit"),
                 self._float(item.get("quantity_units")), self._float(item.get("quantity_kg") or item.get("quantity")), self._float(item.get("box_count")),
@@ -36,7 +36,7 @@ class ExcelExportService:
             color = "FCE8EC" if status in {"conflict", "unscheduled"} else "FFF5DF" if status == "warning" else "EAF8F1"
             for cell in sheet[sheet.max_row]:
                 cell.fill = PatternFill("solid", fgColor=color)
-        widths = [14, 10, 24, 16, 30, 16, 20, 14, 16, 16, 12, 12, 14, 20, 30, 16, 14, 44]
+        widths = [8, 14, 10, 24, 16, 30, 16, 20, 14, 16, 16, 12, 12, 14, 20, 30, 16, 14, 44]
         for index, width in enumerate(widths, start=1):
             sheet.column_dimensions[sheet.cell(1, index).column_letter].width = width
         sheet.freeze_panes = "A2"

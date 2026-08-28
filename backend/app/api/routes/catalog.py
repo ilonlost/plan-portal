@@ -18,6 +18,7 @@ class CapabilityUpdate(BaseModel):
     batch_quantum_kg: Decimal | None = Field(default=None, gt=0)
     min_order_kg: Decimal | None = Field(default=None, ge=0)
     restrictions: str | None = Field(default=None, max_length=1000)
+    mono_group: str | None = Field(default=None, max_length=160)
 
 
 @router.get("")
@@ -62,6 +63,7 @@ def catalog(
             "legacy_capacity_unit": item.product.legacy_capacity_unit,
             "recipe_component_count": item.product.recipe_component_count,
             "reference_source": item.product.reference_source,
+            "mono_group": item.product.mono_group,
         } for item in capabilities],
         "sources": [{
             "id": item.id, "file_name": item.source_name, "template_type": item.template_type,
@@ -81,7 +83,10 @@ def update_capability(
     ))
     if not capability:
         raise HTTPException(404, "Строка справочника не найдена")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    values = payload.model_dump(exclude_unset=True)
+    if "mono_group" in values:
+        capability.product.mono_group = (values.pop("mono_group") or "").strip() or None
+    for field, value in values.items():
         setattr(capability, field, value)
     capability.line.default_capacity = Decimal(capability.units_per_hour) * Decimal(capability.line.working_hours)
     db.add(AuditEvent(

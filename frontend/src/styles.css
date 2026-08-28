@@ -146,3 +146,37 @@ input::placeholder,textarea::placeholder { color: var(--muted); opacity: 1; }
 [data-theme="dark"] .preview-stats .valid { color: #9cdeb4; background: #183126; }
 [data-theme="dark"] .preview-stats .invalid { color: #ffafbc; background: #3a1d23; }
 @media (max-width: 1300px) { .daily-items { grid-template-columns: repeat(auto-fill,minmax(230px,1fr)); }.metric b { font-size: 16px; }.catalog-head { align-items: flex-start; }.filters { flex-direction: column; } }
+
+/* Графики линий, мойки и недельное перетаскивание. */
+.dot.cleaning { background: #2b8b78; }
+.source.cleaning { color: #176456; background: #dff3ee; }
+.cleaning-task { border-style: dashed !important; border-color: #72ad9f !important; background: #f0faf7 !important; }
+.cleaning-task h4 { color: #176456; }
+.cleaning-reason,.schedule-reason { margin: 9px 0 0; padding: 7px 8px; color: #315f56; background: #e4f4f0; border-radius: 3px; font-size: 8px; line-height: 1.45; }
+.cleaning-row td { color: #315f56; background: #f0faf7; }
+.plan-cell.drop-enabled { outline: 1px dashed #b7bdc6; outline-offset: -4px; }
+.plan-cell.drop-enabled:hover { outline: 2px solid var(--red); background: #fff4f5; }
+.cell-skus button[draggable="true"] { cursor: grab; }
+.cell-skus button[draggable="true"]:active { cursor: grabbing; opacity: .62; }
+.schedule-modal { width: min(920px,calc(100vw - 50px)); margin: 3vh auto; }
+.schedule-toolbar { display: grid; grid-template-columns: 1.4fr 1fr 1.4fr 1fr; gap: 9px; padding: 12px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 5px; }
+.schedule-toolbar label { margin: 0; }
+.schedule-grid { max-height: 58vh; margin-top: 12px; overflow: auto; border: 1px solid var(--line); border-radius: 5px; }
+.schedule-grid-head,.schedule-grid-row { display: grid; grid-template-columns: 1.3fr .75fr .75fr .8fr 1.5fr; align-items: center; gap: 9px; padding: 8px 10px; }
+.schedule-grid-head { position: sticky; top: 0; z-index: 2; color: var(--muted); background: var(--surface-alt); border-bottom: 1px solid var(--line); font-size: 8px; }
+.schedule-grid-row { border-bottom: 1px solid var(--line); }
+.schedule-grid-row:last-child { border-bottom: 0; }
+.schedule-grid-row.off { background: #f4f4f5; opacity: .75; }
+.schedule-grid-row > div b,.schedule-grid-row > div small { display: block; }
+.schedule-grid-row > div b { font-size: 9px; }
+.schedule-grid-row > div small,.schedule-grid-row > span { color: var(--muted); font-size: 8px; }
+.schedule-grid-row input { min-height: 30px; }
+.schedule-grid-row strong { font-size: 9px; }
+.schedule-modal footer { align-items: center; }
+.schedule-help { margin-right: auto; color: var(--muted); font-size: 8px; }
+.item-row td:nth-child(6),.item-row td:nth-child(7),.item-row td:nth-child(8) { font-size: 9px; }
+[data-theme="dark"] .source.cleaning { color: #9fe0d2; background: #1b453d; }
+[data-theme="dark"] .cleaning-task,[data-theme="dark"] .cleaning-row td { color: #cdebe5; background: #18312d !important; border-color: #386d62 !important; }
+[data-theme="dark"] .cleaning-reason,[data-theme="dark"] .schedule-reason { color: #b8e2d9; background: #1c3b35; }
+[data-theme="dark"] .schedule-toolbar,[data-theme="dark"] .schedule-grid-row.off { background: var(--surface-soft); }
+[data-theme="dark"] .plan-cell.drop-enabled:hover { background: #30171c; }

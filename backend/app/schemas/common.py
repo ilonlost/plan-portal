@@ -55,6 +55,7 @@ class CapacityOut(ORMModel):
 
 class ScheduleItemOut(ORMModel):
     id: int
+    sequence: int = 0
     production_date: date | None
     shift: str = "day"
     line_id: int | None
@@ -65,9 +66,11 @@ class ScheduleItemOut(ORMModel):
     product_id: int | None
     product_name: str
     sku: str
+    mono_group: str | None = None
     quantity: Decimal
     source_quantity: Decimal | None = None
     source_unit: str = "кг"
+    quantity_units: Decimal | None = None
     quantity_kg: Decimal | None = None
     box_count: Decimal | None = None
     batch_count: Decimal | None = None

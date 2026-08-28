@@ -3,8 +3,8 @@
 ## Linux-сервер
 
 ```bash
-git clone --branch codex/production-plan-v2 https://github.com/ilonlost/art-portal.git
-cd art-portal/production-planning
+git clone https://github.com/ilonlost/plan-portal.git
+cd plan-portal
 cp .env.example .env
 nano .env
 docker compose config
@@ -20,8 +20,8 @@ curl -f http://127.0.0.1:18095/api/health
 ## Windows / PowerShell
 
 ```powershell
-git clone --branch codex/production-plan-v2 https://github.com/ilonlost/art-portal.git
-Set-Location art-portal\production-planning
+git clone https://github.com/ilonlost/plan-portal.git
+Set-Location plan-portal
 Copy-Item .env.example .env
 notepad .env
 docker compose config
@@ -38,7 +38,7 @@ Invoke-WebRequest http://127.0.0.1:18095/api/health
 ## Обновление
 
 ```bash
-git pull origin codex/production-plan-v2
+git pull origin main
 docker compose up -d --build
 docker compose ps
 ```

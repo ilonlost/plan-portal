@@ -77,3 +77,39 @@ def test_ohl_uses_capacity_before_zam() -> None:
     assert items[0].source_kind == "ohl"
     assert sum(item.quantity for item in items if item.status != "conflict") == Decimal("800")
     assert sum(item.quantity for item in items if item.demand_id == 1 and item.status == "conflict") == Decimal("200")
+
+
+def test_pc_mono_group_reserves_one_wash_per_group() -> None:
+    day = date(2026, 8, 28)
+    items = PlanningEngine().plan(
+        demands=[
+            DemandInput(1, 10, "BUN-165", Decimal("100"), day, day, source_kind="ohl", mono_group="Булочка для бургера"),
+            DemandInput(2, 11, "BUN-240", Decimal("100"), day, day, source_kind="ohl", mono_group="Булочка для бургера"),
+            DemandInput(3, 12, "HOTDOG", Decimal("100"), day, day, source_kind="ohl", mono_group="Булочка хот-дог"),
+        ],
+        capabilities=[
+            CapabilityInput(2, 10, Decimal("100"), workshop_code="PC"),
+            CapabilityInput(2, 11, Decimal("100"), workshop_code="PC"),
+            CapabilityInput(2, 12, Decimal("100"), workshop_code="PC"),
+        ],
+        capacities=[CapacityInput(2, day, Decimal("5"))], horizon_end=day,
+    )
+    assert [item.status for item in items] == ["planned", "planned", "planned"]
+    assert sum(item.required_hours for item in items) == Decimal("3.00")
+
+
+def test_pc_washing_reduces_available_production_capacity() -> None:
+    day = date(2026, 8, 28)
+    items = PlanningEngine().plan(
+        demands=[
+            DemandInput(1, 10, "A", Decimal("100"), day, day, mono_group="A"),
+            DemandInput(2, 11, "B", Decimal("100"), day, day, mono_group="B"),
+        ],
+        capabilities=[
+            CapabilityInput(2, 10, Decimal("100"), workshop_code="PC"),
+            CapabilityInput(2, 11, Decimal("100"), workshop_code="PC"),
+        ],
+        capacities=[CapacityInput(2, day, Decimal("3"))], horizon_end=day,
+    )
+    assert items[0].status == "planned"
+    assert items[1].status == "conflict"

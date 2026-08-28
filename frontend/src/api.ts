@@ -1,6 +1,6 @@
 import type {
   AdminOverview, CatalogData, CsbRun, ImportPreview, LineData, MatrixData,
-  MailConfiguration, PlanData, SessionMode, UserProfile, WorkshopData,
+  LineScheduleData, MailConfiguration, PlanData, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 
 const API = import.meta.env.VITE_API_URL || "/api";
@@ -34,6 +34,10 @@ export const api = {
   activePlan: () => optional<PlanData>("/plans/active"),
   matrix: (params = "") => optional<MatrixData>(`/plans/active/matrix${params ? `?${params}` : ""}`),
   lines: () => request<LineData[]>("/lines"),
+  lineSchedule: (lineId: number, start: string, days = 14) => request<LineScheduleData>(`/lines/${lineId}/schedule?start=${encodeURIComponent(start)}&days=${days}`),
+  updateLineSchedule: (lineId: number, data: { schedule_code: string; anchor_date: string; slots: { capacity_date: string; day_hours: number; night_hours: number; note?: string | null }[] }) => request<{ ok: boolean; plan_recalculated: boolean }>(`/lines/${lineId}/schedule`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+  }),
   workshops: () => request<WorkshopData[]>("/lines/workshops"),
   catalog: (params = "") => request<CatalogData>(`/catalog${params ? `?${params}` : ""}`),
   updateCapability: (id: number, data: object) => request<{ ok: boolean }>(`/catalog/capabilities/${id}`, {

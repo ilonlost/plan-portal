@@ -4,10 +4,12 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
-from app.models.entities import PlanningRule, ProductionLine, ProductionPlan, User
+from app.models.entities import DemandItem, LineCapacity, PlanningRule, ProductionLine, ProductionPlan, User
+from app.services.line_schedule_service import DEFAULT_ANCHOR, default_schedule_code, ensure_line_capacities
 from app.services.plan_service import PlanService
 
 
@@ -30,9 +32,36 @@ def seed() -> None:
         existing_users = set(db.scalars(select(User.username)))
         db.add_all(user for user in demo_users if user.username not in existing_users)
         if db.scalar(select(ProductionLine.id).limit(1)):
+            lines = list(db.scalars(select(ProductionLine)))
+            for line in lines:
+                line.schedule_code = line.schedule_code or default_schedule_code(line.name)
+                line.schedule_anchor_date = line.schedule_anchor_date or DEFAULT_ANCHOR
             active_plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
             if active_plan:
-                PlanService(db).recalculate_load(active_plan)
+                ensure_line_capacities(db, lines, active_plan.horizon_start, active_plan.horizon_end, refresh_generated=True)
+                capacity = {
+                    (row.line_id, row.capacity_date, row.shift): row.available and Decimal(row.available_hours) > 0
+                    for row in db.scalars(select(LineCapacity).where(
+                        LineCapacity.capacity_date >= active_plan.horizon_start,
+                        LineCapacity.capacity_date <= active_plan.horizon_end,
+                    ))
+                }
+                production_items = [item for item in active_plan.schedule_items if item.schedule_kind == "production"]
+                invalid_slots = any(
+                    item.line_id and item.production_date and not capacity.get((item.line_id, item.production_date, item.shift), False)
+                    for item in production_items
+                )
+                service = PlanService(db)
+                if invalid_slots:
+                    demand_ids = {item.demand_item_id for item in production_items if item.demand_item_id}
+                    demands = list(db.scalars(
+                        select(DemandItem).where(DemandItem.id.in_(demand_ids)).options(joinedload(DemandItem.product))
+                    ))
+                    if demands:
+                        service.calculate(active_plan, demands, "line_schedules_applied")
+                else:
+                    service.refresh_sequence_and_cleanings(active_plan)
+                    service.recalculate_load(active_plan)
             db.commit()
             return
         priority = 10
@@ -43,6 +72,7 @@ def seed() -> None:
                     workshop_code=workshop_code, workshop_name=workshop_name,
                     working_hours=Decimal("22"), default_capacity=Decimal("0"),
                     capacity_unit="кг/день", priority=priority,
+                    schedule_code=default_schedule_code(line_name), schedule_anchor_date=DEFAULT_ANCHOR,
                     comments="Структура из файла «План производства 12.08.2026» · 22 ч производства + 2 ч обеда",
                 ))
                 priority += 10

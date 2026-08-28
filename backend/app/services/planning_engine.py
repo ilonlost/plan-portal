@@ -24,6 +24,7 @@ class DemandInput:
     source_kind: str = "generic"
     marking_date: date | None = None
     warnings: tuple[str, ...] = ()
+    mono_group: str = ""
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class CapabilityInput:
     line_priority: int = 100
     batch_quantum_kg: Decimal | None = None
     min_order_kg: Decimal | None = None
+    workshop_code: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,11 +96,13 @@ class PlanningEngine:
         for slot in capacities:
             shifts_by_day_line[(slot.line_id, slot.capacity_date)].append(slot.shift)
         used_hours: dict[tuple[int, date, str], Decimal] = defaultdict(lambda: Decimal("0"))
+        last_group: dict[tuple[int, date, str], str] = {}
+        seen_groups: dict[tuple[int, date], set[str]] = defaultdict(set)
         result: list[PlannedItem] = []
 
         source_rank = {"ohl": 0, "generic": 1, "zam": 2}
         for demand in sorted(demands, key=lambda item: (
-            source_rank.get(item.source_kind, 1), item.due_date, item.priority, item.requested_date, item.id,
+            source_rank.get(item.source_kind, 1), item.due_date, item.mono_group, item.priority, item.requested_date, item.id,
         )):
             options = compatible.get(demand.product_id, [])
             if not options:
@@ -135,22 +139,37 @@ class PlanningEngine:
                 available = []
                 for capability, production_date, shift in candidates:
                     key = (capability.line_id, production_date, shift)
+                    day_key = (capability.line_id, production_date)
                     capacity = capacity_by_slot[key]
-                    free_hours = max(Decimal("0"), capacity - used_hours[key])
+                    # На ПЦ каждый новый блок монопродукта резервирует часовую мойку.
+                    # Остальные SKU той же группы используют уже зарезервированную мойку.
+                    needs_wash = bool(
+                        capability.workshop_code == "PC"
+                        and (demand.mono_group or demand.sku) not in seen_groups[day_key]
+                    )
+                    wash_hours = Decimal("1") if needs_wash else Decimal("0")
+                    free_hours = max(Decimal("0"), capacity - used_hours[key] - wash_hours)
                     free_kg = free_hours * capability.units_per_hour
                     free_quantized = self._floor_quantum(free_kg, quantum)
                     if free_quantized >= quantum:
                         utilization = used_hours[key] / capacity if capacity else Decimal("999")
-                        available.append((utilization, production_date, self._shift_order(shift), capability.line_priority, capability, shift, free_quantized))
+                        if capability.workshop_code == "PC":
+                            setup_rank = 0 if last_group.get(key) == (demand.mono_group or demand.sku) else 1 if used_hours[key] == 0 else 2
+                        else:
+                            setup_rank = 0
+                        available.append((setup_rank, utilization, production_date, self._shift_order(shift), capability.line_priority, capability, shift, free_quantized, wash_hours))
                 if not available:
                     break
-                available.sort(key=lambda item: item[:4])
-                _, production_date, _, _, capability, shift, free_kg = available[0]
+                available.sort(key=lambda item: item[:5])
+                _, _, production_date, _, _, capability, shift, free_kg, wash_hours = available[0]
                 # Keep a batch together when it fits. The next demand will select the
                 # least-loaded slot, which balances shifts without fragmenting every SKU.
                 quantity = min(remaining, free_kg)
                 hours = self._hours(quantity, capability.units_per_hour)
-                used_hours[(capability.line_id, production_date, shift)] += hours
+                slot_key = (capability.line_id, production_date, shift)
+                used_hours[slot_key] += wash_hours + hours
+                last_group[slot_key] = demand.mono_group or demand.sku
+                seen_groups[(capability.line_id, production_date)].add(demand.mono_group or demand.sku)
                 remaining -= quantity
                 result.append(self._item(
                     demand, capability, production_date, quantity, hours,

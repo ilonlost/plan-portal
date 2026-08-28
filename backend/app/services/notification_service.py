@@ -31,6 +31,16 @@ def _date(value: object) -> str:
         return text or "—"
 
 
+def _duration(value: object) -> str:
+    minutes = round(float(value or 0) * 60)
+    hours, remainder = divmod(minutes, 60)
+    if hours and remainder:
+        return f"{hours} ч {remainder} мин"
+    if hours:
+        return f"{hours} ч"
+    return f"{remainder} мин"
+
+
 def build_plan_email_html(
     configuration: dict,
     plan_name: str,
@@ -48,20 +58,21 @@ def build_plan_email_html(
         for line_name, rows in lines.items():
             body = "".join(
                 '<tr>'
+                f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">№{int(row.get("sequence") or 0)}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">{escape(str(row.get("sku") or "—"))}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1">{escape(str(row.get("product_name") or "—"))}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape("День" if row.get("shift") == "day" else "Ночь")}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("quantity_units") or 0):,.0f} шт.</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("quantity_kg") or 0):,.2f} кг</td>'
-                f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("required_hours") or 0):,.2f} ч</td>'
-                f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape(str(row.get("source_kind") or "").upper())}</td>'
+                f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{escape(_duration(row.get("required_hours")))}</td>'
+                f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape("МОЙКА" if row.get("schedule_kind") == "cleaning" else str(row.get("source_kind") or "").upper())}</td>'
                 '</tr>' for row in rows
             )
             sections.append(
                 f'<tr><td style="padding:8px 24px 18px"><div style="border:1px solid #dfe2e6;border-left:4px solid {escape(accent)}">'
                 f'<div style="padding:10px 12px;background:#f4f5f7;font-weight:700;color:#202124">{escape(line_name)} · {len(rows)} поз.</div>'
                 '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px;color:#34373c">'
-                '<tr style="background:#fafafa;color:#6f747c"><th align="left" style="padding:7px">SKU</th><th align="left">Готовая продукция</th><th align="left">Смена</th><th align="right">Штуки</th><th align="right">Кг</th><th align="right">Часы</th><th align="left">Источник</th></tr>'
+                '<tr style="background:#fafafa;color:#6f747c"><th align="left" style="padding:7px">№</th><th align="left">SKU</th><th align="left">Готовая продукция</th><th align="left">Смена</th><th align="right">Штуки</th><th align="right">Кг</th><th align="right">Время</th><th align="left">Источник</th></tr>'
                 f'{body}</table></div></td></tr>'
             )
     intro = escape(str(configuration.get("plan_intro") or "")).replace("\n", "<br>")

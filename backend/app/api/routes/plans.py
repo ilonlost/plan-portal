@@ -67,8 +67,7 @@ def active_plan_matrix(
     ))) if line_ids else []
     capacity_map: dict[tuple[int, date], Decimal] = {}
     for slot in capacities:
-        if slot.available:
-            capacity_map[(slot.line_id, slot.capacity_date)] = capacity_map.get((slot.line_id, slot.capacity_date), Decimal("0")) + Decimal(slot.available_hours)
+        capacity_map[(slot.line_id, slot.capacity_date)] = capacity_map.get((slot.line_id, slot.capacity_date), Decimal("0")) + (Decimal(slot.available_hours) if slot.available else Decimal("0"))
     dates = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
     workshops: dict[str, dict] = {}
     for line in lines:

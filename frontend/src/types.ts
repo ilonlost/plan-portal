@@ -9,12 +9,13 @@ export interface UserProfile {
 export interface SessionMode { auth_mode: string; mock_hint: string | null; }
 
 export interface ScheduleItem {
-  id: number; production_date: string | null; marking_date: string | null; line_id: number | null;
+  id: number; sequence: number; production_date: string | null; marking_date: string | null; line_id: number | null;
   line_code: string | null; line_name: string | null; workshop_code: string | null; workshop_name: string | null;
   product_id: number | null; product_name: string; sku: string; quantity: number; required_hours: number;
   load_percent: number; shift: string; source_quantity: number | null; source_unit: string;
   quantity_kg: number | null; quantity_units: number | null; box_count: number | null; batch_count: number | null;
-  schedule_kind: "production" | "downtime" | "maintenance" | "trial"; duration_hours: number | null;
+  schedule_kind: "production" | "cleaning" | "downtime" | "maintenance" | "trial"; duration_hours: number | null;
+  mono_group: string | null;
   reason: string | null; actual_quantity_kg: number | null; status: Status; source_kind: "ohl" | "zam" | "generic";
   source: string; locked: boolean; excluded: boolean; due_date: string | null; warnings: string[];
   execution_status: "not_started" | "in_progress" | "completed" | "partially_shipped" | "not_shipped";
@@ -40,7 +41,8 @@ export interface MatrixData {
 export interface LineData {
   id: number; code: string; name: string; workshop_code: string; workshop_name: string; status: string;
   working_hours: number; default_capacity: number; capacity_unit: string; priority: number;
-  comments?: string; product_count: number; today_load: number;
+  comments?: string; schedule_code: string; schedule_label: string; schedule_anchor_date: string | null;
+  product_count: number; today_load: number;
 }
 export interface WorkshopData { code: string; name: string; lines: { id: number; code: string; name: string; status: string }[]; }
 
@@ -52,6 +54,15 @@ export interface CatalogRow {
   capacity_type: string | null; restrictions: string | null; legacy_quantum_units: number | null;
   legacy_daily_capacity_units: number | null; legacy_capacity_unit: string | null;
   recipe_component_count: number; reference_source: string | null;
+  mono_group: string | null;
+}
+
+export interface LineScheduleSlot {
+  capacity_date: string; day_hours: number; night_hours: number; manual_override: boolean; note: string | null;
+}
+export interface LineScheduleData {
+  line_id: number; line_name: string; workshop_code: string; schedule_code: string; schedule_label: string;
+  anchor_date: string; patterns: Record<string, string>; slots: LineScheduleSlot[];
 }
 export interface SourceFile {
   id: number; file_name: string; template_type: string; status: string; total_rows: number;

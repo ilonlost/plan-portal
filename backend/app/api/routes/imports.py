@@ -15,6 +15,7 @@ from app.models.entities import (
 )
 from app.schemas.common import ImportConfirmRequest, ImportPreview
 from app.services.import_service import ExcelImportService
+from app.services.line_schedule_service import ensure_line_capacities
 from app.services.plan_service import PlanService, plan_dict
 from app.services.notification_service import send_notification
 
@@ -189,22 +190,8 @@ def _upsert_capability(db: Session, product: Product, row) -> LineCapability | N
 def _ensure_shift_capacities(db: Session, demands: list[DemandItem], start, end) -> None:
     product_ids = {item.product_id for item in demands if item.product_id}
     line_ids = set(db.scalars(select(LineCapability.line_id).where(LineCapability.product_id.in_(product_ids))))
-    existing = set(db.execute(select(
-        LineCapacity.line_id, LineCapacity.capacity_date, LineCapacity.shift,
-    ).where(
-        LineCapacity.line_id.in_(line_ids), LineCapacity.capacity_date >= start, LineCapacity.capacity_date <= end,
-    )).all())
-    day = start
-    while day <= end:
-        for line_id in line_ids:
-            for shift in ("day", "night"):
-                if (line_id, day, shift) not in existing:
-                    db.add(LineCapacity(
-                        line_id=line_id, capacity_date=day, shift=shift,
-                        available_hours=Decimal("11"), available=True,
-                        note="11 ч производства + 1 ч обед",
-                    ))
-        day += timedelta(days=1)
+    lines = list(db.scalars(select(ProductionLine).where(ProductionLine.id.in_(line_ids))))
+    ensure_line_capacities(db, lines, start, end)
 
 
 WORKSHOP_LINES = {

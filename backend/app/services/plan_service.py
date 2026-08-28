@@ -8,10 +8,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.entities import (
-    DemandItem, LineCapability, LineCapacity, PlanStatus, ProductionLine, ProductionPlan,
+    DemandItem, LineCapability, LineCapacity, PlanStatus, Product, ProductionLine, ProductionPlan,
     ProductionPlanVersion, ProductionScheduleItem, ScheduleStatus,
 )
 from app.services.planning_engine import CapabilityInput, CapacityInput, DemandInput, PlanningEngine
+from app.services.planning_rules import mono_group
 
 
 class PlanService:
@@ -37,12 +38,14 @@ class PlanService:
                 box_quantum_kg=Decimal(item.product.box_weight_kg) if item.product and item.product.box_weight_kg else None,
                 exact_date=item.exact_date, source_kind=item.source_kind, marking_date=item.marking_date,
                 warnings=tuple(item.validation_errors or []),
+                mono_group=mono_group(item.product.name if item.product else item.product_name, item.product.mono_group if item.product else None),
             ) for item in demands if item.valid],
             capabilities=[CapabilityInput(
                 line_id=item.line_id, product_id=item.product_id, units_per_hour=Decimal(item.units_per_hour),
                 line_priority=item.line.priority,
                 batch_quantum_kg=Decimal(item.batch_quantum_kg) if item.batch_quantum_kg else None,
                 min_order_kg=Decimal(item.min_order_kg) if item.min_order_kg else None,
+                workshop_code=item.line.workshop_code,
             ) for item in capabilities],
             capacities=[CapacityInput(
                 line_id=item.line_id, capacity_date=item.capacity_date,
@@ -53,10 +56,10 @@ class PlanService:
         for existing in list(plan.schedule_items):
             self.db.delete(existing)
         self.db.flush()
-        for index, item in enumerate(result, start=1):
+        for item in result:
             plan.schedule_items.append(ProductionScheduleItem(
                 demand_item_id=item.demand_id, product_id=item.product_id, line_id=item.line_id,
-                production_date=item.production_date, sequence=index, quantity=item.quantity,
+                production_date=item.production_date, sequence=0, quantity=item.quantity,
                 source_quantity=item.source_quantity, source_unit=item.source_unit,
                 quantity_kg=item.quantity_kg, box_count=item.box_count, batch_count=item.batch_count,
                 source_kind=item.source_kind, marking_date=item.marking_date,
@@ -66,6 +69,7 @@ class PlanService:
             ))
         plan.status = PlanStatus.NEEDS_REVIEW if any(item.status in {"conflict", "unscheduled"} for item in result) else PlanStatus.CALCULATED
         self.db.flush()
+        self.refresh_sequence_and_cleanings(plan)
         self.recalculate_load(plan)
         self.create_version(plan, change_type, "Автоматический расчёт по правилам конечной мощности")
         self.db.commit()
@@ -74,7 +78,10 @@ class PlanService:
 
     def recalculate_load(self, plan: ProductionPlan) -> None:
         lines = {line.id: line for line in self.db.scalars(select(ProductionLine))}
-        capacity_rows = {(item.line_id, item.capacity_date, item.shift): Decimal(item.available_hours) for item in self.db.scalars(select(LineCapacity)) if item.available}
+        capacity_rows = {
+            (item.line_id, item.capacity_date, item.shift): Decimal(item.available_hours) if item.available else Decimal("0")
+            for item in self.db.scalars(select(LineCapacity))
+        }
         groups: dict[tuple[int, date, str], list[ProductionScheduleItem]] = defaultdict(list)
         for item in plan.schedule_items:
             if item.line_id and item.production_date and not item.excluded:
@@ -116,7 +123,23 @@ class PlanService:
             ))
             if capability and Decimal(capability.units_per_hour) > 0:
                 item.required_hours = (Decimal(item.quantity) / Decimal(capability.units_per_hour)).quantize(Decimal("0.01"))
+        if item.line_id and item.production_date:
+            selected = self.db.scalar(select(LineCapacity).where(
+                LineCapacity.line_id == item.line_id,
+                LineCapacity.capacity_date == item.production_date,
+                LineCapacity.shift == item.shift,
+            ))
+            if not selected or not selected.available or Decimal(selected.available_hours) <= 0:
+                replacement = self.db.scalar(select(LineCapacity).where(
+                    LineCapacity.line_id == item.line_id,
+                    LineCapacity.capacity_date == item.production_date,
+                    LineCapacity.available.is_(True),
+                    LineCapacity.available_hours > 0,
+                ).order_by(LineCapacity.shift))
+                if replacement:
+                    item.shift = replacement.shift
         item.source = "manual"
+        self.refresh_sequence_and_cleanings(plan)
         self.recalculate_load(plan)
         self.create_version(plan, "manual_change", values.get("comment") or "Ручная корректировка задания")
         self.db.commit()
@@ -137,6 +160,7 @@ class PlanService:
         )
         plan.schedule_items.append(event)
         self.db.flush()
+        self.refresh_sequence_and_cleanings(plan)
         self.recalculate_load(plan)
         self.create_version(plan, f"manual_{kind}", f"{kind}: {values['reason']}")
         self.db.commit()
@@ -147,6 +171,7 @@ class PlanService:
         description = item.reason or (item.product.name if item.product else "задание")
         self.db.delete(item)
         self.db.flush()
+        self.refresh_sequence_and_cleanings(plan)
         self.recalculate_load(plan)
         self.create_version(plan, "manual_delete", f"Удалено: {description}")
         self.db.commit()
@@ -174,6 +199,66 @@ class PlanService:
         self.db.commit()
         return item.plan
 
+    def refresh_sequence_and_cleanings(self, plan: ProductionPlan) -> None:
+        for existing in list(plan.schedule_items):
+            if existing.schedule_kind == "cleaning" and existing.source == "auto":
+                plan.schedule_items.remove(existing)
+        self.db.flush()
+        lines = {line.id: line for line in self.db.scalars(select(ProductionLine))}
+        products = {product.id: product for product in self.db.scalars(select(Product))}
+        grouped: dict[tuple[int, date], list[ProductionScheduleItem]] = defaultdict(list)
+        unscheduled: list[ProductionScheduleItem] = []
+        for item in plan.schedule_items:
+            if item.line_id and item.production_date and not item.excluded:
+                grouped[(item.line_id, item.production_date)].append(item)
+            else:
+                unscheduled.append(item)
+        source_rank = {"ohl": 0, "generic": 1, "zam": 2}
+        for (line_id, production_date), items in sorted(grouped.items(), key=lambda value: (value[0][1], lines[value[0][0]].priority)):
+            productions = [item for item in items if item.schedule_kind == "production"]
+            events = [item for item in items if item.schedule_kind != "production"]
+            productions.sort(key=lambda item: (
+                0 if item.shift == "day" else 1,
+                source_rank.get(item.source_kind, 1),
+                mono_group(products[item.product_id].name, products[item.product_id].mono_group) if item.product_id in products else "",
+                item.sequence, item.id or 0,
+            ))
+            sequence = 1
+            previous_group: str | None = None
+            previous_shift = "day"
+            for item in productions:
+                product = products.get(item.product_id)
+                current_group = mono_group(product.name, product.mono_group) if product else str(item.product_id)
+                if lines[line_id].workshop_code == "PC" and previous_group and previous_group != current_group:
+                    wash = ProductionScheduleItem(
+                        plan_id=plan.id, product_id=None, line_id=line_id, production_date=production_date,
+                        shift=previous_shift, sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"),
+                        required_hours=Decimal("1"), duration_hours=Decimal("1"), schedule_kind="cleaning",
+                        reason=f"Мойка после группы «{previous_group}»",
+                        source_kind="generic", source="auto", locked=True, status=ScheduleStatus.PLANNED,
+                    )
+                    plan.schedule_items.append(wash)
+                    sequence += 1
+                item.sequence = sequence
+                sequence += 1
+                previous_group = current_group
+                previous_shift = item.shift
+            if lines[line_id].workshop_code == "PC" and previous_group:
+                plan.schedule_items.append(ProductionScheduleItem(
+                    plan_id=plan.id, product_id=None, line_id=line_id, production_date=production_date,
+                    shift=previous_shift, sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"),
+                    required_hours=Decimal("1"), duration_hours=Decimal("1"), schedule_kind="cleaning",
+                    reason=f"Мойка после группы «{previous_group}»",
+                    source_kind="generic", source="auto", locked=True, status=ScheduleStatus.PLANNED,
+                ))
+                sequence += 1
+            for event in sorted(events, key=lambda value: (0 if value.shift == "day" else 1, value.sequence, value.id or 0)):
+                event.sequence = sequence
+                sequence += 1
+        for sequence, item in enumerate(unscheduled, start=1):
+            item.sequence = sequence
+        self.db.flush()
+
     def create_version(self, plan: ProductionPlan, change_type: str, comment: str) -> None:
         current = self.db.scalar(select(func.max(ProductionPlanVersion.version_number)).where(ProductionPlanVersion.plan_id == plan.id)) or 0
         snapshot = {"status": plan.status.value, "items": [
@@ -196,6 +281,7 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
             quantity_units = (Decimal(item.quantity_kg or item.quantity or 0) / unit_weight).quantize(Decimal("0.001"))
     return {
         "id": item.id,
+        "sequence": item.sequence,
         "production_date": item.production_date,
         "line_id": item.line_id,
         "line_code": item.line.code if item.line else None,
@@ -203,13 +289,14 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "workshop_code": item.line.workshop_code if item.line else None,
         "workshop_name": item.line.workshop_name if item.line else None,
         "product_id": item.product_id,
-        "product_name": item.product.name if item.product else ({"downtime": "Простой", "maintenance": "ТО", "trial": "Проработка"}.get(item.schedule_kind, "Служебное событие")),
+        "product_name": item.product.name if item.product else ({"cleaning": "Мойка линии", "downtime": "Простой", "maintenance": "ТО", "trial": "Проработка"}.get(item.schedule_kind, "Служебное событие")),
         "sku": item.product.sku if item.product else "—",
         "quantity": item.quantity,
         "source_quantity": item.source_quantity,
         "source_unit": item.source_unit,
         "quantity_kg": item.quantity_kg,
         "quantity_units": quantity_units,
+        "mono_group": mono_group(item.product.name, item.product.mono_group) if item.product else None,
         "box_count": item.box_count,
         "batch_count": item.batch_count,
         "schedule_kind": item.schedule_kind,

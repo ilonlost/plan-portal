@@ -58,6 +58,7 @@ class Product(Base):
     legacy_capacity_unit: Mapped[str | None] = mapped_column(String(40))
     recipe_component_count: Mapped[int] = mapped_column(Integer, default=0)
     reference_source: Mapped[str | None] = mapped_column(String(240))
+    mono_group: Mapped[str | None] = mapped_column(String(160), index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     capabilities: Mapped[list[LineCapability]] = relationship(back_populates="product", cascade="all, delete-orphan")
 
@@ -75,6 +76,8 @@ class ProductionLine(Base):
     capacity_unit: Mapped[str] = mapped_column(String(30), default="часов/день")
     priority: Mapped[int] = mapped_column(Integer, default=100)
     comments: Mapped[str | None] = mapped_column(Text)
+    schedule_code: Mapped[str] = mapped_column(String(40), default="day_daily")
+    schedule_anchor_date: Mapped[date | None] = mapped_column(Date)
     capabilities: Mapped[list[LineCapability]] = relationship(back_populates="line", cascade="all, delete-orphan")
     capacities: Mapped[list[LineCapacity]] = relationship(back_populates="line", cascade="all, delete-orphan")
 
@@ -109,6 +112,7 @@ class LineCapacity(Base):
     max_units: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     available: Mapped[bool] = mapped_column(Boolean, default=True)
     note: Mapped[str | None] = mapped_column(String(300))
+    manual_override: Mapped[bool] = mapped_column(Boolean, default=False)
     line: Mapped[ProductionLine] = relationship(back_populates="capacities")
 
 
