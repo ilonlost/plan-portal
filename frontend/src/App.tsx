@@ -37,6 +37,7 @@ export default function App() {
   const [planZoom, setPlanZoom] = useState(() => { const value = Number(localStorage.getItem("plan-zoom") || 100); return Number.isFinite(value) ? Math.max(75, Math.min(150, value)) : 100; });
   const [mailOpen, setMailOpen] = useState(false);
   const [manualTaskOpen, setManualTaskOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -122,9 +123,9 @@ export default function App() {
         <Nav active={page === "catalog"} icon="≡" label="Справочник" onClick={() => setPage("catalog")} />
         {canPlan(user) && <Nav active={page === "import"} icon="⇧" label="Загрузка Excel" onClick={() => setPage("import")} />}
         <Nav active={page === "sources"} icon="◫" label="Источники данных" onClick={() => setPage("sources")} />
-        <a className="nav-download" href="/PLAN-PORTAL-Функционал.pptx">▣&nbsp;&nbsp; Презентация</a>
         {user.role === "admin" && <Nav active={page === "admin"} icon="⚙" label="Администрирование" onClick={() => setPage("admin")} />}
       </nav>
+      <div className="sidebar-tip"><span>?</span><b>Нужна помощь?</b><small>Инструкция, роли и выгрузки</small><button onClick={() => setHelpOpen(true)}>Открыть инструкцию</button></div>
       <div className="user-card"><span>{initials(user.display_name)}</span><div><b>{user.display_name}</b><small>{user.access_label}{user.line_name ? ` · ${user.line_name}` : ""}</small></div><button title="Выйти" onClick={() => void logout()}>↪</button></div>
     </aside>
     <main>
@@ -164,6 +165,7 @@ export default function App() {
       onChanged={async text => { setNotice(text); setSelectedItem(null); await refreshPlan(); }} />}
     {mailOpen && matrix && <PlanMailModal planId={matrix.plan.id} start={viewDate} end={addDays(viewDate, viewDays - 1)} lines={lines} onClose={() => setMailOpen(false)} onNotice={setNotice} onError={setError} />}
     {manualTaskOpen && matrix && <ManualTaskModal planId={matrix.plan.id} lines={lines} initialDate={viewDate} onClose={() => setManualTaskOpen(false)} onError={setError} onSaved={async () => { setManualTaskOpen(false); setNotice("Ручное задание добавлено и загрузка пересчитана"); await refreshPlan(); }} />}
+    {helpOpen && <PlanHelpModal onClose={() => setHelpOpen(false)} />}
   </div>;
 }
 
@@ -346,6 +348,23 @@ function AdminUserRow({ row, lines, onSaved, onError }: { row: AdminOverview["us
   const [role, setRole] = useState(row.role); const currentLine = lines.find(line => line.name === row.line_name); const [lineId, setLineId] = useState(String(currentLine?.id || "")); const [active, setActive] = useState(row.active); const [busy, setBusy] = useState(false);
   const save = async () => { setBusy(true); try { await api.updateUserAccess(row.id, role, lineId ? Number(lineId) : null, active); await onSaved(); } catch (e) { onError(message(e)); } finally { setBusy(false); } };
   return <tr><td><b>{row.display_name}</b><small>{row.username}{row.email ? ` · ${row.email}` : ""}</small></td><td><select value={role} onChange={e => setRole(e.target.value)}><option value="admin">Администратор</option><option value="planner">Планер</option><option value="master">Мастер</option><option value="viewer">Просмотр</option></select></td><td><select disabled={role !== "master"} value={lineId} onChange={e => setLineId(e.target.value)}><option value="">Выберите линию</option>{lines.map(line => <option value={line.id} key={line.id}>{line.workshop_name} · {line.name}</option>)}</select></td><td><label className="check-label"><input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} /> Активен</label></td><td><button className="button secondary" disabled={busy} onClick={() => void save()}>Сохранить</button></td></tr>;
+}
+
+const planHelpSlides = [
+  { kicker: "PLAN PORTAL", title: "Производственный план —\nвиден и управляем", text: "Портал объединяет ОХЛ, ЗАМ, мощности линий, графики работы и исполнение заданий в одном месте.", points: ["Карточный, недельный и табличный виды", "SKU, штуки, килограммы, короба и время на одном экране", "Переключение масштаба для удобной работы с планом"] },
+  { kicker: "1. ПЛАН", title: "Начните с общего плана", text: "Выберите нужный день, неделю или три недели. Откройте цех, затем линию — фильтр сохраняет понятный контекст.", points: ["«Все цеха» — сводная загрузка", "ПЦ и КЦ — отдельные блоки", "Клик по карточке открывает детали задания"] },
+  { kicker: "2. ЗАГРУЗКА", title: "Загрузите исходный Excel", text: "Планер загружает недельный ОХЛ, квартальный ЗАМ или справочник. Система проверяет строки до формирования плана.", points: ["ОХЛ остаётся на дате из источника", "Для бургеров и сэндвичей учитывается ДП/ДМ", "Штуки переводятся в кг по параметрам продукции"] },
+  { kicker: "3. РАССТАНОВКА", title: "Сначала ОХЛ, затем ЗАМ", text: "ОХЛ закрепляется за требуемой датой. ЗАМ занимает остаток доступной мощности линии, а система контролирует перегрузку.", points: ["Квант коробов и замеса соблюдается", "Задания меньше минуты отображаются как 1 минута", "На ПЦ между группами продукции включается мойка"] },
+  { kicker: "4. ГРАФИКИ", title: "Мощность зависит от графика линии", text: "В справочнике планер задаёт дневные и ночные смены, использует готовый или создаёт свой шаблон.", points: ["Сэндвичи — день и ночь", "2/2 — дневные смены", "ПЦ ведётся производственными сутками 15:00–15:00"] },
+  { kicker: "5. РУЧНАЯ РАБОТА", title: "Планер может изменить план прямо в портале", text: "Создавайте задания с нуля, переносите карточки между днями недели и меняйте линию, смену или объём.", points: ["Каждое изменение пересчитывает загрузку", "Изменения фиксируются в журнале аудита", "Открытый план синхронизируется у коллег автоматически"] },
+  { kicker: "6. ИСПОЛНЕНИЕ", title: "Мастер работает только со своей линией", text: "Мастер видит задания назначенной линии, проставляет статус исполнения и указывает причину неотгрузки.", points: ["Планер — полное редактирование", "Мастер — просмотр и статусы своей линии", "Администратор — доступы, справочник, почта и очистка плана"] },
+  { kicker: "7. ВЫГРУЗКИ", title: "Передайте план без ручной подготовки", text: "Верхняя панель содержит выгрузку XLSM, CSB TXT и почтовый план. Все файлы формируются из актуального состояния плана.", points: ["CSB: «Скачать файл для прогрузки»", "Письмо: выбор линий и адресатов", "Excel: формат производственного шаблона"] },
+];
+
+function PlanHelpModal({ onClose }: { onClose: () => void }) {
+  const [presentationOpen, setPresentationOpen] = useState(false); const [slide, setSlide] = useState(0); const current = planHelpSlides[slide];
+  useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") presentationOpen ? setPresentationOpen(false) : onClose(); if (presentationOpen && event.key === "ArrowRight") setSlide(value => Math.min(planHelpSlides.length - 1, value + 1)); if (presentationOpen && event.key === "ArrowLeft") setSlide(value => Math.max(0, value - 1)); }; window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey); }, [presentationOpen, onClose]);
+  return <div className="modal-backdrop help-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) presentationOpen ? setPresentationOpen(false) : onClose(); }}>{presentationOpen ? <section className="presentation-viewer plan-presentation-viewer"><header><button onClick={() => setPresentationOpen(false)}>← К инструкции</button><span>{slide + 1} / {planHelpSlides.length}</span><button aria-label="Закрыть" onClick={onClose}>×</button></header><article><small>{current.kicker}</small><h2>{current.title}</h2><p>{current.text}</p><ul>{current.points.map(point => <li key={point}>{point}</li>)}</ul></article><footer><div>{planHelpSlides.map((_item, index) => <button key={index} aria-label={`Слайд ${index + 1}`} className={index === slide ? "active" : ""} onClick={() => setSlide(index)} />)}</div><span><button disabled={slide === 0} onClick={() => setSlide(value => value - 1)}>← Назад</button><button disabled={slide === planHelpSlides.length - 1} onClick={() => setSlide(value => value + 1)}>Далее →</button></span></footer></section> : <section className="modal help-modal"><header><div><small>БАЗА ЗНАНИЙ</small><h2>Инструкции PLAN Portal</h2><p>Короткая презентация для планера, мастера и администратора.</p></div><button onClick={onClose}>×</button></header><div className="help-downloads"><button onClick={() => { setSlide(0); setPresentationOpen(true); }}><span>▶</span><b>Презентация по функционалу</b><small>Откроется и проигрывается прямо на сайте</small></button><a href="/PLAN-PORTAL-Функционал.pptx" download><span>PPTX</span><b>Скачать презентацию</b><small>Файл для самостоятельного просмотра</small></a></div><div className="help-guide-card"><h4>Коротко по ролям</h4><ul><li><b>Планер:</b> загружает данные, меняет задания, линии и графики.</li><li><b>Мастер:</b> видит свою линию и проставляет статусы исполнения.</li><li><b>Администратор:</b> настраивает права, письма, получателей и справочник.</li></ul></div><footer><button className="button secondary" onClick={onClose}>Закрыть</button></footer></section>}</div>;
 }
 
 function ManualTaskModal({ planId, lines, initialDate, onClose, onSaved, onError }: { planId: number; lines: LineData[]; initialDate: string; onClose: () => void; onSaved: () => Promise<void>; onError: (v: string) => void }) {
