@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation, ROUND_CEILING
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
 from openpyxl import load_workbook
@@ -77,28 +77,15 @@ class ExcelImportService:
                 warnings: list[str] = []
                 unit_weight = packaging["unit_weight_kg"]
                 units_per_box = packaging["units_per_box"]
-                if unit_weight is None:
-                    errors.append("Не удалось определить вес единицы из наименования")
-                    quantity_kg = None
-                    boxes = None
-                else:
-                    planned_pieces = source_value
-                    boxes = None
-                    if units_per_box and units_per_box > 0:
-                        boxes = (source_value / units_per_box).quantize(Decimal("0.001"))
-                        rounded_boxes = (source_value / units_per_box).to_integral_value(rounding=ROUND_CEILING)
-                        planned_pieces = rounded_boxes * units_per_box
-                        if planned_pieces != source_value:
-                            warnings.append(
-                                f"{self._display_number(source_value)} шт. не делятся на короб "
-                                f"{self._display_number(units_per_box)} шт.; задание округлено до "
-                                f"{self._display_number(planned_pieces)} шт. ({self._display_number(rounded_boxes)} кор.)"
-                            )
-                            boxes = rounded_boxes
-                    quantity_kg = (planned_pieces * unit_weight).quantize(Decimal("0.001"))
+                # В недельном источнике ОХЛ значения уже приведены в килограммах.
+                # Вес единицы и упаковка нужны лишь для производных показателей, но не
+                # участвуют в преобразовании исходного объёма.
+                quantity_kg = source_value
+                box_weight = packaging["box_weight_kg"]
+                boxes = (source_value / box_weight).quantize(Decimal("0.001")) if box_weight and box_weight > 0 else None
                 rows.append(ImportRow(
                     row_number=row_number, sku=sku, product_name=name,
-                    quantity=quantity_kg, source_quantity=source_value, source_unit="шт",
+                    quantity=quantity_kg, source_quantity=source_value, source_unit="кг",
                     quantity_kg=quantity_kg, unit_weight_kg=unit_weight,
                     units_per_box=units_per_box, box_weight_kg=packaging["box_weight_kg"], box_count=boxes,
                     requested_date=source_date - timedelta(days=1) if advance_marking else source_date,
@@ -114,8 +101,8 @@ class ExcelImportService:
             file_name, "ohl_daily_v1", "ohl_daily", "ОХЛ", rows,
             ["Даты ОХЛ зафиксированы: алгоритм не переносит объём на соседние дни.",
              "Для сэндвичей и бургеров с признаком авансовой маркировки ДП ставится на один день раньше ДМ.",
-             "Значения источника трактуются как штуки и переводятся в кг по весу из наименования.",
-             "Задание округляется вверх до целого короба; отклонение показывается предупреждением."],
+             "Значения источника уже указаны в килограммах и сохраняются без пересчёта из штук.",
+             "Вес единицы и упаковка используются только для расчёта справочных штук и коробов."],
         )
 
     def _parse_quarter_weekly(self, workbook, file_name: str) -> ImportPreview:

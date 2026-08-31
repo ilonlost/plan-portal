@@ -113,12 +113,13 @@ class PlanningEngine:
                 continue
 
             quantum = self._quantum(demand, options)
-            planned_total = self._ceil_quantum(demand.quantity, quantum)
+            source_is_exact_kg = demand.source_kind == "ohl" and demand.source_unit == "кг"
+            planned_total = demand.quantity if source_is_exact_kg else self._ceil_quantum(demand.quantity, quantum)
             warnings = list(demand.warnings)
             if planned_total > demand.quantity:
                 warnings.append(f"Объём округлён с {demand.quantity} до {planned_total} кг по кванту {quantum} кг")
             min_order = min((item.min_order_kg for item in options if item.min_order_kg and item.min_order_kg > 0), default=None)
-            if min_order and planned_total < min_order:
+            if min_order and planned_total < min_order and not source_is_exact_kg:
                 old_total = planned_total
                 planned_total = self._ceil_quantum(min_order, quantum)
                 warnings.append(f"Минимальный заказ: объём увеличен с {old_total} до {planned_total} кг")
@@ -150,8 +151,9 @@ class PlanningEngine:
                     wash_hours = Decimal("1") if needs_wash else Decimal("0")
                     free_hours = max(Decimal("0"), capacity - used_hours[key] - wash_hours)
                     free_kg = free_hours * capability.units_per_hour
-                    free_quantized = self._floor_quantum(free_kg, quantum)
-                    if free_quantized >= quantum:
+                    free_quantized = free_kg if source_is_exact_kg else self._floor_quantum(free_kg, quantum)
+                    can_fit = free_quantized > 0 if source_is_exact_kg else free_quantized >= quantum
+                    if can_fit:
                         utilization = used_hours[key] / capacity if capacity else Decimal("999")
                         if capability.workshop_code == "PC":
                             setup_rank = 0 if last_group.get(key) == (demand.mono_group or demand.sku) else 1 if used_hours[key] == 0 else 2
@@ -199,10 +201,12 @@ class PlanningEngine:
         box_count = None
         if demand.source_unit == "шт" and demand.unit_weight_kg:
             source_quantity = (quantity / demand.unit_weight_kg).quantize(Decimal("0.001"))
-            if demand.units_per_box:
-                box_count = (source_quantity / demand.units_per_box).quantize(Decimal("0.001"))
         elif demand.source_unit == "кг":
             source_quantity = quantity
+        if demand.box_quantum_kg and demand.box_quantum_kg > 0:
+            box_count = (quantity / demand.box_quantum_kg).quantize(Decimal("0.001"))
+        elif source_quantity is not None and demand.units_per_box:
+            box_count = (source_quantity / demand.units_per_box).quantize(Decimal("0.001"))
         batch_count = (quantity / quantum).quantize(Decimal("0.001")) if quantum else None
         return PlannedItem(
             demand_id=demand.id, product_id=demand.product_id,

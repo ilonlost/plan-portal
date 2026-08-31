@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.entities import (
-    DemandItem, LineCapability, LineCapacity, PlanStatus, Product, ProductionLine, ProductionPlan,
+    AuditEvent, DemandItem, ImportedOrder, LineCapability, LineCapacity, PlanStatus, Product, ProductionLine, ProductionPlan,
     ProductionPlanVersion, ProductionScheduleItem, ScheduleStatus,
 )
 from app.services.planning_engine import CapabilityInput, CapacityInput, DemandInput, PlanningEngine
@@ -24,6 +24,55 @@ class PlanService:
         return self.db.scalar(
             select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc())
         )
+
+    def correct_legacy_ohl_source_units(self) -> int:
+        """Repair OHL imports made when the kg source was treated as pieces.
+
+        The original cell value was preserved in ``source_quantity``, so the
+        correction is deterministic and can safely rebuild the active plan.
+        """
+        rows = list(self.db.scalars(
+            select(DemandItem).where(DemandItem.source_kind == "ohl", DemandItem.source_unit == "шт")
+            .options(joinedload(DemandItem.product))
+        ))
+        if not rows:
+            return 0
+        for item in rows:
+            quantity_kg = Decimal(item.source_quantity if item.source_quantity is not None else item.quantity)
+            item.quantity = quantity_kg
+            item.quantity_kg = quantity_kg
+            item.source_unit = "кг"
+            box_weight = Decimal(item.product.box_weight_kg) if item.product and item.product.box_weight_kg else None
+            item.box_count = (quantity_kg / box_weight).quantize(Decimal("0.001")) if box_weight and box_weight > 0 else None
+            item.validation_errors = [warning for warning in (item.validation_errors or []) if "шт." not in warning and "округлено до" not in warning]
+
+        plan = self.active_plan()
+        demands = self._latest_source_demands()
+        if plan and demands:
+            plan.horizon_start = min(item.requested_date for item in demands)
+            plan.horizon_end = max(item.due_date for item in demands)
+            self.calculate(plan, demands, "ohl_source_kg_correction")
+            self.db.add(AuditEvent(
+                username="system", action="ohl_source_kg_corrected", entity_type="production_plan", entity_id=str(plan.id),
+                details={"demand_items": len(rows), "message": "ОХЛ: исходные значения исправлены с штук на кг"},
+            ))
+        self.db.commit()
+        return len(rows)
+
+    def _latest_source_demands(self) -> list[DemandItem]:
+        orders = list(self.db.scalars(select(ImportedOrder).where(
+            ImportedOrder.template_type.in_(("ohl_daily", "quarter_weekly")),
+        ).order_by(ImportedOrder.imported_at.desc(), ImportedOrder.id.desc())))
+        latest_ids: list[int] = []
+        seen: set[tuple[str, str]] = set()
+        for order in orders:
+            key = (order.source_name, order.template_type)
+            if key not in seen:
+                latest_ids.append(order.id)
+                seen.add(key)
+        if not latest_ids:
+            return []
+        return list(self.db.scalars(select(DemandItem).where(DemandItem.order_id.in_(latest_ids))))
 
     def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation") -> ProductionPlan:
         capabilities = list(self.db.scalars(select(LineCapability).options(joinedload(LineCapability.line))))

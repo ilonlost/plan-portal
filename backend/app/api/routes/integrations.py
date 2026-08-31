@@ -25,40 +25,47 @@ class CsbNextDayRequest(BaseModel):
     target_date: date | None = None
 
 
-def _production_items(db: Session, plan: ProductionPlan, target: date) -> list[ProductionScheduleItem]:
+def _production_items(db: Session, plan: ProductionPlan, start: date, end: date | None = None) -> list[ProductionScheduleItem]:
+    finish = end or start
     return list(db.scalars(
         select(ProductionScheduleItem).where(
             ProductionScheduleItem.plan_id == plan.id,
-            ProductionScheduleItem.production_date == target,
+            ProductionScheduleItem.production_date >= start,
+            ProductionScheduleItem.production_date <= finish,
             ProductionScheduleItem.excluded.is_(False),
         ).options(
             joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item),
-        ).order_by(ProductionScheduleItem.line_id, ProductionScheduleItem.shift, ProductionScheduleItem.sequence)
+        ).order_by(ProductionScheduleItem.production_date, ProductionScheduleItem.line_id, ProductionScheduleItem.shift, ProductionScheduleItem.sequence)
     ))
 
 
 @router.get("/csb/download")
 def download_csb_file(
-    target_date: date | None = None, destination: str = "ДМД",
+    target_date: date | None = None, start_date: date | None = None, end_date: date | None = None, destination: str = "ДМД",
     db: Session = Depends(get_db), user: UserContext = Depends(require_planner),
 ) -> Response:
-    target = target_date or (date.today() + timedelta(days=1))
+    start = start_date or target_date or (date.today() + timedelta(days=1))
+    end = end_date or start
+    if end < start:
+        raise HTTPException(422, "Конечная дата выгрузки CSB не может быть раньше начальной")
     plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
     if not plan:
         raise HTTPException(404, "Активный план не найден")
-    text, exported_ids = build_csb_text(_production_items(db, plan, target), destination)
+    text, exported_ids = build_csb_text(_production_items(db, plan, start, end), destination)
     if not exported_ids:
-        raise HTTPException(422, f"На {target.strftime('%d.%m.%Y')} нет заданий с заполненным кодом линии CSB")
+        period = start.strftime('%d.%m.%Y') if start == end else f"{start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}"
+        raise HTTPException(422, f"За {period} нет заданий с заполненным кодом линии CSB")
     run = IntegrationRun(
-        integration="csb", operation="download_txt", target_date=target,
+        integration="csb", operation="download_txt", target_date=start,
         status="prepared", test_mode=settings.csb_test_mode, item_count=len(exported_ids),
-        payload={"plan_id": plan.id, "destination": destination, "item_ids": exported_ids},
+        payload={"plan_id": plan.id, "destination": destination, "start_date": start.isoformat(), "end_date": end.isoformat(), "item_ids": exported_ids},
         response={"accepted": True, "mode": "file", "message": "TXT-файл подготовлен"}, created_by=user.username,
     )
     db.add(run)
-    db.add(AuditEvent(username=user.username, action="csb_txt_downloaded", entity_type="production_plan", entity_id=str(plan.id), details={"target_date": target.isoformat(), "item_count": len(exported_ids), "destination": destination}))
+    db.add(AuditEvent(username=user.username, action="csb_txt_downloaded", entity_type="production_plan", entity_id=str(plan.id), details={"start_date": start.isoformat(), "end_date": end.isoformat(), "item_count": len(exported_ids), "destination": destination}))
     db.commit()
-    filename = f"Задание CSB {target.strftime('%d.%m.%Y')}.txt"
+    suffix = start.strftime('%d.%m.%Y') if start == end else f"{start.strftime('%d.%m.%Y')}-{end.strftime('%d.%m.%Y')}"
+    filename = f"Задание CSB {suffix}.txt"
     return Response(text.encode("utf-8-sig"), media_type="text/plain; charset=utf-8", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
 
 

@@ -13,7 +13,7 @@ def workbook_bytes(workbook: Workbook) -> bytes:
     return stream.getvalue()
 
 
-def test_ohl_template_preserves_date_and_converts_pieces_to_full_boxes() -> None:
+def test_ohl_template_preserves_date_and_keeps_source_kilograms() -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "ОХЛ"
@@ -29,9 +29,10 @@ def test_ohl_template_preserves_date_and_converts_pieces_to_full_boxes() -> None
     assert preview.template_type == "ohl_daily"
     assert row.requested_date == row.due_date == date(2026, 8, 12)
     assert row.source_quantity == Decimal("5")
-    assert row.quantity_kg == Decimal("1.200")
-    assert row.box_count == Decimal("2")
-    assert row.warnings
+    assert row.source_unit == "кг"
+    assert row.quantity_kg == Decimal("5")
+    assert row.box_count == Decimal("8.333")
+    assert not row.warnings
 
 
 def test_reference_template_reads_speed_batch_and_restriction() -> None:

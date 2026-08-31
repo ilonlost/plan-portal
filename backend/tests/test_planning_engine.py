@@ -48,6 +48,25 @@ def test_ohl_demand_stays_on_source_date_and_uses_full_boxes() -> None:
     assert items[-1].box_count == Decimal("1.000")
 
 
+def test_ohl_kg_source_is_not_converted_or_rounded_to_box_quantum() -> None:
+    day = date(2026, 8, 12)
+    items = PlanningEngine().plan(
+        demands=[DemandInput(
+            1, 10, "OHL-KG", Decimal("28.4"), day, day,
+            source_quantity=Decimal("28.4"), source_unit="кг", unit_weight_kg=Decimal("0.15"),
+            units_per_box=Decimal("4"), box_quantum_kg=Decimal("0.6"), exact_date=True, source_kind="ohl",
+        )],
+        capabilities=[CapabilityInput(2, 10, Decimal("100"), batch_quantum_kg=Decimal("1"))],
+        capacities=[CapacityInput(2, day, Decimal("1"), shift="day")],
+        horizon_end=day,
+    )
+    assert len(items) == 1
+    assert items[0].quantity == Decimal("28.4")
+    assert items[0].source_quantity == Decimal("28.4")
+    assert items[0].source_unit == "кг"
+    assert items[0].box_count == Decimal("47.333")
+
+
 def test_weekly_plan_balances_day_and_night_shifts_by_batch() -> None:
     monday = date(2026, 8, 10)
     items = PlanningEngine().plan(

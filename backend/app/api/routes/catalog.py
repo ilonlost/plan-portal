@@ -23,7 +23,10 @@ class CapabilityUpdate(BaseModel):
 
 @router.get("/manual-products")
 def manual_products(line_id: int, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> list[dict]:
-    rows = list(db.scalars(select(LineCapability).where(LineCapability.line_id == line_id).options(joinedload(LineCapability.product)).order_by(LineCapability.product.name)))
+    rows = list(db.scalars(
+        select(LineCapability).join(LineCapability.product).where(LineCapability.line_id == line_id)
+        .options(joinedload(LineCapability.product)).order_by(Product.name)
+    ))
     return [{"product_id": row.product_id, "sku": row.product.sku, "name": row.product.name, "speed_kg_hour": row.units_per_hour} for row in rows]
 
 

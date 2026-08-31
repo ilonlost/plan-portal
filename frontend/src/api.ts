@@ -84,6 +84,11 @@ export const api = {
   sendCsbNextDay: (targetDate?: string) => request<CsbRun>("/integrations/csb/next-day", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_date: targetDate || null }),
   }),
-  csbDownloadUrl: (targetDate?: string) => `${API}/integrations/csb/download${targetDate ? `?target_date=${encodeURIComponent(targetDate)}` : ""}`,
+  csbDownloadUrl: (startDate?: string, endDate?: string) => {
+    const params = new URLSearchParams();
+    if (startDate) params.set("start_date", startDate);
+    if (endDate) params.set("end_date", endDate);
+    return `${API}/integrations/csb/download${params.size ? `?${params.toString()}` : ""}`;
+  },
   exportUrl: (planId: number) => `${API}/plans/${planId}/export.xlsx`,
 };
