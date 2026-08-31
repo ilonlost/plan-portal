@@ -42,6 +42,8 @@ export interface LineData {
   id: number; code: string; name: string; workshop_code: string; workshop_name: string; status: string;
   working_hours: number; default_capacity: number; capacity_unit: string; priority: number;
   comments?: string; schedule_code: string; schedule_label: string; schedule_anchor_date: string | null;
+  schedule_template_id: number | null; production_day_start_hour: number; mail_recipients: string | null;
+  csb_line_code: string | null; csb_t5: string; csb_t55: string | null;
   product_count: number; today_load: number;
 }
 export interface WorkshopData { code: string; name: string; lines: { id: number; code: string; name: string; status: string }[]; }
@@ -62,8 +64,11 @@ export interface LineScheduleSlot {
 }
 export interface LineScheduleData {
   line_id: number; line_name: string; workshop_code: string; schedule_code: string; schedule_label: string;
-  anchor_date: string; patterns: Record<string, string>; slots: LineScheduleSlot[];
+  anchor_date: string; patterns: Record<string, string>; template_id: number | null; production_day_start_hour: number;
+  mail_recipients: string; csb_line_code: string; csb_t5: string; csb_t55: string;
+  templates: ScheduleTemplate[]; slots: LineScheduleSlot[];
 }
+export interface ScheduleTemplate { id: number; name: string; description: string | null; pattern: { day_hours: number; night_hours: number }[]; }
 export interface SourceFile {
   id: number; file_name: string; template_type: string; status: string; total_rows: number;
   valid_rows: number; invalid_rows: number; imported_at: string;

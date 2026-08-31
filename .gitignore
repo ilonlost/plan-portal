@@ -14,5 +14,9 @@ node_modules/
 .spreadsheet-analysis/
 *.sqlite3
 *.xlsx
+templates/*.xlsm
+frontend/public/PLAN-PORTAL-Функционал/
+frontend/public/*.pptx.inspect.ndjson
+tools/create_plan_portal_presentation.mjs
 !examples/*.xlsx
 .DS_Store

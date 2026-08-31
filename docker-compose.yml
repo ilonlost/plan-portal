@@ -73,9 +73,11 @@ services:
       CSB_TEST_MODE: ${CSB_TEST_MODE:-true}
       CSB_ENDPOINT: ${CSB_ENDPOINT:-}
       CSB_TOKEN: ${CSB_TOKEN:-}
+      PLAN_EXPORT_TEMPLATE: ${PLAN_EXPORT_TEMPLATE:-/app/templates/План производства 12.08.2026.xlsm}
     volumes:
       - ppp-files:/app/data
       - ./certs:/app/certs:ro
+      - ./templates:/app/templates:ro
     depends_on:
       ppp-postgres:
         condition: service_healthy

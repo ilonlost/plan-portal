@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
@@ -16,6 +16,7 @@ from app.services.planning_rules import mono_group
 
 
 class PlanService:
+    MIN_PRODUCTION_DURATION = Decimal("0.02")
     def __init__(self, db: Session):
         self.db = db
 
@@ -27,6 +28,7 @@ class PlanService:
     def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation") -> ProductionPlan:
         capabilities = list(self.db.scalars(select(LineCapability).options(joinedload(LineCapability.line))))
         capacities = list(self.db.scalars(select(LineCapacity)))
+        manual_demand_ids = {item.demand_item_id for item in plan.schedule_items if item.source == "manual" and item.demand_item_id}
         result = PlanningEngine().plan(
             demands=[DemandInput(
                 id=item.id, product_id=item.product_id or 0, sku=item.sku, quantity=Decimal(item.quantity),
@@ -39,7 +41,7 @@ class PlanService:
                 exact_date=item.exact_date, source_kind=item.source_kind, marking_date=item.marking_date,
                 warnings=tuple(item.validation_errors or []),
                 mono_group=mono_group(item.product.name if item.product else item.product_name, item.product.mono_group if item.product else None),
-            ) for item in demands if item.valid],
+            ) for item in demands if item.valid and item.id not in manual_demand_ids],
             capabilities=[CapabilityInput(
                 line_id=item.line_id, product_id=item.product_id, units_per_hour=Decimal(item.units_per_hour),
                 line_priority=item.line.priority,
@@ -54,7 +56,8 @@ class PlanService:
             horizon_end=plan.horizon_end,
         )
         for existing in list(plan.schedule_items):
-            self.db.delete(existing)
+            if existing.source == "auto":
+                self.db.delete(existing)
         self.db.flush()
         for item in result:
             plan.schedule_items.append(ProductionScheduleItem(
@@ -122,7 +125,8 @@ class PlanService:
                 LineCapability.line_id == item.line_id, LineCapability.product_id == item.product_id,
             ))
             if capability and Decimal(capability.units_per_hour) > 0:
-                item.required_hours = (Decimal(item.quantity) / Decimal(capability.units_per_hour)).quantize(Decimal("0.01"))
+                item.required_hours = self._production_duration(Decimal(item.quantity), Decimal(capability.units_per_hour))
+                item.duration_hours = item.required_hours
         if item.line_id and item.production_date:
             selected = self.db.scalar(select(LineCapacity).where(
                 LineCapacity.line_id == item.line_id,
@@ -144,6 +148,47 @@ class PlanService:
         self.create_version(plan, "manual_change", values.get("comment") or "Ручная корректировка задания")
         self.db.commit()
         self.db.refresh(item)
+        return plan
+
+    @classmethod
+    def _production_duration(cls, quantity: Decimal, speed: Decimal) -> Decimal:
+        if quantity <= 0 or speed <= 0:
+            return Decimal("0")
+        return max(cls.MIN_PRODUCTION_DURATION, (quantity / speed).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+    def create_manual_task(self, plan: ProductionPlan, values: dict) -> ProductionPlan:
+        product = self.db.get(Product, values["product_id"])
+        line = self.db.get(ProductionLine, values["line_id"])
+        if not product or not line:
+            raise ValueError("Выберите существующие SKU и линию")
+        capability = self.db.scalar(select(LineCapability).where(
+            LineCapability.line_id == line.id, LineCapability.product_id == product.id,
+        ))
+        if not capability or Decimal(capability.units_per_hour) <= 0:
+            raise ValueError("Для выбранного SKU не задана скорость на этой линии")
+        quantity = Decimal(values["quantity"])
+        if quantity <= 0:
+            raise ValueError("Задание должно быть больше нуля")
+        box_weight = Decimal(product.box_weight_kg) if product.box_weight_kg else None
+        quantum = Decimal(capability.batch_quantum_kg) if capability.batch_quantum_kg else None
+        boxes = (quantity / box_weight).quantize(Decimal("0.001")) if box_weight and box_weight > 0 else None
+        batches = (quantity / quantum).quantize(Decimal("0.001")) if quantum and quantum > 0 else None
+        required_hours = self._production_duration(quantity, Decimal(capability.units_per_hour))
+        item = ProductionScheduleItem(
+            plan_id=plan.id, product_id=product.id, line_id=line.id,
+            production_date=values["production_date"], marking_date=values.get("marking_date") or values["production_date"],
+            shift=values.get("shift", "day"), sequence=len(plan.schedule_items) + 1,
+            quantity=quantity, source_quantity=quantity, source_unit="кг", quantity_kg=quantity,
+            box_count=boxes, batch_count=batches, required_hours=required_hours, duration_hours=required_hours,
+            schedule_kind="production", source_kind=values.get("source_kind") or "generic", source="manual", locked=True,
+            status=ScheduleStatus.PLANNED, warnings=[],
+        )
+        plan.schedule_items.append(item)
+        self.db.flush()
+        self.refresh_sequence_and_cleanings(plan)
+        self.recalculate_load(plan)
+        self.create_version(plan, "manual_task_created", f"Создано вручную: {product.sku} · {quantity} кг")
+        self.db.commit()
         return plan
 
     def create_event(self, plan: ProductionPlan, values: dict) -> ProductionPlan:
@@ -234,7 +279,7 @@ class PlanService:
                         plan_id=plan.id, product_id=None, line_id=line_id, production_date=production_date,
                         shift=previous_shift, sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"),
                         required_hours=Decimal("1"), duration_hours=Decimal("1"), schedule_kind="cleaning",
-                        reason=f"Мойка после группы «{previous_group}»",
+                        reason=None,
                         source_kind="generic", source="auto", locked=True, status=ScheduleStatus.PLANNED,
                     )
                     plan.schedule_items.append(wash)
@@ -248,7 +293,7 @@ class PlanService:
                     plan_id=plan.id, product_id=None, line_id=line_id, production_date=production_date,
                     shift=previous_shift, sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"),
                     required_hours=Decimal("1"), duration_hours=Decimal("1"), schedule_kind="cleaning",
-                    reason=f"Мойка после группы «{previous_group}»",
+                    reason=None,
                     source_kind="generic", source="auto", locked=True, status=ScheduleStatus.PLANNED,
                 ))
                 sequence += 1

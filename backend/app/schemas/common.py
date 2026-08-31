@@ -154,6 +154,8 @@ class ImportRow(BaseModel):
     min_order_kg: Decimal | None = None
     capacity_type: str | None = None
     restrictions: str | None = None
+    available_hours: Decimal | None = None
+    line_status: str | None = None
     state: str | None = None
     category: str | None = None
     short_name: str | None = None

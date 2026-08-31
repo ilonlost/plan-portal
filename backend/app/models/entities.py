@@ -78,8 +78,25 @@ class ProductionLine(Base):
     comments: Mapped[str | None] = mapped_column(Text)
     schedule_code: Mapped[str] = mapped_column(String(40), default="day_daily")
     schedule_anchor_date: Mapped[date | None] = mapped_column(Date)
+    schedule_template_id: Mapped[int | None] = mapped_column(ForeignKey("line_schedule_templates.id", ondelete="SET NULL"))
+    custom_schedule_pattern: Mapped[list] = mapped_column(JSON, default=list)
+    production_day_start_hour: Mapped[int] = mapped_column(Integer, default=0)
+    mail_recipients: Mapped[str | None] = mapped_column(Text)
+    csb_line_code: Mapped[str | None] = mapped_column(String(40))
+    csb_t5: Mapped[str] = mapped_column(String(20), default="4")
+    csb_t55: Mapped[str | None] = mapped_column(String(80))
     capabilities: Mapped[list[LineCapability]] = relationship(back_populates="line", cascade="all, delete-orphan")
     capacities: Mapped[list[LineCapacity]] = relationship(back_populates="line", cascade="all, delete-orphan")
+
+
+class LineScheduleTemplate(Base):
+    __tablename__ = "line_schedule_templates"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), unique=True)
+    description: Mapped[str | None] = mapped_column(String(500))
+    pattern: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class LineCapability(Base):

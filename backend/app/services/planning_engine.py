@@ -234,7 +234,9 @@ class PlanningEngine:
 
     @staticmethod
     def _hours(quantity: Decimal, speed: Decimal) -> Decimal:
-        return (quantity / speed).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if quantity <= 0 or speed <= 0:
+            return Decimal("0")
+        return max(Decimal("0.02"), (quantity / speed).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
     @staticmethod
     def _shift_order(shift: str) -> int:

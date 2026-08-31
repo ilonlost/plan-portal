@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
@@ -13,6 +15,7 @@ from app.db.session import get_db
 from app.models.entities import AuditEvent, IntegrationRun, ProductionPlan, ProductionScheduleItem
 from app.services.notification_service import send_notification
 from app.services.plan_service import schedule_item_dict
+from app.services.csb_export_service import build_csb_text
 
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
@@ -20,6 +23,43 @@ router = APIRouter(prefix="/integrations", tags=["integrations"])
 
 class CsbNextDayRequest(BaseModel):
     target_date: date | None = None
+
+
+def _production_items(db: Session, plan: ProductionPlan, target: date) -> list[ProductionScheduleItem]:
+    return list(db.scalars(
+        select(ProductionScheduleItem).where(
+            ProductionScheduleItem.plan_id == plan.id,
+            ProductionScheduleItem.production_date == target,
+            ProductionScheduleItem.excluded.is_(False),
+        ).options(
+            joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item),
+        ).order_by(ProductionScheduleItem.line_id, ProductionScheduleItem.shift, ProductionScheduleItem.sequence)
+    ))
+
+
+@router.get("/csb/download")
+def download_csb_file(
+    target_date: date | None = None, destination: str = "ДМД",
+    db: Session = Depends(get_db), user: UserContext = Depends(require_planner),
+) -> Response:
+    target = target_date or (date.today() + timedelta(days=1))
+    plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
+    if not plan:
+        raise HTTPException(404, "Активный план не найден")
+    text, exported_ids = build_csb_text(_production_items(db, plan, target), destination)
+    if not exported_ids:
+        raise HTTPException(422, f"На {target.strftime('%d.%m.%Y')} нет заданий с заполненным кодом линии CSB")
+    run = IntegrationRun(
+        integration="csb", operation="download_txt", target_date=target,
+        status="prepared", test_mode=settings.csb_test_mode, item_count=len(exported_ids),
+        payload={"plan_id": plan.id, "destination": destination, "item_ids": exported_ids},
+        response={"accepted": True, "mode": "file", "message": "TXT-файл подготовлен"}, created_by=user.username,
+    )
+    db.add(run)
+    db.add(AuditEvent(username=user.username, action="csb_txt_downloaded", entity_type="production_plan", entity_id=str(plan.id), details={"target_date": target.isoformat(), "item_count": len(exported_ids), "destination": destination}))
+    db.commit()
+    filename = f"Задание CSB {target.strftime('%d.%m.%Y')}.txt"
+    return Response(text.encode("utf-8-sig"), media_type="text/plain; charset=utf-8", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
 
 
 @router.post("/csb/next-day")
@@ -32,17 +72,7 @@ def send_next_day_to_csb(
     plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
     if not plan:
         raise HTTPException(404, "Активный план не найден")
-    items = list(db.scalars(
-        select(ProductionScheduleItem).where(
-            ProductionScheduleItem.plan_id == plan.id,
-            ProductionScheduleItem.production_date == target,
-            ProductionScheduleItem.excluded.is_(False),
-        ).options(
-            joinedload(ProductionScheduleItem.product),
-            joinedload(ProductionScheduleItem.line),
-            joinedload(ProductionScheduleItem.demand_item),
-        ).order_by(ProductionScheduleItem.line_id, ProductionScheduleItem.shift, ProductionScheduleItem.sequence)
-    ))
+    items = _production_items(db, plan, target)
     production_items = [item for item in items if item.schedule_kind == "production"]
     if not production_items:
         raise HTTPException(422, f"На {target.strftime('%d.%m.%Y')} нет производственных заданий")

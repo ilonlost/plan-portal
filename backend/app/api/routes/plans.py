@@ -1,4 +1,5 @@
 from io import BytesIO
+from urllib.parse import quote
 
 from datetime import date, timedelta
 from decimal import Decimal
@@ -26,6 +27,17 @@ class PlanEmailRequest(BaseModel):
     recipients: list[str] = Field(default_factory=list)
     start: date | None = None
     end: date | None = None
+    line_ids: list[int] = Field(default_factory=list)
+
+
+class ManualTaskCreate(BaseModel):
+    product_id: int
+    line_id: int
+    production_date: date
+    marking_date: date | None = None
+    shift: str = "day"
+    quantity: Decimal = Field(gt=0)
+    source_kind: str = "generic"
 
 
 @router.get("/active")
@@ -99,6 +111,24 @@ def update_item(plan_id: int, item_id: int, payload: ScheduleItemUpdate, db: Ses
         raise HTTPException(404, "Задание не найдено")
     plan = PlanService(db).update_item(item, payload.model_dump(exclude_unset=True))
     db.add(AuditEvent(username=user.username, action="schedule_item_updated", entity_type="schedule_item", entity_id=str(item.id), details=payload.model_dump(mode="json", exclude_unset=True)))
+    db.commit()
+    return plan_dict(db, plan)
+
+
+@router.post("/{plan_id}/items")
+def create_manual_task(plan_id: int, payload: ManualTaskCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
+    if payload.shift not in {"day", "night"}:
+        raise HTTPException(422, "Смена должна быть «day» или «night»")
+    if payload.source_kind not in {"ohl", "zam", "generic"}:
+        raise HTTPException(422, "Неизвестный источник задания")
+    plan = db.get(ProductionPlan, plan_id)
+    if not plan:
+        raise HTTPException(404, "План не найден")
+    try:
+        plan = PlanService(db).create_manual_task(plan, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    db.add(AuditEvent(username=user.username, action="manual_task_created", entity_type="production_plan", entity_id=str(plan.id), details=payload.model_dump(mode="json")))
     db.commit()
     return plan_dict(db, plan)
 
@@ -181,10 +211,11 @@ def export_plan(plan_id: int, db: Session = Depends(get_db), user: UserContext =
     items = list(db.scalars(select(ProductionScheduleItem).where(ProductionScheduleItem.plan_id == plan_id).options(
         joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item),
     )))
-    content = ExcelExportService().build([schedule_item_dict(item) for item in items])
+    exporter = ExcelExportService()
+    content = exporter.build([schedule_item_dict(item) for item in items])
     return StreamingResponse(
-        BytesIO(content), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="production-plan-{plan_id}.xlsx"'},
+        BytesIO(content), media_type=exporter.media_type,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(exporter.file_name)}"},
     )
 
 
@@ -209,6 +240,9 @@ def email_plan(
     ).options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item)).order_by(
         ProductionScheduleItem.production_date, ProductionScheduleItem.line_id, ProductionScheduleItem.shift, ProductionScheduleItem.sequence,
     )))
+    if payload.line_ids:
+        selected_ids = set(payload.line_ids)
+        items = [item for item in items if item.line_id in selected_ids]
     configuration = get_mail_configuration(db)
     try:
         subject = str(configuration.get("plan_subject") or "План производства ФК · {start} — {end}").format(
@@ -217,11 +251,12 @@ def email_plan(
     except (KeyError, ValueError) as exc:
         raise HTTPException(422, "В шаблоне темы разрешены только {start}, {end} и {plan}") from exc
     html = build_plan_email_html(configuration, plan.name, start, end, [schedule_item_dict(item) for item in items])
+    line_recipients = [value.strip() for item in items if item.line and item.line.mail_recipients for value in item.line.mail_recipients.replace(";", ",").replace("\n", ",").split(",") if value.strip()]
     log = send_notification(
         db, "production_plan_email", subject,
         f"План «{plan.name}» за период {start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}. Позиций: {len(items)}.",
-        payload.recipients, html,
+        [*line_recipients, *payload.recipients], html,
     )
-    db.add(AuditEvent(username=user.username, action="production_plan_emailed", entity_type="production_plan", entity_id=str(plan.id), details={"start": start.isoformat(), "end": end.isoformat(), "item_count": len(items), "status": log.status, "recipients": log.recipients}))
+    db.add(AuditEvent(username=user.username, action="production_plan_emailed", entity_type="production_plan", entity_id=str(plan.id), details={"start": start.isoformat(), "end": end.isoformat(), "line_ids": payload.line_ids, "item_count": len(items), "status": log.status, "recipients": log.recipients}))
     db.commit()
     return {"ok": True, "status": log.status, "recipients": log.recipients, "item_count": len(items), "error": log.error}

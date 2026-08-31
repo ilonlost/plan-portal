@@ -4,7 +4,7 @@ from datetime import date
 import re
 
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -138,6 +138,7 @@ def update_mail_configuration(
 def mail_preview(
     start: date | None = None,
     end: date | None = None,
+    line_ids: list[int] = Query(default=[]),
     db: Session = Depends(get_db),
     user: UserContext = Depends(require_planner),
 ) -> dict:
@@ -156,6 +157,8 @@ def mail_preview(
     ).options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item)).order_by(
         ProductionScheduleItem.production_date, ProductionScheduleItem.line_id, ProductionScheduleItem.shift, ProductionScheduleItem.sequence,
     )))
+    if line_ids:
+        items = [item for item in items if item.line_id in set(line_ids)]
     html = build_plan_email_html(get_mail_configuration(db), plan.name, start, end, [schedule_item_dict(item) for item in items])
     return {"html": html, "item_count": len(items), "start": start, "end": end}
 

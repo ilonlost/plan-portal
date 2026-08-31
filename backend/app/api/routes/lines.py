@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
 from app.core.security import UserContext, current_user, require_planner
-from app.models.entities import AuditEvent, DemandItem, LineCapacity, LineCapability, ProductionLine, ProductionPlan, ProductionScheduleItem
+from app.models.entities import AuditEvent, DemandItem, LineCapacity, LineCapability, LineScheduleTemplate, ProductionLine, ProductionPlan, ProductionScheduleItem
 from app.services.line_schedule_service import DEFAULT_ANCHOR, SCHEDULE_LABELS, ensure_line_capacities, shift_hours
 from app.services.plan_service import PlanService
 
@@ -25,12 +25,65 @@ class CapacityDayUpdate(BaseModel):
 class LineScheduleUpdate(BaseModel):
     schedule_code: str
     anchor_date: date
+    template_id: int | None = None
+    mail_recipients: str | None = Field(default=None, max_length=4000)
+    csb_line_code: str | None = Field(default=None, max_length=40)
+    csb_t5: str | None = Field(default=None, max_length=20)
+    csb_t55: str | None = Field(default=None, max_length=80)
     slots: list[CapacityDayUpdate] = Field(default_factory=list)
+
+
+class ScheduleTemplateCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    description: str | None = Field(default=None, max_length=500)
+    pattern: list[dict] = Field(min_length=1, max_length=31)
+
+
+def _template_dict(template: LineScheduleTemplate) -> dict:
+    return {"id": template.id, "name": template.name, "description": template.description, "pattern": template.pattern or []}
+
+
+def _valid_pattern(pattern: list[dict]) -> list[dict]:
+    clean: list[dict] = []
+    for index, slot in enumerate(pattern, start=1):
+        try:
+            day_hours, night_hours = Decimal(str(slot.get("day_hours", 0))), Decimal(str(slot.get("night_hours", 0)))
+        except Exception as exc:
+            raise ValueError(f"День {index}: часы должны быть числом") from exc
+        if not (Decimal("0") <= day_hours <= Decimal("11") and Decimal("0") <= night_hours <= Decimal("11")):
+            raise ValueError(f"День {index}: в смене допустимо от 0 до 11 часов")
+        clean.append({"day_hours": float(day_hours), "night_hours": float(night_hours)})
+    return clean
+
+
+@router.get("/schedule-templates")
+def list_schedule_templates(db: Session = Depends(get_db), user: UserContext = Depends(current_user)) -> list[dict]:
+    return [_template_dict(row) for row in db.scalars(select(LineScheduleTemplate).order_by(LineScheduleTemplate.name))]
+
+
+@router.post("/schedule-templates")
+def create_schedule_template(
+    payload: ScheduleTemplateCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner),
+) -> dict:
+    from fastapi import HTTPException
+    if db.scalar(select(LineScheduleTemplate).where(LineScheduleTemplate.name == payload.name.strip())):
+        raise HTTPException(422, "Шаблон с таким названием уже существует")
+    try:
+        pattern = _valid_pattern(payload.pattern)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    template = LineScheduleTemplate(name=payload.name.strip(), description=(payload.description or "").strip() or None, pattern=pattern, created_by=user.username)
+    db.add(template)
+    db.add(AuditEvent(username=user.username, action="line_schedule_template_created", entity_type="line_schedule_template", entity_id=None, details={"name": template.name, "days": len(pattern)}))
+    db.commit()
+    db.refresh(template)
+    return _template_dict(template)
 
 
 @router.get("")
 def list_lines(db: Session = Depends(get_db), user: UserContext = Depends(current_user)) -> list[dict]:
     lines = list(db.scalars(select(ProductionLine).order_by(ProductionLine.priority, ProductionLine.code)))
+    templates = {row.id: row for row in db.scalars(select(LineScheduleTemplate))}
     result = []
     for line in lines:
         product_count = db.scalar(select(func.count(LineCapability.id)).where(LineCapability.line_id == line.id)) or 0
@@ -43,8 +96,10 @@ def list_lines(db: Session = Depends(get_db), user: UserContext = Depends(curren
             "workshop_code": line.workshop_code, "workshop_name": line.workshop_name,
             "working_hours": line.working_hours, "default_capacity": line.default_capacity,
             "capacity_unit": line.capacity_unit, "priority": line.priority, "comments": line.comments,
-            "schedule_code": line.schedule_code, "schedule_label": SCHEDULE_LABELS.get(line.schedule_code, line.schedule_code),
+            "schedule_code": line.schedule_code, "schedule_label": templates[line.schedule_template_id].name if line.schedule_template_id in templates else SCHEDULE_LABELS.get(line.schedule_code, line.schedule_code),
             "schedule_anchor_date": line.schedule_anchor_date,
+            "schedule_template_id": line.schedule_template_id, "production_day_start_hour": line.production_day_start_hour,
+            "mail_recipients": line.mail_recipients, "csb_line_code": line.csb_line_code, "csb_t5": line.csb_t5, "csb_t55": line.csb_t55,
             "product_count": product_count, "today_load": float(today_load),
         })
     return result
@@ -114,7 +169,11 @@ def line_schedule(
     return {
         "line_id": line.id, "line_name": line.name, "workshop_code": line.workshop_code,
         "schedule_code": line.schedule_code, "schedule_label": SCHEDULE_LABELS.get(line.schedule_code, line.schedule_code),
-        "anchor_date": line.schedule_anchor_date or DEFAULT_ANCHOR, "patterns": SCHEDULE_LABELS, "slots": slots,
+        "anchor_date": line.schedule_anchor_date or DEFAULT_ANCHOR, "patterns": SCHEDULE_LABELS,
+        "templates": [_template_dict(row) for row in db.scalars(select(LineScheduleTemplate).order_by(LineScheduleTemplate.name))],
+        "template_id": line.schedule_template_id, "production_day_start_hour": line.production_day_start_hour,
+        "mail_recipients": line.mail_recipients or "", "csb_line_code": line.csb_line_code or "", "csb_t5": line.csb_t5 or "4", "csb_t55": line.csb_t55 or "",
+        "slots": slots,
     }
 
 
@@ -129,9 +188,25 @@ def update_line_schedule(
         raise HTTPException(404, "Линия не найдена")
     if payload.schedule_code not in SCHEDULE_LABELS:
         raise HTTPException(422, "Неизвестный шаблон графика")
-    pattern_changed = line.schedule_code != payload.schedule_code or line.schedule_anchor_date != payload.anchor_date
+    template = None
+    if payload.template_id is not None:
+        template = db.get(LineScheduleTemplate, payload.template_id)
+        if not template:
+            raise HTTPException(422, "Шаблон графика не найден")
+        payload.schedule_code = "custom"
+    if payload.schedule_code == "custom" and not template and not line.custom_schedule_pattern:
+        raise HTTPException(422, "Для пользовательского графика выберите шаблон")
+    next_pattern = _valid_pattern(template.pattern) if template else (line.custom_schedule_pattern or [])
+    pattern_changed = (line.schedule_code != payload.schedule_code or line.schedule_anchor_date != payload.anchor_date
+                       or line.schedule_template_id != payload.template_id or line.custom_schedule_pattern != next_pattern)
     line.schedule_code = payload.schedule_code
     line.schedule_anchor_date = payload.anchor_date
+    line.schedule_template_id = payload.template_id
+    line.custom_schedule_pattern = next_pattern if payload.schedule_code == "custom" else []
+    line.mail_recipients = (payload.mail_recipients or "").strip() or None
+    line.csb_line_code = (payload.csb_line_code or "").strip() or None
+    line.csb_t5 = (payload.csb_t5 or "4").strip() or "4"
+    line.csb_t55 = (payload.csb_t55 or "").strip() or None
     plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
     if plan and pattern_changed:
         for row in db.scalars(select(LineCapacity).where(
@@ -167,7 +242,7 @@ def update_line_schedule(
             PlanService(db).recalculate_load(plan)
     db.add(AuditEvent(
         username=user.username, action="line_schedule_updated", entity_type="production_line", entity_id=str(line.id),
-        details={"schedule_code": line.schedule_code, "anchor_date": payload.anchor_date.isoformat(), "manual_days": len(payload.slots), "plan_recalculated": recalculated},
+        details={"schedule_code": line.schedule_code, "template_id": line.schedule_template_id, "anchor_date": payload.anchor_date.isoformat(), "manual_days": len(payload.slots), "plan_recalculated": recalculated},
     ))
     db.commit()
     return {"ok": True, "line_id": line.id, "plan_recalculated": recalculated}

@@ -159,7 +159,7 @@ input::placeholder,textarea::placeholder { color: var(--muted); opacity: 1; }
 .cell-skus button[draggable="true"] { cursor: grab; }
 .cell-skus button[draggable="true"]:active { cursor: grabbing; opacity: .62; }
 .schedule-modal { width: min(920px,calc(100vw - 50px)); margin: 3vh auto; }
-.schedule-toolbar { display: grid; grid-template-columns: 1.4fr 1fr 1.4fr 1fr; gap: 9px; padding: 12px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 5px; }
+.schedule-toolbar { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 9px; padding: 12px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 5px; }
 .schedule-toolbar label { margin: 0; }
 .schedule-grid { max-height: 58vh; margin-top: 12px; overflow: auto; border: 1px solid var(--line); border-radius: 5px; }
 .schedule-grid-head,.schedule-grid-row { display: grid; grid-template-columns: 1.3fr .75fr .75fr .8fr 1.5fr; align-items: center; gap: 9px; padding: 8px 10px; }
@@ -173,10 +173,15 @@ input::placeholder,textarea::placeholder { color: var(--muted); opacity: 1; }
 .schedule-grid-row input { min-height: 30px; }
 .schedule-grid-row strong { font-size: 9px; }
 .schedule-modal footer { align-items: center; }
-.schedule-help { margin-right: auto; color: var(--muted); font-size: 8px; }
 .item-row td:nth-child(6),.item-row td:nth-child(7),.item-row td:nth-child(8) { font-size: 9px; }
 [data-theme="dark"] .source.cleaning { color: #9fe0d2; background: #1b453d; }
 [data-theme="dark"] .cleaning-task,[data-theme="dark"] .cleaning-row td { color: #cdebe5; background: #18312d !important; border-color: #386d62 !important; }
 [data-theme="dark"] .cleaning-reason,[data-theme="dark"] .schedule-reason { color: #b8e2d9; background: #1c3b35; }
 [data-theme="dark"] .schedule-toolbar,[data-theme="dark"] .schedule-grid-row.off { background: var(--surface-soft); }
 [data-theme="dark"] .plan-cell.drop-enabled:hover { background: #30171c; }
+.shift-mark { display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; font-weight: 700; }
+.shift-mark svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.shift-mark.day { color: #b06b00; }.shift-mark.night { color: #5a4b9b; }
+[data-theme="dark"] .shift-mark.day { color: #ffd071; }[data-theme="dark"] .shift-mark.night { color: #c7bcff; }
+.sidebar .nav-download { display: block; padding: 11px 12px; border-radius: 4px; color: var(--text); text-decoration: none; font-size: 10px; font-weight: 700; }.sidebar .nav-download:hover { background: var(--surface-alt); }
+@media (max-width: 1000px) { .schedule-toolbar { grid-template-columns: repeat(2,minmax(0,1fr)); }.schedule-toolbar .full { grid-column: span 2; } }

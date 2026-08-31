@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     csb_test_mode: bool = True
     csb_endpoint: str = ""
     csb_token: str = ""
+    plan_export_template: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

@@ -14,6 +14,7 @@ SCHEDULE_LABELS = {
     "two_shift_daily": "Каждый день · день и ночь по 11 ч",
     "two_two_day": "2/2 · только дневная смена 11 ч",
     "bread_cycle": "Хлеб · 2 дня по 22 ч, 2 дня по 11 ч",
+    "custom": "Пользовательский шаблон",
 }
 DEFAULT_ANCHOR = date(2026, 8, 28)
 
@@ -33,6 +34,10 @@ def shift_hours(line: ProductionLine, day: date) -> tuple[Decimal, Decimal]:
     code = line.schedule_code or default_schedule_code(line.name)
     anchor = line.schedule_anchor_date or DEFAULT_ANCHOR
     cycle_day = (day - anchor).days % 4
+    if code == "custom" and line.custom_schedule_pattern:
+        pattern = line.custom_schedule_pattern
+        slot = pattern[(day - anchor).days % len(pattern)]
+        return Decimal(str(slot.get("day_hours", 0))), Decimal(str(slot.get("night_hours", 0)))
     if code == "two_shift_daily":
         return Decimal("11"), Decimal("11")
     if code == "two_two_day":

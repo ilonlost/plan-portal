@@ -21,6 +21,12 @@ class CapabilityUpdate(BaseModel):
     mono_group: str | None = Field(default=None, max_length=160)
 
 
+@router.get("/manual-products")
+def manual_products(line_id: int, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> list[dict]:
+    rows = list(db.scalars(select(LineCapability).where(LineCapability.line_id == line_id).options(joinedload(LineCapability.product)).order_by(LineCapability.product.name)))
+    return [{"product_id": row.product_id, "sku": row.product.sku, "name": row.product.name, "speed_kg_hour": row.units_per_hour} for row in rows]
+
+
 @router.get("")
 def catalog(
     workshop_code: str | None = None, line_id: int | None = None, search: str | None = None,

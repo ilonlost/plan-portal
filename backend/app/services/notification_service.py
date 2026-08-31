@@ -65,14 +65,13 @@ def build_plan_email_html(
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("quantity_units") or 0):,.0f} шт.</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("quantity_kg") or 0):,.2f} кг</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{escape(_duration(row.get("required_hours")))}</td>'
-                f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape("МОЙКА" if row.get("schedule_kind") == "cleaning" else str(row.get("source_kind") or "").upper())}</td>'
                 '</tr>' for row in rows
             )
             sections.append(
                 f'<tr><td style="padding:8px 24px 18px"><div style="border:1px solid #dfe2e6;border-left:4px solid {escape(accent)}">'
                 f'<div style="padding:10px 12px;background:#f4f5f7;font-weight:700;color:#202124">{escape(line_name)} · {len(rows)} поз.</div>'
                 '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px;color:#34373c">'
-                '<tr style="background:#fafafa;color:#6f747c"><th align="left" style="padding:7px">№</th><th align="left">SKU</th><th align="left">Готовая продукция</th><th align="left">Смена</th><th align="right">Штуки</th><th align="right">Кг</th><th align="right">Время</th><th align="left">Источник</th></tr>'
+                '<tr style="background:#fafafa;color:#6f747c"><th align="left" style="padding:7px 10px">№</th><th align="left" style="padding:7px 10px">SKU</th><th align="left" style="padding:7px 10px">Готовая продукция</th><th align="left" style="padding:7px 10px">Смена</th><th align="right" style="padding:7px 10px">Штуки</th><th align="right" style="padding:7px 10px">Кг</th><th align="right" style="padding:7px 10px">Время</th></tr>'
                 f'{body}</table></div></td></tr>'
             )
     intro = escape(str(configuration.get("plan_intro") or "")).replace("\n", "<br>")
@@ -87,7 +86,7 @@ def build_plan_email_html(
         '<table role="presentation" width="760" cellspacing="0" cellpadding="0" style="width:100%;max-width:760px;background:#fff;border:1px solid #dfe2e6">'
         f'<tr><td style="padding:20px 24px;background:{escape(accent)};color:#fff"><div style="font-size:22px;font-weight:800">PLAN PORTAL</div><div style="margin-top:4px;font-size:12px;opacity:.88">{escape(plan_name)}</div></td></tr>'
         f'<tr><td style="padding:22px 24px 8px"><h1 style="margin:0 0 10px;font-size:22px">План производства · {_date(start)} — {_date(end)}</h1><div style="font-size:14px;line-height:1.6;color:#4f5359">{intro}</div>'
-        f'<div style="margin-top:16px;padding:12px;background:#f4f5f7;border-left:4px solid {escape(accent)}"><b>{len(items)} позиций</b> · {total_units:,.0f} шт. · {total_kg:,.2f} кг · мощность линии 22 ч/сутки</div></td></tr>'
+        f'<div style="margin-top:16px;padding:12px;background:#f4f5f7;border-left:4px solid {escape(accent)}"><b>{len(items)} позиций</b> · {total_units:,.0f} шт. · {total_kg:,.2f} кг</div></td></tr>'
         f'{sections_html}'
         f'<tr><td style="padding:18px 24px"><a href="{escape(settings.app_url)}" style="display:inline-block;padding:11px 18px;background:{escape(accent)};color:#fff;text-decoration:none;font-weight:700">{button}</a></td></tr>'
         f'<tr><td style="padding:15px 24px;background:#f4f5f7;color:#777b82;font-size:11px">{footer}</td></tr>'

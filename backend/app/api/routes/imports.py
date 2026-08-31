@@ -50,13 +50,13 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
     db.add(ImportFile(imported_order_id=order.id, original_name=preview.file_name))
     product_by_sku = {product.sku: product for product in db.scalars(select(Product))}
 
-    if preview.template_type in {"production_reference", "legacy_reference"}:
+    if preview.template_type in {"production_reference", "legacy_reference", "capacity_reference"}:
         updated = 0
         for row in preview.rows:
             if not row.valid:
                 continue
             product = _upsert_product(db, product_by_sku, row)
-            if preview.template_type == "production_reference":
+            if preview.template_type in {"production_reference", "capacity_reference"}:
                 _upsert_capability(db, product, row)
             updated += 1
         order.status = "reference_imported"
@@ -184,6 +184,12 @@ def _upsert_capability(db: Session, product: Product, row) -> LineCapability | N
     capability.capacity_type = row.capacity_type
     capability.restrictions = row.restrictions
     capability.min_batch = row.batch_quantum_kg
+    if getattr(row, "available_hours", None) is not None or getattr(row, "line_status", None):
+        capability.technological_constraints = {
+            **(capability.technological_constraints or {}),
+            "source_available_hours": str(row.available_hours) if row.available_hours is not None else None,
+            "source_line_status": row.line_status,
+        }
     return capability
 
 

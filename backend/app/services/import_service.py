@@ -35,6 +35,8 @@ class ExcelImportService:
                 return self._parse_quarter_weekly(workbook, file_name)
             if "Справочник" in workbook.sheetnames and any(name in workbook.sheetnames for name in ("ПЦ", "КЦ 1", "КЦ 2")):
                 return self._parse_production_reference(workbook, file_name)
+            if "Справочник ФК" in workbook.sheetnames:
+                return self._parse_capacity_reference(workbook, file_name)
             if any(name.strip() == "Рецептура 50" for name in workbook.sheetnames) and "План_пекарня (2)" in workbook.sheetnames:
                 return self._parse_legacy_reference(workbook, file_name)
             return self._parse_generic(workbook, file_name)
@@ -193,6 +195,38 @@ class ExcelImportService:
             ["Импорт обновляет продукцию, линии, скорости, кванты замеса, минимальные партии и ограничения.",
              "Строки ПЦ/КЦ используются как эталон структуры; повреждённые формулы #REF! не импортируются.",
              "После справочника можно загружать недельный или дневной план спроса."],
+        )
+
+    def _parse_capacity_reference(self, workbook, file_name: str) -> ImportPreview:
+        """Import the current line-capacity catalogue supplied by production."""
+        sheet = workbook["Справочник ФК"]
+        rows: list[ImportRow] = []
+        for row_number, values in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+            value = lambda index: values[index] if index < len(values) else None
+            sku = self._sku(value(0))
+            name = str(value(1) or "").strip()
+            if not sku or not name:
+                continue
+            line = str(value(3) or "").strip() or None
+            speed = self._number(value(5))
+            errors: list[str] = []
+            if not line:
+                errors.append("Не указана производственная линия")
+            if speed is None or speed <= 0:
+                errors.append("Не указана положительная скорость линии")
+            hours = self._number(value(6))
+            status = str(value(8) or "").strip() or None
+            note = str(value(13) or "").strip() or None
+            restrictions = "; ".join(part for part in [note, f"Статус: {status}" if status else None, f"Часов в смену: {hours}" if hours is not None else None] if part) or None
+            rows.append(ImportRow(
+                row_number=row_number, sku=sku, product_name=name, source_unit="кг",
+                unit_weight_kg=self._number(value(2)), line_hint=line, category=str(value(4) or "").strip() or None,
+                speed_kg_hour=speed, available_hours=hours, line_status=status, restrictions=restrictions,
+                reference_source=file_name, valid=not errors, errors=errors,
+            ))
+        return self._preview(
+            file_name, "line_capacity_reference_v1", "capacity_reference", "Справочник ФК", rows,
+            ["Импорт обновляет актуальные скорости линий, статусы и технологические ограничения из файла мощности линий."],
         )
 
     def _parse_legacy_reference(self, workbook, file_name: str) -> ImportPreview:
