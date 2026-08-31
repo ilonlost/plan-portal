@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.entities import (
-    AuditEvent, DemandItem, ImportedOrder, LineCapability, LineCapacity, PlanStatus, Product, ProductionLine, ProductionPlan,
+    AuditEvent, DemandItem, ImportedOrder, LineCapability, LineCapacity, PlanStatus, PortalSetting, Product, ProductionLine, ProductionPlan,
     ProductionPlanVersion, ProductionScheduleItem, ScheduleStatus,
 )
 from app.services.planning_engine import CapabilityInput, CapacityInput, DemandInput, PlanningEngine
@@ -17,6 +17,7 @@ from app.services.planning_rules import mono_group
 
 class PlanService:
     MIN_PRODUCTION_DURATION = Decimal("0.02")
+    KG_ROUNDING_SETTING_KEY = "kg_rounding_up_v1"
     def __init__(self, db: Session):
         self.db = db
 
@@ -58,6 +59,25 @@ class PlanService:
             ))
         self.db.commit()
         return len(rows)
+
+    def apply_kg_rounding_upgrade(self) -> bool:
+        """Rebuild the active plan once after enabling ceiling-to-kg quantities."""
+        if self.db.scalar(select(PortalSetting).where(PortalSetting.key == self.KG_ROUNDING_SETTING_KEY)):
+            return False
+        plan = self.active_plan()
+        demands = self._latest_source_demands()
+        if not plan or not demands:
+            return False
+        plan.horizon_start = min(item.requested_date for item in demands)
+        plan.horizon_end = max(item.due_date for item in demands)
+        self.calculate(plan, demands, "kg_rounding_up")
+        self.db.add(PortalSetting(key=self.KG_ROUNDING_SETTING_KEY, value={"rule": "ceil_to_whole_kg"}, updated_by="system"))
+        self.db.add(AuditEvent(
+            username="system", action="kg_rounding_up_applied", entity_type="production_plan", entity_id=str(plan.id),
+            details={"message": "Задания в кг округлены вверх до целого значения"},
+        ))
+        self.db.commit()
+        return True
 
     def _latest_source_demands(self) -> list[DemandItem]:
         orders = list(self.db.scalars(select(ImportedOrder).where(
@@ -167,7 +187,7 @@ class PlanService:
             if field in values and values[field] is not None:
                 setattr(item, field, values[field])
         if values.get("quantity") is not None:
-            item.quantity = Decimal(values["quantity"])
+            item.quantity = self._ceil_kg(Decimal(values["quantity"]))
             item.quantity_kg = item.quantity
         if item.schedule_kind == "production" and item.line_id and item.product_id:
             capability = self.db.scalar(select(LineCapability).where(
@@ -205,6 +225,10 @@ class PlanService:
             return Decimal("0")
         return max(cls.MIN_PRODUCTION_DURATION, (quantity / speed).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
+    @staticmethod
+    def _ceil_kg(quantity: Decimal) -> Decimal:
+        return quantity.to_integral_value(rounding=ROUND_CEILING)
+
     def create_manual_task(self, plan: ProductionPlan, values: dict) -> ProductionPlan:
         product = self.db.get(Product, values["product_id"])
         line = self.db.get(ProductionLine, values["line_id"])
@@ -215,7 +239,7 @@ class PlanService:
         ))
         if not capability or Decimal(capability.units_per_hour) <= 0:
             raise ValueError("Для выбранного SKU не задана скорость на этой линии")
-        quantity = Decimal(values["quantity"])
+        quantity = self._ceil_kg(Decimal(values["quantity"]))
         if quantity <= 0:
             raise ValueError("Задание должно быть больше нуля")
         box_weight = Decimal(product.box_weight_kg) if product.box_weight_kg else None

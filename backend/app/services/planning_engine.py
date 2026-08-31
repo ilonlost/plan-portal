@@ -114,10 +114,13 @@ class PlanningEngine:
 
             quantum = self._quantum(demand, options)
             source_is_exact_kg = demand.source_kind == "ohl" and demand.source_unit == "кг"
-            planned_total = demand.quantity if source_is_exact_kg else self._ceil_quantum(demand.quantity, quantum)
+            rounded_kg = self._ceil_kg(demand.quantity)
+            planned_total = rounded_kg if source_is_exact_kg else self._ceil_quantum(rounded_kg, quantum)
             warnings = list(demand.warnings)
-            if planned_total > demand.quantity:
-                warnings.append(f"Объём округлён с {demand.quantity} до {planned_total} кг по кванту {quantum} кг")
+            if rounded_kg > demand.quantity:
+                warnings.append(f"Объём округлён вверх с {demand.quantity} до {rounded_kg} кг")
+            if planned_total > rounded_kg:
+                warnings.append(f"Объём увеличен с {rounded_kg} до {planned_total} кг по кванту {quantum} кг")
             min_order = min((item.min_order_kg for item in options if item.min_order_kg and item.min_order_kg > 0), default=None)
             if min_order and planned_total < min_order and not source_is_exact_kg:
                 old_total = planned_total
@@ -229,6 +232,10 @@ class PlanningEngine:
         if quantum <= 0:
             return value
         return (value / quantum).to_integral_value(rounding=ROUND_CEILING) * quantum
+
+    @staticmethod
+    def _ceil_kg(value: Decimal) -> Decimal:
+        return value.to_integral_value(rounding=ROUND_CEILING)
 
     @staticmethod
     def _floor_quantum(value: Decimal, quantum: Decimal) -> Decimal:

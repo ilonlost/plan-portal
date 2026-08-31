@@ -27,8 +27,12 @@ def correct_legacy_ohl_source_units() -> None:
     """Apply the one-time kg correction to plans imported before this release."""
     db = SessionLocal()
     try:
-        corrected = PlanService(db).correct_legacy_ohl_source_units()
+        service = PlanService(db)
+        corrected = service.correct_legacy_ohl_source_units()
         if corrected:
             logger.warning("Исправлены единицы измерения ОХЛ: %s строк(и), план пересчитан", corrected)
+        rounded = service.apply_kg_rounding_upgrade()
+        if rounded:
+            logger.warning("План пересчитан с округлением кг вверх до целого значения")
     finally:
         db.close()
