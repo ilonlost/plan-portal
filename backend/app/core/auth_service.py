@@ -42,13 +42,31 @@ def _server() -> Server:
 
 
 def _bind_identity(username: str) -> str:
+    template = settings.ldap_bind_format.strip()
+    if template:
+        return template.replace("{username}", username).replace("{domain}", settings.ldap_domain)
     if "@" in username or "\\" in username:
         return username
+    login_format = settings.ldap_login_format.strip().lower()
+    if login_format == "dn":
+        return username
+    if login_format == "netbios":
+        domain = settings.ldap_netbios_domain or settings.ldap_domain
+        return f"{domain}\\{username}" if domain else username
+    if login_format in {"userprincipalname", "upn"}:
+        suffix = settings.ldap_upn_suffix or settings.ldap_domain
+        return f"{username}@{suffix}" if suffix else username
     if settings.ldap_upn_suffix:
         return f"{username}@{settings.ldap_upn_suffix}"
     if settings.ldap_domain:
         return f"{settings.ldap_domain}\\{username}"
     return username
+
+
+def _requested_attributes() -> list[str]:
+    configured = [value.strip() for value in settings.ldap_user_attributes.split(",") if value.strip()]
+    required = ["sAMAccountName", "displayName", "mail", "memberOf", "cn"]
+    return list(dict.fromkeys([*configured, *required]))
 
 
 def _connect(user: str, password: str) -> Connection:
@@ -90,7 +108,7 @@ def authenticate_ldap(username: str, password: str) -> AuthenticatedIdentity:
         )
         found = search_connection.search(
             settings.ldap_base_dn, filter_value, search_scope=SUBTREE,
-            attributes=["sAMAccountName", "displayName", "mail", "memberOf", "cn"], size_limit=1,
+            attributes=_requested_attributes(), size_limit=1,
         )
         if not found or not search_connection.entries:
             raise ValueError("Пользователь не найден в LDAP")

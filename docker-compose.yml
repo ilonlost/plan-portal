@@ -23,8 +23,8 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-planner}:${POSTGRES_PASSWORD:-local_planner_password}@ppp-postgres:5432/${POSTGRES_DB:-production_planning}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:18095,http://127.0.0.1:18095}
-      APP_URL: ${APP_URL:-http://127.0.0.1:18095}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:15500,http://127.0.0.1:15500}
+      APP_URL: ${APP_URL:-http://127.0.0.1:15500}
       AUTH_MODE: ${AUTH_MODE:-mock}
       SESSION_SECRET: ${SESSION_SECRET:-local-development-secret-change-in-production}
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-plan_portal_session}
@@ -37,6 +37,7 @@ services:
       LDAP_PORT: ${LDAP_PORT:-389}
       LDAP_USE_SSL: ${LDAP_USE_SSL:-false}
       LDAP_START_TLS: ${LDAP_START_TLS:-false}
+      LDAP_TIMEOUT: ${LDAP_TIMEOUT:-10}
       LDAP_BASE_DN: ${LDAP_BASE_DN:-}
       LDAP_BIND_DN: ${LDAP_BIND_DN:-}
       LDAP_BIND_PASSWORD: ${LDAP_BIND_PASSWORD:-}
@@ -48,6 +49,8 @@ services:
       LDAP_BIND_FORMAT: ${LDAP_BIND_FORMAT:-}
       LDAP_USER_ATTRIBUTES: ${LDAP_USER_ATTRIBUTES:-sAMAccountName,displayName,mail,memberOf,cn}
       LDAP_ADMIN_GROUP_DN: ${LDAP_ADMIN_GROUP_DN:-}
+      LDAP_ALLOWED_GROUP_DN: ${LDAP_ALLOWED_GROUP_DN:-}
+      LDAP_GROUP_ROLE_MAP: ${LDAP_GROUP_ROLE_MAP:-}
       PORTAL_ADMIN_LOGINS: ${PORTAL_ADMIN_LOGINS:-}
       LDAP_CA_FILE: ${LDAP_CA_FILE:-}
       LDAP_TLS_VALIDATE: ${LDAP_TLS_VALIDATE:-true}
@@ -58,6 +61,7 @@ services:
       SMTP_PORT: ${SMTP_PORT:-25}
       SMTP_FROM: ${SMTP_FROM:-planfkportal@agrohold.ru}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-PLAN PORTAL}
+      SMTP_REPLY_TO: ${SMTP_REPLY_TO:-}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_AUTH_METHOD: ${SMTP_AUTH_METHOD:-login}
@@ -92,7 +96,7 @@ services:
     container_name: ppp-frontend
     restart: unless-stopped
     ports:
-      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-18095}:80"
+      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-15500}:80"
     depends_on:
       ppp-backend:
         condition: service_healthy
