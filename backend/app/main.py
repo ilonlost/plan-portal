@@ -34,5 +34,8 @@ def correct_legacy_ohl_source_units() -> None:
         rounded = service.apply_kg_rounding_upgrade()
         if rounded:
             logger.warning("План пересчитан с округлением кг вверх до целого значения")
+        packaged = service.apply_piece_and_box_rounding_upgrade()
+        if packaged:
+            logger.warning("План пересчитан: штуки округлены вверх, задания приведены к полным коробам")
     finally:
         db.close()

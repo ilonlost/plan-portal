@@ -18,6 +18,7 @@ from app.services.planning_rules import mono_group
 class PlanService:
     MIN_PRODUCTION_DURATION = Decimal("0.02")
     KG_ROUNDING_SETTING_KEY = "kg_rounding_up_v1"
+    PIECE_AND_BOX_ROUNDING_SETTING_KEY = "piece_and_box_rounding_v3"
     def __init__(self, db: Session):
         self.db = db
 
@@ -75,6 +76,58 @@ class PlanService:
         self.db.add(AuditEvent(
             username="system", action="kg_rounding_up_applied", entity_type="production_plan", entity_id=str(plan.id),
             details={"message": "Задания в кг округлены вверх до целого значения"},
+        ))
+        self.db.commit()
+        return True
+
+    def apply_piece_and_box_rounding_upgrade(self) -> bool:
+        """Rebuild the active plan once with whole pieces and full boxes.
+
+        The demand sources are kg, but a released production task cannot contain
+        a fraction of a piece or a fraction of a box.  Recalculation applies the
+        product packaging quantum to every automatic split.  Manual tasks are
+        upgraded in place as they do not take part in automatic recalculation.
+        """
+        if self.db.scalar(select(PortalSetting).where(PortalSetting.key == self.PIECE_AND_BOX_ROUNDING_SETTING_KEY)):
+            return False
+        plan = self.active_plan()
+        demands = self._latest_source_demands()
+        if not plan or not demands:
+            return False
+        plan.horizon_start = min(item.requested_date for item in demands)
+        plan.horizon_end = max(item.due_date for item in demands)
+        self.calculate(plan, demands, "piece_and_box_rounding")
+
+        changed_manual_items = False
+        for item in plan.schedule_items:
+            if item.schedule_kind != "production" or item.source != "manual" or not item.product:
+                continue
+            rounded_quantity = self._round_quantity_for_product(Decimal(item.quantity_kg or item.quantity or 0), item.product)
+            if rounded_quantity != Decimal(item.quantity or 0):
+                item.quantity = rounded_quantity
+                item.quantity_kg = rounded_quantity
+                changed_manual_items = True
+            item.box_count = self._box_count(rounded_quantity, item.product)
+            if item.line_id and item.product_id:
+                capability = self.db.scalar(select(LineCapability).where(
+                    LineCapability.line_id == item.line_id, LineCapability.product_id == item.product_id,
+                ))
+                if capability and Decimal(capability.units_per_hour) > 0:
+                    item.required_hours = self._production_duration(rounded_quantity, Decimal(capability.units_per_hour))
+                    item.duration_hours = item.required_hours
+        if changed_manual_items:
+            self.refresh_sequence_and_cleanings(plan)
+            self.recalculate_load(plan)
+            self.create_version(plan, "manual_package_rounding", "Ручные задания округлены до целых коробов")
+
+        self.db.add(PortalSetting(
+            key=self.PIECE_AND_BOX_ROUNDING_SETTING_KEY,
+            value={"rule": "ceil_pieces_and_full_boxes"},
+            updated_by="system",
+        ))
+        self.db.add(AuditEvent(
+            username="system", action="piece_and_box_rounding_applied", entity_type="production_plan", entity_id=str(plan.id),
+            details={"message": "Штуки округлены вверх, задания приведены к полному коробу"},
         ))
         self.db.commit()
         return True
@@ -187,8 +240,9 @@ class PlanService:
             if field in values and values[field] is not None:
                 setattr(item, field, values[field])
         if values.get("quantity") is not None:
-            item.quantity = self._ceil_kg(Decimal(values["quantity"]))
+            item.quantity = self._round_quantity_for_product(Decimal(values["quantity"]), item.product)
             item.quantity_kg = item.quantity
+            item.box_count = self._box_count(item.quantity, item.product)
         if item.schedule_kind == "production" and item.line_id and item.product_id:
             capability = self.db.scalar(select(LineCapability).where(
                 LineCapability.line_id == item.line_id, LineCapability.product_id == item.product_id,
@@ -229,6 +283,28 @@ class PlanService:
     def _ceil_kg(quantity: Decimal) -> Decimal:
         return quantity.to_integral_value(rounding=ROUND_CEILING)
 
+    @staticmethod
+    def _ceil_quantum(quantity: Decimal, quantum: Decimal) -> Decimal:
+        if quantum <= 0:
+            return quantity
+        return (quantity / quantum).to_integral_value(rounding=ROUND_CEILING) * quantum
+
+    @classmethod
+    def _round_quantity_for_product(cls, quantity: Decimal, product: Product | None) -> Decimal:
+        rounded_kg = cls._ceil_kg(quantity)
+        box_weight = Decimal(product.box_weight_kg) if product and product.box_weight_kg else None
+        if box_weight and box_weight > 0:
+            return cls._ceil_quantum(rounded_kg, box_weight)
+        unit_weight = Decimal(product.unit_weight_kg) if product and product.unit_weight_kg else None
+        return cls._ceil_quantum(rounded_kg, unit_weight) if unit_weight and unit_weight > 0 else rounded_kg
+
+    @staticmethod
+    def _box_count(quantity: Decimal, product: Product | None) -> Decimal | None:
+        box_weight = Decimal(product.box_weight_kg) if product and product.box_weight_kg else None
+        if not box_weight or box_weight <= 0:
+            return None
+        return (quantity / box_weight).to_integral_value(rounding=ROUND_CEILING)
+
     def create_manual_task(self, plan: ProductionPlan, values: dict) -> ProductionPlan:
         product = self.db.get(Product, values["product_id"])
         line = self.db.get(ProductionLine, values["line_id"])
@@ -239,12 +315,11 @@ class PlanService:
         ))
         if not capability or Decimal(capability.units_per_hour) <= 0:
             raise ValueError("Для выбранного SKU не задана скорость на этой линии")
-        quantity = self._ceil_kg(Decimal(values["quantity"]))
+        quantity = self._round_quantity_for_product(Decimal(values["quantity"]), product)
         if quantity <= 0:
             raise ValueError("Задание должно быть больше нуля")
-        box_weight = Decimal(product.box_weight_kg) if product.box_weight_kg else None
         quantum = Decimal(capability.batch_quantum_kg) if capability.batch_quantum_kg else None
-        boxes = (quantity / box_weight).quantize(Decimal("0.001")) if box_weight and box_weight > 0 else None
+        boxes = self._box_count(quantity, product)
         batches = (quantity / quantum).quantize(Decimal("0.001")) if quantum and quantum > 0 else None
         required_hours = self._production_duration(quantity, Decimal(capability.units_per_hour))
         item = ProductionScheduleItem(
@@ -390,13 +465,13 @@ class PlanService:
 def schedule_item_dict(item: ProductionScheduleItem) -> dict:
     quantity_units = None
     if item.source_unit == "шт" and item.source_quantity is not None:
-        quantity_units = item.source_quantity
+        quantity_units = Decimal(item.source_quantity).to_integral_value(rounding=ROUND_CEILING)
     elif item.product:
         unit_weight = Decimal(item.product.unit_weight_kg or 0)
         if unit_weight <= 0 and item.product.box_weight_kg and item.product.units_per_box:
             unit_weight = Decimal(item.product.box_weight_kg) / Decimal(item.product.units_per_box)
         if unit_weight > 0:
-            quantity_units = (Decimal(item.quantity_kg or item.quantity or 0) / unit_weight).quantize(Decimal("0.001"))
+            quantity_units = (Decimal(item.quantity_kg or item.quantity or 0) / unit_weight).to_integral_value(rounding=ROUND_CEILING)
     return {
         "id": item.id,
         "sequence": item.sequence,

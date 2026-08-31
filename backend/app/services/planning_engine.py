@@ -106,23 +106,34 @@ class PlanningEngine:
         )):
             options = compatible.get(demand.product_id, [])
             if not options:
+                quantum = self._quantum(demand, [])
+                rounded_kg = self._ceil_kg(demand.quantity)
+                planned_total = self._ceil_quantum(rounded_kg, quantum)
+                warnings = list(demand.warnings)
+                if rounded_kg > demand.quantity:
+                    warnings.append(f"Объём округлён вверх с {demand.quantity} до {rounded_kg} кг")
+                if planned_total > rounded_kg:
+                    warnings.append(f"Объём увеличен с {rounded_kg} до {planned_total} кг по кванту {quantum} кг")
                 result.append(self._item(
-                    demand, None, None, demand.quantity, Decimal("0"), "unscheduled", "day", None,
-                    [*demand.warnings, "Нет совместимой производственной линии"],
+                    demand, None, None, planned_total, Decimal("0"), "unscheduled", "day", quantum,
+                    [*warnings, "Нет совместимой производственной линии"],
                 ))
                 continue
 
             quantum = self._quantum(demand, options)
-            source_is_exact_kg = demand.source_kind == "ohl" and demand.source_unit == "кг"
             rounded_kg = self._ceil_kg(demand.quantity)
-            planned_total = rounded_kg if source_is_exact_kg else self._ceil_quantum(rounded_kg, quantum)
+            # The source is expressed in kilograms, but production is released in
+            # complete packages.  First raise kg to the next whole kg, then raise
+            # the result to a full box so that neither pieces nor boxes become
+            # fractional in the released plan.
+            planned_total = self._ceil_quantum(rounded_kg, quantum)
             warnings = list(demand.warnings)
             if rounded_kg > demand.quantity:
                 warnings.append(f"Объём округлён вверх с {demand.quantity} до {rounded_kg} кг")
             if planned_total > rounded_kg:
                 warnings.append(f"Объём увеличен с {rounded_kg} до {planned_total} кг по кванту {quantum} кг")
             min_order = min((item.min_order_kg for item in options if item.min_order_kg and item.min_order_kg > 0), default=None)
-            if min_order and planned_total < min_order and not source_is_exact_kg:
+            if min_order and planned_total < min_order:
                 old_total = planned_total
                 planned_total = self._ceil_quantum(min_order, quantum)
                 warnings.append(f"Минимальный заказ: объём увеличен с {old_total} до {planned_total} кг")
@@ -154,8 +165,11 @@ class PlanningEngine:
                     wash_hours = Decimal("1") if needs_wash else Decimal("0")
                     free_hours = max(Decimal("0"), capacity - used_hours[key] - wash_hours)
                     free_kg = free_hours * capability.units_per_hour
-                    free_quantized = free_kg if source_is_exact_kg else self._floor_quantum(free_kg, quantum)
-                    can_fit = free_quantized > 0 if source_is_exact_kg else free_quantized >= quantum
+                    # A split task is also a released production task, therefore
+                    # it must contain a whole number of boxes rather than only
+                    # the total demand being package-quantized.
+                    free_quantized = self._floor_quantum(free_kg, quantum)
+                    can_fit = free_quantized >= quantum
                     if can_fit:
                         utilization = used_hours[key] / capacity if capacity else Decimal("999")
                         if capability.workshop_code == "PC":
@@ -222,8 +236,16 @@ class PlanningEngine:
 
     @staticmethod
     def _quantum(demand: DemandInput, options: list[CapabilityInput]) -> Decimal:
-        if demand.source_unit == "шт" and demand.box_quantum_kg and demand.box_quantum_kg > 0:
+        # Packaging is applicable regardless of the unit used by the demand
+        # source: all current source plans are kg, while the release still has
+        # to be in whole boxes.
+        if demand.box_quantum_kg and demand.box_quantum_kg > 0:
             return demand.box_quantum_kg
+        # If the catalogue has no packaging quantum, the smallest releasable
+        # quantity is a whole piece.  This keeps the kg volume and the displayed
+        # piece count physically consistent instead of only rounding it in UI.
+        if demand.unit_weight_kg and demand.unit_weight_kg > 0:
+            return demand.unit_weight_kg
         values = [item.batch_quantum_kg for item in options if item.batch_quantum_kg and item.batch_quantum_kg > 0]
         return min(values) if values else Decimal("0.001")
 

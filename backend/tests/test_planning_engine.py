@@ -26,6 +26,35 @@ def test_engine_keeps_incompatible_demand_visible() -> None:
     assert items[0].line_id is None
 
 
+def test_incompatible_demand_still_rounds_to_full_boxes() -> None:
+    day = date(2026, 8, 17)
+    items = PlanningEngine().plan(
+        demands=[DemandInput(
+            1, 10, "PACKED", Decimal("28.4"), day, day, source_unit="кг",
+            unit_weight_kg=Decimal("0.15"), units_per_box=Decimal("4"), box_quantum_kg=Decimal("0.6"),
+        )],
+        capabilities=[], capacities=[], horizon_end=day,
+    )
+
+    assert items[0].status == "unscheduled"
+    assert items[0].quantity == Decimal("29.4")
+    assert items[0].box_count == Decimal("49.000")
+
+
+def test_product_without_box_is_rounded_to_whole_pieces() -> None:
+    day = date(2026, 8, 17)
+    items = PlanningEngine().plan(
+        demands=[DemandInput(
+            1, 10, "PIECE", Decimal("1.01"), day, day, source_unit="кг", unit_weight_kg=Decimal("0.15"),
+        )],
+        capabilities=[CapabilityInput(2, 10, Decimal("100"))],
+        capacities=[CapacityInput(2, day, Decimal("1"))], horizon_end=day,
+    )
+
+    assert items[0].quantity == Decimal("2.10")
+    assert items[0].source_quantity == Decimal("2.10")
+
+
 def test_ohl_demand_stays_on_source_date_and_uses_full_boxes() -> None:
     source_day = date(2026, 8, 12)
     next_day = date(2026, 8, 13)
@@ -48,7 +77,7 @@ def test_ohl_demand_stays_on_source_date_and_uses_full_boxes() -> None:
     assert items[-1].box_count == Decimal("1.000")
 
 
-def test_ohl_kg_source_rounds_up_to_whole_kg_without_unit_conversion() -> None:
+def test_ohl_kg_source_rounds_up_to_whole_boxes_and_pieces() -> None:
     day = date(2026, 8, 12)
     items = PlanningEngine().plan(
         demands=[DemandInput(
@@ -61,10 +90,10 @@ def test_ohl_kg_source_rounds_up_to_whole_kg_without_unit_conversion() -> None:
         horizon_end=day,
     )
     assert len(items) == 1
-    assert items[0].quantity == Decimal("29")
-    assert items[0].source_quantity == Decimal("29")
+    assert items[0].quantity == Decimal("29.4")
+    assert items[0].source_quantity == Decimal("29.4")
     assert items[0].source_unit == "кг"
-    assert items[0].box_count == Decimal("48.333")
+    assert items[0].box_count == Decimal("49.000")
 
 
 def test_weekly_plan_balances_day_and_night_shifts_by_batch() -> None:
