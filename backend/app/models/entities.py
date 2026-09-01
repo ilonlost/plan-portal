@@ -334,6 +334,38 @@ class IntegrationRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class FeedbackEntry(Base):
+    __tablename__ = "feedback_entries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    category: Mapped[str] = mapped_column(String(30), default="suggestion")
+    subject: Mapped[str] = mapped_column(String(180))
+    message: Mapped[str] = mapped_column(Text)
+    author_username: Mapped[str] = mapped_column(String(120), index=True)
+    author_name: Mapped[str] = mapped_column(String(200))
+    author_email: Mapped[str | None] = mapped_column(String(200))
+    ip_address: Mapped[str | None] = mapped_column(String(80))
+    user_agent: Mapped[str | None] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(30), default="new", index=True)
+    it_comment: Mapped[str | None] = mapped_column(Text)
+    notification_status: Mapped[str] = mapped_column(String(30), default="pending")
+    notification_error: Mapped[str | None] = mapped_column(Text)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class FeedbackEvent(Base):
+    __tablename__ = "feedback_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    feedback_id: Mapped[int] = mapped_column(ForeignKey("feedback_entries.id", ondelete="CASCADE"), index=True)
+    action: Mapped[str] = mapped_column(String(40))
+    description: Mapped[str] = mapped_column(Text)
+    actor_username: Mapped[str] = mapped_column(String(120))
+    actor_name: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class PortalSetting(Base):
     __tablename__ = "portal_settings"
     id: Mapped[int] = mapped_column(primary_key=True)

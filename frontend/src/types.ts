@@ -125,6 +125,17 @@ export interface DirectoryUser {
   department: string;
   title: string;
 }
+export interface FeedbackEntry {
+  id: number; category: "suggestion" | "problem" | "question" | "other"; subject: string; message: string;
+  author_username: string; author_name: string; author_email: string | null; status: "new" | "in_progress" | "resolved" | "closed";
+  it_comment: string | null; notification_status: string; notification_error: string | null;
+  resolved_at: string | null; resolved_by: string | null; created_at: string; updated_at: string;
+}
+export interface FeedbackEvent {
+  id: number; feedback_id: number; action: string; description: string;
+  actor_username: string; actor_name: string; created_at: string;
+}
+export interface FeedbackData { entries: FeedbackEntry[]; events: FeedbackEvent[]; can_manage: boolean; }
 export interface MailConfiguration {
   enabled: boolean; smtp_host: string; smtp_port: number; smtp_from: string; smtp_from_name: string;
   smtp_reply_to: string; smtp_secure: boolean; smtp_require_tls: boolean; notification_emails: string;

@@ -1,5 +1,5 @@
 import type {
-  AdminOverview, CatalogData, CsbRun, DirectoryUser, ImportPreview, LineData, MatrixData,
+  AdminOverview, CatalogData, CsbRun, DirectoryUser, FeedbackData, FeedbackEntry, ImportPreview, LineData, MatrixData,
   LineScheduleData, MailConfiguration, PlanData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 
@@ -71,6 +71,13 @@ export const api = {
   }),
   createUserAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean }) => request<{ ok: boolean; id: number }>("/admin/users", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+  }),
+  feedback: (status = "", query = "") => request<FeedbackData>(`/feedback?${new URLSearchParams({ ...(status ? { status } : {}), ...(query ? { query } : {}) }).toString()}`),
+  createFeedback: (data: { category: string; subject: string; message: string }) => request<{ ok: boolean; entry: FeedbackEntry }>("/feedback", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+  }),
+  updateFeedback: (id: number, data: { status: string; comment: string }) => request<{ ok: boolean; entry: FeedbackEntry }>(`/feedback/${id}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
   }),
   updateMailConfiguration: (configuration: MailConfiguration) => request<{ ok: boolean; configuration: MailConfiguration }>("/admin/mail-configuration", {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),

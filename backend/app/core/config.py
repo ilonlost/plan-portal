@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     smtp_tls_servername: str = ""
     smtp_tls_min_version: str = "TLSv1.2"
     notification_emails: str = ""
+    feedback_emails: str = ""
     settings_encryption_key: str = ""
     csb_test_mode: bool = True
     csb_endpoint: str = ""
