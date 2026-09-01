@@ -19,6 +19,17 @@ class AuthenticatedIdentity:
     groups: list[str]
 
 
+@dataclass(frozen=True)
+class DirectoryUser:
+    """A minimal, safe-to-return representation of an AD user."""
+
+    username: str
+    display_name: str
+    email: str
+    department: str
+    title: str
+
+
 def _server() -> Server:
     url = settings.ldap_server_url.strip()
     host = settings.ldap_server.strip()
@@ -69,6 +80,12 @@ def _requested_attributes() -> list[str]:
     return list(dict.fromkeys([*configured, *required]))
 
 
+def _directory_attributes() -> list[str]:
+    return list(dict.fromkeys([
+        *_requested_attributes(), "userPrincipalName", "department", "title",
+    ]))
+
+
 def _connect(user: str, password: str) -> Connection:
     connection = Connection(_server(), user=user, password=password, raise_exceptions=True, receive_timeout=settings.ldap_timeout)
     connection.open()
@@ -76,6 +93,72 @@ def _connect(user: str, password: str) -> Connection:
         connection.start_tls()
     connection.bind()
     return connection
+
+
+def _entry_value(entry: object, attribute: str) -> str:
+    """Read ldap3 Entry values and keep the search implementation mockable."""
+    value = getattr(entry, attribute, None)
+    if value is None:
+        return ""
+    if hasattr(value, "value"):
+        value = value.value
+    return str(value or "")
+
+
+def search_ldap_users(query: str) -> list[DirectoryUser]:
+    """Find people in AD with a service account for portal access assignment."""
+    clean = query.strip()
+    if len(clean) < 2:
+        return []
+    if settings.auth_mode.lower() != "ldap":
+        raise ValueError("Поиск в Active Directory доступен после включения AUTH_MODE=ldap")
+    if not settings.ldap_base_dn:
+        raise ValueError("LDAP_BASE_DN не настроен")
+    if not settings.ldap_bind_dn or not settings.ldap_bind_password:
+        raise ValueError("Для поиска в AD настройте LDAP_BIND_DN и LDAP_BIND_PASSWORD")
+
+    escaped = escape_filter_chars(clean)
+    search_filter = (
+        "(&(objectCategory=person)(objectClass=user)(|"
+        f"(sAMAccountName=*{escaped}*)"
+        f"(displayName=*{escaped}*)"
+        f"(mail=*{escaped}*)"
+        f"(userPrincipalName=*{escaped}*)"
+        "))"
+    )
+    try:
+        connection = _connect(settings.ldap_bind_dn, settings.ldap_bind_password)
+    except (LDAPBindError, LDAPException, OSError) as exc:
+        raise ValueError("Сервис Active Directory временно недоступен") from exc
+
+    try:
+        connection.search(
+            settings.ldap_base_dn,
+            search_filter,
+            search_scope=SUBTREE,
+            attributes=_directory_attributes(),
+            size_limit=max(1, min(25, settings.ldap_search_limit)),
+        )
+        results: list[DirectoryUser] = []
+        seen: set[str] = set()
+        for entry in connection.entries:
+            username = _entry_value(entry, "sAMAccountName") or _entry_value(entry, "userPrincipalName")
+            key = username.lower()
+            if not username or key in seen:
+                continue
+            seen.add(key)
+            results.append(DirectoryUser(
+                username=username,
+                display_name=_entry_value(entry, "displayName") or _entry_value(entry, "cn") or username,
+                email=_entry_value(entry, "mail"),
+                department=_entry_value(entry, "department"),
+                title=_entry_value(entry, "title"),
+            ))
+        return results
+    except (LDAPException, OSError) as exc:
+        raise ValueError("Не удалось выполнить поиск в Active Directory") from exc
+    finally:
+        connection.unbind()
 
 
 def _role(username: str, groups: list[str]) -> str:

@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     ldap_login_format: str = ""
     ldap_bind_format: str = ""
     ldap_user_attributes: str = "sAMAccountName,displayName,mail,memberOf,cn"
+    ldap_search_limit: int = 12
     ldap_admin_group_dn: str = ""
     ldap_planner_group_dn: str = ""
     ldap_master_group_dn: str = ""

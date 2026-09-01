@@ -1,5 +1,5 @@
 import type {
-  AdminOverview, CatalogData, CsbRun, ImportPreview, LineData, MatrixData,
+  AdminOverview, CatalogData, CsbRun, DirectoryUser, ImportPreview, LineData, MatrixData,
   LineScheduleData, MailConfiguration, PlanData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 
@@ -65,10 +65,11 @@ export const api = {
     body: JSON.stringify({ preview, create_plan: true, merge_into_active: true }),
   }),
   adminOverview: () => request<AdminOverview>("/admin/overview"),
-  updateUserAccess: (userId: number, role: string, lineId: number | null, active = true) => request<{ ok: boolean }>(`/admin/users/${userId}`, {
-    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, line_id: lineId, active }),
+  directoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/admin/directory-users?query=${encodeURIComponent(query)}`),
+  updateUserAccess: (userId: number, role: string, active = true) => request<{ ok: boolean }>(`/admin/users/${userId}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, active }),
   }),
-  createUserAccess: (data: { username: string; display_name: string; email: string; role: string; line_id: number | null; active: boolean }) => request<{ ok: boolean; id: number }>("/admin/users", {
+  createUserAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean }) => request<{ ok: boolean; id: number }>("/admin/users", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
   }),
   updateMailConfiguration: (configuration: MailConfiguration) => request<{ ok: boolean; configuration: MailConfiguration }>("/admin/mail-configuration", {

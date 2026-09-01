@@ -117,6 +117,14 @@ export interface AdminOverview {
   lines: { id: number; workshop_code: string; workshop_name: string; name: string }[];
   recent_audit: AuditRow[]; recent_notifications: NotificationRow[]; recent_integrations: IntegrationRow[];
 }
+
+export interface DirectoryUser {
+  username: string;
+  display_name: string;
+  email: string;
+  department: string;
+  title: string;
+}
 export interface MailConfiguration {
   enabled: boolean; smtp_host: string; smtp_port: number; smtp_from: string; smtp_from_name: string;
   smtp_reply_to: string; smtp_secure: boolean; smtp_require_tls: boolean; notification_emails: string;

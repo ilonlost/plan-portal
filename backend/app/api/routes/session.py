@@ -54,6 +54,11 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
             stored.ldap_groups = groups
             if settings.auth_mode.lower() == "mock":
                 stored.role, stored.workshop_code, stored.line_name = context.role, context.workshop_code, context.line_name
+            elif context.role == "admin":
+                # Администраторы из ENV / группы AD сохраняют аварийный доступ
+                # к админке и не могут быть случайно лишены его через веб-интерфейс.
+                stored.role, stored.workshop_code, stored.line_name = "admin", None, None
+                stored.active = True
         stored.last_login_at = datetime.now(timezone.utc)
         resolved = UserContext(
             stored.username, stored.display_name, stored.role, stored.email or "", stored.workshop_code, stored.line_name,

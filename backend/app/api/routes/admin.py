@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.core.auth_service import ldap_health
+from app.core.auth_service import ldap_health, search_ldap_users
 from app.core.config import settings
 from app.core.security import UserContext, require_admin, require_planner
 from app.db.session import get_db
@@ -23,6 +23,8 @@ from app.services.settings_service import get_mail_configuration, save_mail_conf
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+PORTAL_ROLES = frozenset({"admin", "planner", "viewer"})
+
 
 class DeletePlanRequest(BaseModel):
     confirmation: str
@@ -30,7 +32,6 @@ class DeletePlanRequest(BaseModel):
 
 class UserAccessUpdate(BaseModel):
     role: str
-    line_id: int | None = None
     active: bool = True
 
 
@@ -67,6 +68,34 @@ def _integration_dict(row: IntegrationRun) -> dict:
         "item_count": row.item_count, "response": row.response,
         "created_by": row.created_by, "created_at": row.created_at,
     }
+
+
+def _validate_portal_role(role: str) -> str:
+    clean = role.strip().lower()
+    if clean not in PORTAL_ROLES:
+        raise HTTPException(422, "Выберите роль: администратор, планер или просмотр")
+    return clean
+
+
+@router.get("/directory-users")
+def directory_users(
+    query: str = Query(min_length=2, max_length=120),
+    user: UserContext = Depends(require_admin),
+) -> dict:
+    try:
+        users = search_ldap_users(query)
+    except ValueError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"users": [
+        {
+            "username": person.username,
+            "display_name": person.display_name,
+            "email": person.email,
+            "department": person.department,
+            "title": person.title,
+        }
+        for person in users
+    ]}
 
 
 @router.get("/overview")
@@ -173,16 +202,12 @@ def update_user_access(
     target = db.get(User, user_id)
     if not target:
         raise HTTPException(404, "Пользователь не найден")
-    if payload.role not in {"admin", "planner", "master", "viewer"}:
-        raise HTTPException(422, "Неизвестная роль")
-    line = db.get(ProductionLine, payload.line_id) if payload.line_id else None
-    if payload.role == "master" and not line:
-        raise HTTPException(422, "Для мастера выберите производственную линию")
-    target.role = payload.role
+    role = _validate_portal_role(payload.role)
+    target.role = role
     target.active = payload.active
-    target.workshop_code = line.workshop_code if line else None
-    target.line_name = line.name if line else None
-    details = {"target": target.username, "role": payload.role, "line": target.line_name, "active": target.active}
+    target.workshop_code = None
+    target.line_name = None
+    details = {"target": target.username, "role": role, "line": None, "active": target.active}
     db.add(AuditEvent(username=user.username, action="user_access_updated", entity_type="user", entity_id=str(target.id), details=details))
     db.commit()
     return {"ok": True, **details}
@@ -197,11 +222,7 @@ def create_user_access(
     username = payload.username.strip()
     if not username:
         raise HTTPException(422, "Укажите корпоративный логин")
-    if payload.role not in {"admin", "planner", "master", "viewer"}:
-        raise HTTPException(422, "Неизвестная роль")
-    line = db.get(ProductionLine, payload.line_id) if payload.line_id else None
-    if payload.role == "master" and not line:
-        raise HTTPException(422, "Для мастера выберите производственную линию")
+    role = _validate_portal_role(payload.role)
     target = db.scalar(select(User).where(func.lower(User.username) == username.lower()))
     if target:
         raise HTTPException(409, "Пользователь уже добавлен")
@@ -209,10 +230,10 @@ def create_user_access(
         username=username,
         display_name=payload.display_name.strip() or username,
         email=payload.email.strip() or None,
-        role=payload.role,
+        role=role,
         active=payload.active,
-        workshop_code=line.workshop_code if line else None,
-        line_name=line.name if line else None,
+        workshop_code=None,
+        line_name=None,
         ldap_groups=[],
     )
     db.add(target)
