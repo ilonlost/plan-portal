@@ -14,16 +14,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "portal_settings",
-        sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("key", sa.String(80), nullable=False),
-        sa.Column("value", sa.JSON(), nullable=False, server_default="{}"),
-        sa.Column("updated_by", sa.String(120)),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.UniqueConstraint("key", name="uq_portal_settings_key"),
-    )
-    op.create_index("ix_portal_settings_key", "portal_settings", ["key"], unique=True)
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table("portal_settings"):
+        op.create_table(
+            "portal_settings",
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("key", sa.String(80), nullable=False),
+            sa.Column("value", sa.JSON(), nullable=False, server_default="{}"),
+            sa.Column("updated_by", sa.String(120)),
+            sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+            sa.UniqueConstraint("key", name="uq_portal_settings_key"),
+        )
+    if not any(value["name"] == "ix_portal_settings_key" for value in sa.inspect(op.get_bind()).get_indexes("portal_settings")):
+        op.create_index("ix_portal_settings_key", "portal_settings", ["key"], unique=True)
 
 
 def downgrade() -> None:

@@ -14,22 +14,29 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "line_schedule_templates",
-        sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("name", sa.String(160), nullable=False, unique=True),
-        sa.Column("description", sa.String(500)),
-        sa.Column("pattern", sa.JSON(), nullable=False, server_default="[]"),
-        sa.Column("created_by", sa.String(120)),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("CURRENT_TIMESTAMP")),
-    )
-    op.add_column("production_lines", sa.Column("schedule_template_id", sa.Integer(), sa.ForeignKey("line_schedule_templates.id", ondelete="SET NULL")))
-    op.add_column("production_lines", sa.Column("custom_schedule_pattern", sa.JSON(), nullable=False, server_default="[]"))
-    op.add_column("production_lines", sa.Column("production_day_start_hour", sa.Integer(), nullable=False, server_default="0"))
-    op.add_column("production_lines", sa.Column("mail_recipients", sa.Text()))
-    op.add_column("production_lines", sa.Column("csb_line_code", sa.String(40)))
-    op.add_column("production_lines", sa.Column("csb_t5", sa.String(20), nullable=False, server_default="4"))
-    op.add_column("production_lines", sa.Column("csb_t55", sa.String(80)))
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table("line_schedule_templates"):
+        op.create_table(
+            "line_schedule_templates",
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("name", sa.String(160), nullable=False, unique=True),
+            sa.Column("description", sa.String(500)),
+            sa.Column("pattern", sa.JSON(), nullable=False, server_default="[]"),
+            sa.Column("created_by", sa.String(120)),
+            sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("CURRENT_TIMESTAMP")),
+        )
+
+    def add_if_missing(column: sa.Column) -> None:
+        if column.name not in {value["name"] for value in sa.inspect(op.get_bind()).get_columns("production_lines")}:
+            op.add_column("production_lines", column)
+
+    add_if_missing(sa.Column("schedule_template_id", sa.Integer(), sa.ForeignKey("line_schedule_templates.id", ondelete="SET NULL")))
+    add_if_missing(sa.Column("custom_schedule_pattern", sa.JSON(), nullable=False, server_default="[]"))
+    add_if_missing(sa.Column("production_day_start_hour", sa.Integer(), nullable=False, server_default="0"))
+    add_if_missing(sa.Column("mail_recipients", sa.Text()))
+    add_if_missing(sa.Column("csb_line_code", sa.String(40)))
+    add_if_missing(sa.Column("csb_t5", sa.String(20), nullable=False, server_default="4"))
+    add_if_missing(sa.Column("csb_t55", sa.String(80)))
     op.execute("UPDATE production_lines SET production_day_start_hour = 15 WHERE workshop_code = 'PC'")
     op.execute("UPDATE production_lines SET csb_line_code = '5810' WHERE lower(name) = 'булка'")
     op.execute("UPDATE production_lines SET csb_line_code = '5720' WHERE lower(name) = 'слойка'")
