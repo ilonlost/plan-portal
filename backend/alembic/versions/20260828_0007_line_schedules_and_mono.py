@@ -24,7 +24,7 @@ def upgrade() -> None:
     add_if_missing("production_lines", sa.Column("schedule_code", sa.String(40), nullable=False, server_default="day_daily"))
     add_if_missing("production_lines", sa.Column("schedule_anchor_date", sa.Date()))
     add_if_missing("line_capacities", sa.Column("manual_override", sa.Boolean(), nullable=False, server_default=sa.false()))
-    op.execute("UPDATE production_lines SET schedule_anchor_date = DATE '2026-08-28'")
+    op.execute("UPDATE production_lines SET schedule_anchor_date = '2026-08-28'")
     op.execute("UPDATE production_lines SET schedule_code = 'two_shift_daily' WHERE lower(name) = 'сэндвичи'")
     op.execute("UPDATE production_lines SET schedule_code = 'two_two_day' WHERE lower(name) IN ('напитки', 'сухари', 'слойка')")
     op.execute("UPDATE production_lines SET schedule_code = 'bread_cycle' WHERE lower(name) = 'хлеба'")

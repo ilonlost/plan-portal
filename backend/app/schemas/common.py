@@ -135,6 +135,8 @@ class ExecutionStatusUpdate(BaseModel):
 
 
 class ImportRow(BaseModel):
+    advance_status: str | None = None
+    fk_status: str | None = None
     row_number: int
     sku: str = ""
     product_name: str = ""
@@ -177,6 +179,7 @@ class ImportRow(BaseModel):
 
 
 class ImportPreview(BaseModel):
+    reference_rows: list[ImportRow] = Field(default_factory=list)
     file_name: str
     mapping_code: str
     template_type: str = "generic"

@@ -19,7 +19,7 @@ def test_ohl_template_preserves_date_and_keeps_source_kilograms() -> None:
     sheet.title = "ОХЛ"
     sheet.append([None, None, None, None, None, None, "План производства"])
     sheet.append(["Сегмент", "Статус", "СГ", "Маркировка", "SAP-код", "Наименование", "12 авг"])
-    sheet.append(["ОХЛ", "АЗ", 10, "Да", 101, "Курица 150г*4 (0,6кг)", Decimal("5")])
+    sheet.append(["ОХЛ", "По графику", 10, "Нет", 101, "Курица 150г*4 (0,6кг)", Decimal("5")])
     ref = workbook.create_sheet("Справочник ФК")
     ref.append(["Код", "Наименование", "Линия", "Категория", "Скорость"])
     ref.append([101, "Курица", "Миквак", "Кулинария", 240])

@@ -7,7 +7,7 @@ import json
 import time
 from dataclasses import asdict, dataclass
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -44,7 +44,7 @@ def _decode(value: str) -> bytes:
 
 
 def create_session_token(user: UserContext) -> str:
-    payload = {**asdict(user), "exp": int(time.time()) + settings.session_max_age_seconds}
+    payload = {**asdict(user), "auth_method": settings.auth_mode, "exp": int(time.time()) + settings.session_max_age_seconds}
     encoded = _encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
     signature = _encode(hmac.new(settings.session_secret.encode(), encoded.encode(), hashlib.sha256).digest())
     return f"{encoded}.{signature}"
@@ -59,6 +59,8 @@ def parse_session_token(token: str | None) -> UserContext | None:
         return None
     try:
         payload = json.loads(_decode(encoded))
+        if not settings.demo_enabled and (payload.get("auth_method") != "ldap" or payload.get("username", "").lower().startswith("demo.")):
+            return None
         if int(payload.get("exp", 0)) < int(time.time()):
             return None
         return UserContext(
@@ -70,11 +72,9 @@ def parse_session_token(token: str | None) -> UserContext | None:
 
 
 def current_user(
-    request: Request, x_user: str | None = Header(default=None, alias="X-User"), db: Session = Depends(get_db),
+    request: Request, db: Session = Depends(get_db),
 ) -> UserContext:
     user = parse_session_token(request.cookies.get(settings.session_cookie_name))
-    if not user and settings.auth_mode.lower() == "mock" and x_user:
-        user = DEMO_USERS.get(x_user)
     if not user:
         raise HTTPException(401, "Требуется вход в систему")
     stored = db.scalar(select(User).where(User.username == user.username))
@@ -85,7 +85,7 @@ def current_user(
             stored.username, stored.display_name, stored.role, stored.email or user.email,
             stored.workshop_code or user.workshop_code, stored.line_name or user.line_name,
         )
-    return user
+    raise HTTPException(401, "Учётная запись сессии не найдена")
 
 
 def require_planner(user: UserContext = Depends(current_user)) -> UserContext:

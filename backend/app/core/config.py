@@ -8,7 +8,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./planning.sqlite3"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     app_url: str = "http://127.0.0.1:18095"
-    auth_mode: str = "mock"
+    app_env: str = "production"
+    auth_mode: str = "ldap"
     session_secret: str = "local-development-secret-change-in-production"
     session_cookie_name: str = "plan_portal_session"
     session_max_age_seconds: int = 28800
@@ -64,6 +65,10 @@ class Settings(BaseSettings):
     csb_token: str = ""
     plan_export_template: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def demo_enabled(self) -> bool:
+        return self.app_env == "development" and self.auth_mode == "mock"
 
     @property
     def cors_origin_list(self) -> list[str]:

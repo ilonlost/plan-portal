@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 import re
 
 from pydantic import BaseModel
@@ -165,6 +166,7 @@ def update_mail_configuration(
 
 @router.get("/mail-preview")
 def mail_preview(
+    audience: Literal["production", "warehouse", "materials"] = "production",
     start: date | None = None,
     end: date | None = None,
     line_ids: list[int] = Query(default=[]),
@@ -178,17 +180,21 @@ def mail_preview(
     end = end or min(plan.horizon_end, start)
     if end < start:
         raise HTTPException(422, "Дата окончания раньше даты начала")
+    date_column = func.coalesce(ProductionScheduleItem.marking_date, ProductionScheduleItem.production_date) if audience == "warehouse" else ProductionScheduleItem.production_date
     items = list(db.scalars(select(ProductionScheduleItem).where(
         ProductionScheduleItem.plan_id == plan.id,
-        ProductionScheduleItem.production_date >= start,
-        ProductionScheduleItem.production_date <= end,
+        date_column >= start,
+        date_column <= end,
+        ProductionScheduleItem.production_date.is_not(None),
         ProductionScheduleItem.excluded.is_(False),
     ).options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item)).order_by(
         ProductionScheduleItem.production_date, ProductionScheduleItem.line_id, ProductionScheduleItem.shift, ProductionScheduleItem.sequence,
     )))
     if line_ids:
         items = [item for item in items if item.line_id in set(line_ids)]
-    html = build_plan_email_html(get_mail_configuration(db), plan.name, start, end, [schedule_item_dict(item) for item in items])
+    if audience != "production":
+        items = [item for item in items if item.schedule_kind == "production" and item.status.value not in {"conflict", "unscheduled"}]
+    html = build_plan_email_html(get_mail_configuration(db), plan.name, start, end, [schedule_item_dict(item) for item in items], audience)
     return {"html": html, "item_count": len(items), "start": start, "end": end}
 
 

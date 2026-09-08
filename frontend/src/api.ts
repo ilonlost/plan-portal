@@ -4,19 +4,27 @@ import type {
 } from "./types";
 
 const API = import.meta.env.VITE_API_URL || "/api";
+const planVersions = new Map<number, number>();
 
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const planId = path.match(/^\/plans\/(\d+)/)?.[1];
+  if (planId && options.method && ["PATCH", "POST", "DELETE"].includes(options.method)) {
+    options = { ...options, headers: { "If-Match": String(planVersions.get(Number(planId)) || 0), ...options.headers } };
+  }
   const response = await fetch(`${API}${path}`, { ...options, credentials: "include" });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: "Ошибка сервера" }));
     throw new ApiError(body.detail || "Ошибка сервера", response.status);
   }
   if (response.status === 204) return undefined as T;
-  return response.json();
+  const body = await response.json();
+  const plan = body.plan || body;
+  if (typeof plan.id === "number" && typeof plan.version === "number") planVersions.set(plan.id, Math.max(plan.version, planVersions.get(plan.id) || 0));
+  return body;
 }
 
 async function optional<T>(path: string): Promise<T | null> {
@@ -42,14 +50,16 @@ export const api = {
   createScheduleTemplate: (data: { name: string; description?: string; pattern: { day_hours: number; night_hours: number }[] }) => request<ScheduleTemplate>("/lines/schedule-templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   workshops: () => request<WorkshopData[]>("/lines/workshops"),
   catalog: (params = "") => request<CatalogData>(`/catalog${params ? `?${params}` : ""}`),
+  assignProduct: (productId: number, lineId: number, speed: number) => request(`/catalog/products/${productId}/capabilities`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ line_id: lineId, units_per_hour: speed }) }),
   updateCapability: (id: number, data: object) => request<{ ok: boolean }>(`/catalog/capabilities/${id}`, {
     method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
   }),
-  updateItem: (planId: number, itemId: number, data: object) => request<PlanData>(`/plans/${planId}/items/${itemId}`, {
-    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+  updateItem: (planId: number, itemId: number, data: object, version?: number) => request<PlanData>(`/plans/${planId}/items/${itemId}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json", ...(version == null ? {} : { "If-Match": String(version) }) }, body: JSON.stringify(data),
   }),
-  updateExecution: (planId: number, itemId: number, status: string, note?: string) => request<PlanData>(`/plans/${planId}/items/${itemId}/execution-status`, {
-    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status, note }),
+  deleteItem: (planId: number, itemId: number, version: number) => request<PlanData>(`/plans/${planId}/items/${itemId}`, { method: "DELETE", headers: { "If-Match": String(version) } }),
+  updateExecution: (planId: number, itemId: number, status: string, note?: string, version?: number) => request<PlanData>(`/plans/${planId}/items/${itemId}/execution-status`, {
+    method: "PATCH", headers: { "Content-Type": "application/json", ...(version == null ? {} : { "If-Match": String(version) }) }, body: JSON.stringify({ status, note }),
   }),
   createEvent: (planId: number, data: object) => request<PlanData>(`/plans/${planId}/events`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
@@ -82,9 +92,9 @@ export const api = {
   updateMailConfiguration: (configuration: MailConfiguration) => request<{ ok: boolean; configuration: MailConfiguration }>("/admin/mail-configuration", {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),
   }),
-  mailPreview: (start: string, end: string, lineIds: number[] = []) => request<{ html: string; item_count: number; start: string; end: string }>(`/admin/mail-preview?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}${lineIds.map(value => `&line_ids=${value}`).join("")}`),
-  emailPlan: (planId: number, recipients: string[], start: string, end: string, lineIds: number[] = []) => request<{ ok: boolean; status: string; recipients: string[]; item_count: number; error: string | null }>(`/plans/${planId}/email`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients, start, end, line_ids: lineIds }),
+  mailPreview: (start: string, end: string, lineIds: number[] = [], audience = "production") => request<{ html: string; item_count: number; start: string; end: string }>(`/admin/mail-preview?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&audience=${audience}${lineIds.map(value => `&line_ids=${value}`).join("")}`),
+  emailPlan: (planId: number, recipients: string[], start: string, end: string, lineIds: number[] = [], audience = "production") => request<{ ok: boolean; status: string; recipients: string[]; item_count: number; error: string | null }>(`/plans/${planId}/email`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients, start, end, line_ids: lineIds, audience }),
   }),
   deletePlanData: (confirmation: string) => request<{ ok: boolean; plans_deleted: number; schedule_items_deleted: number }>("/admin/delete-plan-data", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmation }),

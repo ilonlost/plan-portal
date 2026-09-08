@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 from sqlalchemy import func, select
@@ -137,9 +137,9 @@ class PlanService:
             ImportedOrder.template_type.in_(("ohl_daily", "quarter_weekly")),
         ).order_by(ImportedOrder.imported_at.desc(), ImportedOrder.id.desc())))
         latest_ids: list[int] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[str] = set()
         for order in orders:
-            key = (order.source_name, order.template_type)
+            key = order.template_type
             if key not in seen:
                 latest_ids.append(order.id)
                 seen.add(key)
@@ -148,12 +148,47 @@ class PlanService:
         return list(self.db.scalars(select(DemandItem).where(DemandItem.order_id.in_(latest_ids))))
 
     def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation") -> ProductionPlan:
+        for demand in demands:
+            if demand.source_kind == "ohl" and demand.source_plan_date and demand.product and demand.product.advance_status is not None:
+                demand.advance_production = demand.product.advance_status == "АЗ"
+                demand.requested_date = demand.source_plan_date - timedelta(days=int(demand.advance_production))
+                demand.due_date = demand.requested_date
+                demand.production_week = demand.requested_date.isocalendar().week
+        if demands:
+            plan.horizon_start = min(d.requested_date for d in demands)
+            plan.horizon_end = max(d.due_date for d in demands)
+            from app.services.line_schedule_service import ensure_line_capacities
+            ensure_line_capacities(self.db, list(self.db.scalars(select(ProductionLine))), plan.horizon_start, plan.horizon_end)
         capabilities = list(self.db.scalars(select(LineCapability).options(joinedload(LineCapability.line))))
         capacities = list(self.db.scalars(select(LineCapacity)))
-        manual_demand_ids = {item.demand_item_id for item in plan.schedule_items if item.source == "manual" and item.demand_item_id}
+        # Preserve manually handled splits, including deleted quantities, across reimports.
+        handled = defaultdict(lambda: Decimal("0"))
+        for item in plan.schedule_items:
+            if item.source == "manual" and item.demand_item:
+                consumed = item.source_quantity if item.source_unit == "кг" and item.source_quantity is not None else item.quantity
+                handled[self.demand_key(item.demand_item)] += Decimal(consumed)
+        remaining_quantity = {}
+        for demand in demands:
+            key = self.demand_key(demand)
+            consumed = min(Decimal(demand.quantity), handled[key])
+            handled[key] -= consumed
+            remaining_quantity[demand.id] = Decimal(demand.quantity) - consumed
+        reserved = defaultdict(lambda: Decimal("0"))
+        reserved_groups = defaultdict(set)
+        capability_map = {(c.line_id, c.product_id): c for c in capabilities}
+        for item in plan.schedule_items:
+            if item.source == "manual" and not item.excluded and item.line_id and item.production_date:
+                capability = capability_map.get((item.line_id, item.product_id))
+                if item.schedule_kind == "production" and capability:
+                    item.required_hours = self._production_duration(Decimal(item.quantity), Decimal(capability.units_per_hour))
+                    if capability.line.workshop_code == "PC":
+                        reserved_groups[(item.line_id, item.production_date, item.shift)].add(mono_group(item.product.name, item.product.mono_group))
+                reserved[(item.line_id, item.production_date, item.shift)] += Decimal(item.required_hours)
+        for key, groups in reserved_groups.items():
+            reserved[key] += Decimal(len(groups))
         result = PlanningEngine().plan(
             demands=[DemandInput(
-                id=item.id, product_id=item.product_id or 0, sku=item.sku, quantity=Decimal(item.quantity),
+                id=item.id, product_id=item.product_id or 0, sku=item.sku, quantity=remaining_quantity[item.id],
                 requested_date=item.requested_date, due_date=item.due_date, priority=item.priority,
                 source_quantity=Decimal(item.source_quantity) if item.source_quantity is not None else None,
                 source_unit=item.source_unit,
@@ -163,22 +198,24 @@ class PlanService:
                 exact_date=item.exact_date, source_kind=item.source_kind, marking_date=item.marking_date,
                 warnings=tuple(item.validation_errors or []),
                 mono_group=mono_group(item.product.name if item.product else item.product_name, item.product.mono_group if item.product else None),
-            ) for item in demands if item.valid and item.id not in manual_demand_ids],
+            ) for item in demands if item.valid and remaining_quantity[item.id] > 0],
             capabilities=[CapabilityInput(
                 line_id=item.line_id, product_id=item.product_id, units_per_hour=Decimal(item.units_per_hour),
                 line_priority=item.line.priority,
                 batch_quantum_kg=Decimal(item.batch_quantum_kg) if item.batch_quantum_kg else None,
                 min_order_kg=Decimal(item.min_order_kg) if item.min_order_kg else None,
                 workshop_code=item.line.workshop_code,
-            ) for item in capabilities],
+            ) for item in capabilities if item.line.status == "active"],
             capacities=[CapacityInput(
                 line_id=item.line_id, capacity_date=item.capacity_date,
-                available_hours=Decimal(item.available_hours), available=item.available, shift=item.shift,
+                available_hours=max(Decimal("0"), Decimal(item.available_hours) - reserved[(item.line_id, item.capacity_date, item.shift)]), available=item.available, shift=item.shift,
             ) for item in capacities],
             horizon_end=plan.horizon_end,
+            reserved_groups=reserved_groups,
         )
         for existing in list(plan.schedule_items):
             if existing.source == "auto":
+                plan.schedule_items.remove(existing)
                 self.db.delete(existing)
         self.db.flush()
         for item in result:
@@ -231,11 +268,16 @@ class PlanService:
             if item.line_id is None or item.production_date is None:
                 item.load_percent = 0
                 item.status = ScheduleStatus.UNSCHEDULED
-        plan.status = PlanStatus.NEEDS_REVIEW if any(item.status in {ScheduleStatus.CONFLICT, ScheduleStatus.UNSCHEDULED} for item in plan.schedule_items) else PlanStatus.CALCULATED
+        plan.status = PlanStatus.NEEDS_REVIEW if any(not item.excluded and item.status in {ScheduleStatus.CONFLICT, ScheduleStatus.UNSCHEDULED} for item in plan.schedule_items) else PlanStatus.CALCULATED
         self.db.flush()
 
     def update_item(self, item: ProductionScheduleItem, values: dict) -> ProductionPlan:
         plan = item.plan
+        next_line = values.get("line_id") or item.line_id
+        if values.get("shift") not in {None, "day", "night"}:
+            raise ValueError("Выберите дневную или ночную смену")
+        if item.schedule_kind == "production" and next_line and not self.db.scalar(select(LineCapability).where(LineCapability.line_id == next_line, LineCapability.product_id == item.product_id)):
+            raise ValueError("В справочнике нет связи этого артикула с выбранной линией")
         for field in ("production_date", "line_id", "shift", "locked", "excluded"):
             if field in values and values[field] is not None:
                 setattr(item, field, values[field])
@@ -277,7 +319,7 @@ class PlanService:
     def _production_duration(cls, quantity: Decimal, speed: Decimal) -> Decimal:
         if quantity <= 0 or speed <= 0:
             return Decimal("0")
-        return max(cls.MIN_PRODUCTION_DURATION, (quantity / speed).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        return max(cls.MIN_PRODUCTION_DURATION, (quantity / speed).quantize(Decimal("0.01"), rounding=ROUND_CEILING))
 
     @staticmethod
     def _ceil_kg(quantity: Decimal) -> Decimal:
@@ -291,7 +333,7 @@ class PlanService:
 
     @classmethod
     def _round_quantity_for_product(cls, quantity: Decimal, product: Product | None) -> Decimal:
-        rounded_kg = cls._ceil_kg(quantity)
+        rounded_kg = quantity
         box_weight = Decimal(product.box_weight_kg) if product and product.box_weight_kg else None
         if box_weight and box_weight > 0:
             return cls._ceil_quantum(rounded_kg, box_weight)
@@ -362,7 +404,10 @@ class PlanService:
     def delete_item(self, item: ProductionScheduleItem) -> ProductionPlan:
         plan = item.plan
         description = item.reason or (item.product.name if item.product else "задание")
-        self.db.delete(item)
+        # Keep a tombstone tied to source identity, including after reimport.
+        item.excluded = True
+        item.source = "manual"
+        item.locked = True
         self.db.flush()
         self.refresh_sequence_and_cleanings(plan)
         self.recalculate_load(plan)
@@ -370,8 +415,12 @@ class PlanService:
         self.db.commit()
         return plan
 
+    @staticmethod
+    def demand_key(item: DemandItem) -> tuple:
+        return (item.source_kind, item.sku, item.source_plan_date or item.requested_date)
+
     def approve(self, plan: ProductionPlan, comment: str | None = None) -> ProductionPlan:
-        if any(item.status in {ScheduleStatus.CONFLICT, ScheduleStatus.UNSCHEDULED} for item in plan.schedule_items):
+        if any(not item.excluded and item.status in {ScheduleStatus.CONFLICT, ScheduleStatus.UNSCHEDULED} for item in plan.schedule_items):
             raise ValueError("Нельзя утвердить план с конфликтами или нераспределёнными заданиями")
         plan.status = PlanStatus.APPROVED
         self.create_version(plan, "approval", comment or "План утверждён")
@@ -412,8 +461,8 @@ class PlanService:
             events = [item for item in items if item.schedule_kind != "production"]
             productions.sort(key=lambda item: (
                 0 if item.shift == "day" else 1,
-                source_rank.get(item.source_kind, 1),
                 mono_group(products[item.product_id].name, products[item.product_id].mono_group) if item.product_id in products else "",
+                source_rank.get(item.source_kind, 1),
                 item.sequence, item.id or 0,
             ))
             sequence = 1
@@ -422,7 +471,7 @@ class PlanService:
             for item in productions:
                 product = products.get(item.product_id)
                 current_group = mono_group(product.name, product.mono_group) if product else str(item.product_id)
-                if lines[line_id].workshop_code == "PC" and previous_group and previous_group != current_group:
+                if lines[line_id].workshop_code == "PC" and previous_group and (previous_group != current_group or previous_shift != item.shift):
                     wash = ProductionScheduleItem(
                         plan_id=plan.id, product_id=None, line_id=line_id, production_date=production_date,
                         shift=previous_shift, sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"),
@@ -453,6 +502,8 @@ class PlanService:
         self.db.flush()
 
     def create_version(self, plan: ProductionPlan, change_type: str, comment: str) -> None:
+        plan.updated_at = datetime.now(timezone.utc)
+        self.db.flush()
         current = self.db.scalar(select(func.max(ProductionPlanVersion.version_number)).where(ProductionPlanVersion.plan_id == plan.id)) or 0
         snapshot = {"status": plan.status.value, "items": [
             {"id": item.id, "date": item.production_date.isoformat() if item.production_date else None, "line_id": item.line_id,
@@ -517,20 +568,19 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
 def plan_dict(db: Session, plan: ProductionPlan, allowed_line_name: str | None = None) -> dict:
     items = list(db.scalars(
         select(ProductionScheduleItem)
-        .where(ProductionScheduleItem.plan_id == plan.id)
+        .where(ProductionScheduleItem.plan_id == plan.id, ProductionScheduleItem.excluded.is_(False))
         .options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item))
         .order_by(ProductionScheduleItem.production_date, ProductionScheduleItem.sequence)
     ))
     if allowed_line_name:
         items = [item for item in items if item.line and item.line.name == allowed_line_name]
-    version = db.scalar(select(func.max(ProductionPlanVersion.version_number)).where(ProductionPlanVersion.plan_id == plan.id)) or 0
     statuses = defaultdict(int)
     for item in items:
         statuses[item.status.value] += 1
     return {
         "id": plan.id, "name": plan.name, "status": plan.status.value,
         "horizon_start": plan.horizon_start, "horizon_end": plan.horizon_end,
-        "updated_at": plan.updated_at, "version": version,
+        "updated_at": plan.updated_at, "version": plan.revision,
         "items": [schedule_item_dict(item) for item in items],
         "summary": {
             "total": len(items), "planned": statuses["planned"] + statuses["warning"],

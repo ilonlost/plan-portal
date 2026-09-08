@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
+from app.core.config import settings
 
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
@@ -30,7 +31,11 @@ def seed() -> None:
             User(username="viewer", display_name="Просмотр", role="viewer"),
         ]
         existing_users = set(db.scalars(select(User.username)))
-        db.add_all(user for user in demo_users if user.username not in existing_users)
+        if settings.demo_enabled:
+            db.add_all(user for user in demo_users if user.username not in existing_users)
+        else:
+            for user in db.scalars(select(User).where(User.username.in_(["demo.admin", "demo.planner"]))):
+                user.active = False
         if db.scalar(select(ProductionLine.id).limit(1)):
             lines = list(db.scalars(select(ProductionLine)))
             for line in lines:
@@ -70,6 +75,7 @@ def seed() -> None:
                 db.add(ProductionLine(
                     code=f"FK-{workshop_code}-{priority:02d}", name=line_name,
                     workshop_code=workshop_code, workshop_name=workshop_name,
+                    production_day_start_hour=15 if workshop_code == "PC" else 0,
                     working_hours=Decimal("22"), default_capacity=Decimal("0"),
                     capacity_unit="кг/день", priority=priority,
                     schedule_code=default_schedule_code(line_name), schedule_anchor_date=DEFAULT_ANCHOR,

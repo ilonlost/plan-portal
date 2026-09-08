@@ -1,7 +1,5 @@
 from datetime import timedelta
 from decimal import Decimal
-from hashlib import sha1
-import re
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
@@ -23,14 +21,26 @@ router = APIRouter(prefix="/imports", tags=["imports"])
 
 
 @router.post("/preview", response_model=ImportPreview)
-async def preview_import(file: UploadFile = File(...), user: UserContext = Depends(require_planner)) -> ImportPreview:
+async def preview_import(file: UploadFile = File(...), user: UserContext = Depends(require_planner), db: Session = Depends(get_db)) -> ImportPreview:
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(400, "Поддерживаются файлы XLSX и XLSM")
     content = await file.read()
     if len(content) > 30 * 1024 * 1024:
         raise HTTPException(413, "Файл превышает 30 МБ")
     try:
-        return ExcelImportService().parse(content, file.filename)
+        preview = ExcelImportService().parse(content, file.filename)
+        names = {_line_key(line.name) for line in db.scalars(select(ProductionLine))}
+        for row in preview.rows:
+            if row.line_hint and _line_key(row.line_hint) not in names:
+                text = f"Неизвестная линия «{row.line_hint}»: линия не будет создана автоматически"
+                if preview.template_type in {"production_reference", "capacity_reference"}:
+                    row.errors.append(text)
+                    row.valid = False
+                else:
+                    row.warnings.append(text)
+        preview.valid_rows = sum(row.valid for row in preview.rows)
+        preview.invalid_rows = len(preview.rows) - preview.valid_rows
+        return preview
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -49,6 +59,9 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
     db.flush()
     db.add(ImportFile(imported_order_id=order.id, original_name=preview.file_name))
     product_by_sku = {product.sku: product for product in db.scalars(select(Product))}
+    for row in preview.reference_rows:
+        if row.valid and row.sku:
+            _upsert_product(db, product_by_sku, row, overwrite=False)
 
     if preview.template_type in {"production_reference", "legacy_reference", "capacity_reference"}:
         updated = 0
@@ -76,8 +89,12 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
     for row in preview.rows:
         if not row.valid or row.quantity is None or row.requested_date is None or row.due_date is None:
             continue
-        product = _upsert_product(db, product_by_sku, row)
-        _upsert_capability(db, product, row)
+        product = _upsert_product(db, product_by_sku, row, overwrite=False)
+        # Demand workbooks never change line speeds, batches or restrictions.
+        if row.line_hint and not any(_line_key(line.name) == _line_key(row.line_hint) for line in db.scalars(select(ProductionLine))):
+            row.warnings = [*row.warnings, f"Неизвестная линия «{row.line_hint}»: проверьте справочник"]
+        source_date = row.source_plan_date or row.requested_date
+        production_date = source_date - timedelta(days=1) if source_kind == "ohl" and product.advance_status == "АЗ" else source_date
         demand = DemandItem(
             order_id=order.id, product_id=product.id, source_row=row.row_number, sku=row.sku,
             product_name=row.product_name or product.name, quantity=row.quantity,
@@ -86,9 +103,10 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
             production_week=row.production_week, exact_date=row.exact_date,
             source_kind=source_kind, source_plan_date=row.source_plan_date or row.requested_date,
             marking_date=row.marking_date, advance_production=row.advance_marking,
-            requested_date=row.requested_date, due_date=row.due_date, priority=row.priority,
+            requested_date=production_date if source_kind == "ohl" else row.requested_date,
+            due_date=production_date if source_kind == "ohl" else row.due_date, priority=row.priority,
             customer=row.customer, valid=True, validation_errors=row.warnings,
-            raw_data={"template_type": preview.template_type, "line_hint": row.line_hint, "advance_marking": row.advance_marking},
+            raw_data={"template_type": preview.template_type, "line_hint": row.line_hint, "advance_marking": row.advance_marking, "source_quantity_exact": str(row.source_quantity), "source_date": str(source_date)},
         )
         db.add(demand)
         demands.append(demand)
@@ -127,19 +145,23 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
     return {"order_id": order.id, "plan": plan_dict(db, plan)}
 
 
-def _upsert_product(db: Session, product_by_sku: dict[str, Product], row) -> Product:
+def _upsert_product(db: Session, product_by_sku: dict[str, Product], row, overwrite: bool = True) -> Product:
     product = product_by_sku.get(row.sku)
     if not product:
         product = Product(sku=row.sku, name=row.product_name or row.sku)
         db.add(product)
         db.flush()
         product_by_sku[row.sku] = product
-    if row.product_name and (row.product_name != row.sku or product.name == product.sku):
+    if row.product_name and (overwrite or product.name == product.sku):
         product.name = row.product_name
-    product.unit = row.source_unit or product.unit
+    for field in ("advance_status", "fk_status"):
+        if getattr(product, field) is None and getattr(row, field, None) is not None:
+            setattr(product, field, getattr(row, field))
+    if overwrite:
+        product.unit = row.source_unit or product.unit
     for field in ("unit_weight_kg", "units_per_box", "box_weight_kg", "state", "category", "short_name"):
         value = getattr(row, field, None)
-        if value is not None:
+        if value is not None and (overwrite or getattr(product, field) is None):
             setattr(product, field, value)
     for field in ("legacy_quantum_units", "legacy_daily_capacity_units", "legacy_capacity_unit", "reference_source"):
         value = getattr(row, field, None)
@@ -153,19 +175,9 @@ def _upsert_product(db: Session, product_by_sku: dict[str, Product], row) -> Pro
 def _upsert_capability(db: Session, product: Product, row) -> LineCapability | None:
     if not row.line_hint or not row.speed_kg_hour:
         return None
-    line = db.scalar(select(ProductionLine).where(ProductionLine.name == row.line_hint))
+    line = next((line for line in db.scalars(select(ProductionLine)) if _line_key(line.name) == _line_key(row.line_hint)), None)
     if not line:
-        clean = re.sub(r"[^0-9A-ZА-Я]+", "-", row.line_hint.upper()).strip("-")[:24] or "LINE"
-        digest = sha1(row.line_hint.encode("utf-8")).hexdigest()[:6].upper()
-        workshop_code, workshop_name = _workshop_for_line(row.line_hint)
-        line = ProductionLine(
-            code=f"FK-{clean}-{digest}", name=row.line_hint, working_hours=22,
-            workshop_code=workshop_code, workshop_name=workshop_name,
-            default_capacity=Decimal(row.speed_kg_hour) * Decimal("22"), capacity_unit="кг/день",
-            comments="Импортировано из справочника ФК · 22 ч производства + 2 ч обеда",
-        )
-        db.add(line)
-        db.flush()
+        raise HTTPException(422, f"Неизвестная линия «{row.line_hint}». Импорт не создаёт линии: исправьте сопоставление в справочнике.")
     else:
         line.workshop_code, line.workshop_name = _workshop_for_line(line.name)
     capability = db.scalar(select(LineCapability).where(
@@ -214,17 +226,9 @@ def _workshop_for_line(line_name: str) -> tuple[str, str]:
     return "UNASSIGNED", "Не распределено"
 
 
+def _line_key(value: str) -> str:
+    return " ".join(value.lower().replace("ё", "е").split())
+
+
 def _latest_real_demands(db: Session) -> list[DemandItem]:
-    orders = list(db.scalars(select(ImportedOrder).where(
-        ImportedOrder.template_type.in_(("ohl_daily", "quarter_weekly")),
-    ).order_by(ImportedOrder.imported_at.desc(), ImportedOrder.id.desc())))
-    latest_ids: list[int] = []
-    seen: set[tuple[str, str]] = set()
-    for order in orders:
-        key = (order.source_name, order.template_type)
-        if key not in seen:
-            latest_ids.append(order.id)
-            seen.add(key)
-    if not latest_ids:
-        return []
-    return list(db.scalars(select(DemandItem).where(DemandItem.order_id.in_(latest_ids), DemandItem.valid.is_(True))))
+    return [item for item in PlanService(db)._latest_source_demands() if item.valid]

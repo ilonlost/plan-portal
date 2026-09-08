@@ -14,6 +14,16 @@ router = APIRouter(prefix="/catalog", tags=["catalog"])
 
 
 class CapabilityUpdate(BaseModel):
+    line_id: int | None = Field(default=None, gt=0)
+    line_status: str | None = Field(default=None, max_length=120)
+    advance_status: str | None = None
+    fk_status: str | None = Field(default=None, max_length=120)
+    product_name: str | None = Field(default=None, min_length=1, max_length=200)
+    unit_weight_kg: Decimal | None = Field(default=None, gt=0)
+    box_weight_kg: Decimal | None = Field(default=None, gt=0)
+    units_per_box: Decimal | None = Field(default=None, gt=0)
+    state: str | None = Field(default=None, max_length=40)
+    category: str | None = Field(default=None, max_length=120)
     units_per_hour: Decimal | None = Field(default=None, gt=0)
     batch_quantum_kg: Decimal | None = Field(default=None, gt=0)
     min_order_kg: Decimal | None = Field(default=None, ge=0)
@@ -50,6 +60,7 @@ def catalog(
     products_total = db.scalar(select(func.count(Product.id))) or 0
     sources = list(db.scalars(select(ImportedOrder).order_by(ImportedOrder.imported_at.desc()).limit(20)))
     return {
+        "unmapped_products": [{"product_id": p.id, "sku": p.sku, "product_name": p.name} for p in db.scalars(select(Product).where(~Product.capabilities.any()).order_by(Product.sku))],
         "summary": {
             "products": products_total,
             "capabilities": db.scalar(select(func.count(LineCapability.id))) or 0,
@@ -60,6 +71,8 @@ def catalog(
             "capability_id": item.id,
             "product_id": item.product.id, "sku": item.product.sku, "product_name": item.product.name,
             "state": item.product.state, "category": item.product.category,
+            "advance_status": item.product.advance_status, "fk_status": item.product.fk_status,
+            "line_status": (item.technological_constraints or {}).get("source_line_status"),
             "unit_weight_kg": item.product.unit_weight_kg, "units_per_box": item.product.units_per_box,
             "box_weight_kg": item.product.box_weight_kg,
             "workshop_code": item.line.workshop_code, "workshop_name": item.line.workshop_name,
@@ -93,6 +106,23 @@ def update_capability(
     if not capability:
         raise HTTPException(404, "Строка справочника не найдена")
     values = payload.model_dump(exclude_unset=True)
+    if "units_per_hour" in values and values["units_per_hour"] is None:
+        raise HTTPException(422, "Скорость должна быть положительным числом")
+    if "line_id" in values:
+        line = db.get(ProductionLine, values.pop("line_id"))
+        if not line:
+            raise HTTPException(422, "Выберите существующую производственную линию")
+        duplicate = db.scalar(select(LineCapability).where(LineCapability.line_id == line.id, LineCapability.product_id == capability.product_id, LineCapability.id != capability.id))
+        if duplicate:
+            raise HTTPException(409, "Связь этого артикула и линии уже существует")
+        capability.line = line
+    if "line_status" in values:
+        capability.technological_constraints = {**(capability.technological_constraints or {}), "source_line_status": values.pop("line_status")}
+    if "advance_status" in values and values["advance_status"] not in {"АЗ", "По графику"}:
+        raise HTTPException(422, "Статус должен быть АЗ или По графику")
+    for field in ("advance_status", "fk_status", "unit_weight_kg", "box_weight_kg", "units_per_box", "state", "category", "product_name"):
+        if field in values:
+            setattr(capability.product, "name" if field == "product_name" else field, values.pop(field))
     if "mono_group" in values:
         capability.product.mono_group = (values.pop("mono_group") or "").strip() or None
     for field, value in values.items():
@@ -102,5 +132,31 @@ def update_capability(
         username=user.username, action="capability_updated", entity_type="line_capability",
         entity_id=str(capability.id), details=payload.model_dump(mode="json", exclude_unset=True),
     ))
+    db.flush()
+    from app.services.plan_service import PlanService
+    from app.services.line_schedule_service import ensure_line_capacities
+    service = PlanService(db)
+    plan = service.active_plan()
+    if plan:
+        demands = service._latest_source_demands()
+        if demands:
+            ensure_line_capacities(db, list(db.scalars(select(ProductionLine))), plan.horizon_start, plan.horizon_end)
+            service.calculate(plan, demands, "catalog_updated")
     db.commit()
     return {"ok": True, "capability_id": capability.id}
+
+
+class CapabilityCreate(BaseModel):
+    line_id: int = Field(gt=0)
+    units_per_hour: Decimal = Field(gt=0)
+
+
+@router.post("/products/{product_id}/capabilities")
+def assign_product(product_id: int, payload: CapabilityCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)):
+    if not db.get(Product, product_id) or not db.get(ProductionLine, payload.line_id):
+        raise HTTPException(422, "Выберите существующие артикул и линию")
+    if db.scalar(select(LineCapability).where(LineCapability.line_id == payload.line_id, LineCapability.product_id == product_id)):
+        raise HTTPException(409, "Связь артикула и линии уже существует")
+    capability = LineCapability(product_id=product_id, line_id=payload.line_id, units_per_hour=payload.units_per_hour)
+    db.add(capability); db.flush()
+    return update_capability(capability.id, CapabilityUpdate(units_per_hour=payload.units_per_hour), db, user)

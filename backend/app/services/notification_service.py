@@ -47,7 +47,23 @@ def build_plan_email_html(
     start: date,
     end: date,
     items: list[dict],
+    audience: str = "production",
 ) -> str:
+    if audience not in {"production", "warehouse", "materials"}:
+        raise ValueError("Неизвестный вариант письма")
+    if audience != "production":
+        title = "План отгрузки · Склад" if audience == "warehouse" else "Потребность производства · Сырьевой отдел"
+        warning = "" if audience == "warehouse" else "<p><b>Это потребность в готовой продукции, не заявка на сырьё.</b> Для расчёта сырья нужны нормы рецептур, выход и потери, остатки и единицы измерения компонентов.</p>"
+        grouped = {}
+        for item in items:
+            if item.get("schedule_kind", "production") != "production" or item.get("status") in {"conflict", "unscheduled"}:
+                continue
+            day = item.get("marking_date") or item.get("production_date") if audience == "warehouse" else item.get("production_date")
+            key = (_date(day), str(item.get("sku") or ""), str(item.get("product_name") or ""))
+            quantity, boxes = grouped.get(key, (0.0, 0.0))
+            grouped[key] = (quantity + float(item.get("quantity_kg") or 0), boxes + float(item.get("box_count") or 0))
+        body = "".join(f"<tr><td>{escape(day)}</td><td>{escape(sku)}</td><td>{escape(name)}</td><td>{quantity:,.3f}</td><td>{boxes:,.0f}</td></tr>" for (day, sku, name), (quantity, boxes) in sorted(grouped.items()))
+        return f'<!doctype html><html><body style="font:14px Arial;color:#202124"><h1>{title}</h1><p>{escape(plan_name)} · {_date(start)} — {_date(end)}</p>{warning}<table border="1" cellpadding="8" cellspacing="0"><tr><th>Дата</th><th>SKU</th><th>Продукция</th><th>Кг</th><th>Короба</th></tr>{body}</table></body></html>'
     accent = str(configuration.get("accent_color") or "#c8102e")
     grouped: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for item in items:
@@ -101,9 +117,10 @@ def send_notification(
     text: str,
     extra_recipients: list[str] | None = None,
     html: str | None = None,
+    exact_recipients: bool = False,
 ) -> NotificationLog:
     configuration = get_mail_configuration(db)
-    recipients = _recipients(configuration, extra_recipients)
+    recipients = _recipients({} if exact_recipients else configuration, extra_recipients)
     log = NotificationLog(event_type=event_type, recipients=recipients, subject=subject, status="pending")
     db.add(log)
     db.flush()

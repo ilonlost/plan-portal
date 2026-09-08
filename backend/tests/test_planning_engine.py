@@ -13,7 +13,8 @@ def test_engine_splits_and_reports_overload() -> None:
         horizon_end=day,
     )
     assert [item.quantity for item in items] == [Decimal("800"), Decimal("200")]
-    assert [item.status for item in items] == ["planned", "conflict"]
+    assert [item.status for item in items] == ["planned", "unscheduled"]
+    assert items[1].production_date is None
 
 
 def test_engine_keeps_incompatible_demand_visible() -> None:
@@ -37,8 +38,8 @@ def test_incompatible_demand_still_rounds_to_full_boxes() -> None:
     )
 
     assert items[0].status == "unscheduled"
-    assert items[0].quantity == Decimal("29.4")
-    assert items[0].box_count == Decimal("49.000")
+    assert items[0].quantity == Decimal("28.8")
+    assert items[0].box_count == Decimal("48.000")
 
 
 def test_product_without_box_is_rounded_to_whole_pieces() -> None:
@@ -51,8 +52,8 @@ def test_product_without_box_is_rounded_to_whole_pieces() -> None:
         capacities=[CapacityInput(2, day, Decimal("1"))], horizon_end=day,
     )
 
-    assert items[0].quantity == Decimal("2.10")
-    assert items[0].source_quantity == Decimal("2.10")
+    assert items[0].quantity == Decimal("1.05")
+    assert items[0].source_quantity == Decimal("1.05")
 
 
 def test_ohl_demand_stays_on_source_date_and_uses_full_boxes() -> None:
@@ -71,9 +72,9 @@ def test_ohl_demand_stays_on_source_date_and_uses_full_boxes() -> None:
         ],
         horizon_end=next_day,
     )
-    assert {item.production_date for item in items} == {source_day}
+    assert {item.production_date for item in items} == {source_day, None}
     assert sum(item.quantity for item in items) == Decimal("3")
-    assert items[-1].status == "conflict"
+    assert items[-1].status == "unscheduled"
     assert items[-1].box_count == Decimal("1.000")
 
 
@@ -90,10 +91,10 @@ def test_ohl_kg_source_rounds_up_to_whole_boxes_and_pieces() -> None:
         horizon_end=day,
     )
     assert len(items) == 1
-    assert items[0].quantity == Decimal("29.4")
-    assert items[0].source_quantity == Decimal("29.4")
+    assert items[0].quantity == Decimal("28.8")
+    assert items[0].source_quantity == Decimal("28.8")
     assert items[0].source_unit == "кг"
-    assert items[0].box_count == Decimal("49.000")
+    assert items[0].box_count == Decimal("48.000")
 
 
 def test_weekly_plan_balances_day_and_night_shifts_by_batch() -> None:
@@ -123,8 +124,8 @@ def test_ohl_uses_capacity_before_zam() -> None:
     )
     assert items[0].demand_id == 2
     assert items[0].source_kind == "ohl"
-    assert sum(item.quantity for item in items if item.status != "conflict") == Decimal("800")
-    assert sum(item.quantity for item in items if item.demand_id == 1 and item.status == "conflict") == Decimal("200")
+    assert sum(item.quantity for item in items if item.production_date is not None) == Decimal("800")
+    assert sum(item.quantity for item in items if item.demand_id == 1 and item.status == "unscheduled") == Decimal("200")
 
 
 def test_pc_mono_group_reserves_one_wash_per_group() -> None:
@@ -160,4 +161,4 @@ def test_pc_washing_reduces_available_production_capacity() -> None:
         capacities=[CapacityInput(2, day, Decimal("3"))], horizon_end=day,
     )
     assert items[0].status == "planned"
-    assert items[1].status == "conflict"
+    assert items[1].status == "unscheduled"

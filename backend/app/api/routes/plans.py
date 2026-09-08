@@ -1,13 +1,14 @@
 from io import BytesIO
 from urllib.parse import quote
+from typing import Literal
 
 from datetime import date, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
@@ -23,7 +24,19 @@ from app.services.settings_service import get_mail_configuration
 router = APIRouter(prefix="/plans", tags=["plans"])
 
 
+def writable_plan(plan_id: int, if_match: int | None = Header(default=None), db: Session = Depends(get_db), user: UserContext = Depends(current_user)):
+    if if_match is None:
+        raise HTTPException(428, "Обновите страницу: для изменения нужна версия плана")
+    plan = db.scalar(select(ProductionPlan).where(ProductionPlan.id == plan_id).with_for_update())
+    if not plan:
+        raise HTTPException(404, "План не найден")
+    if plan.revision != if_match:
+        raise HTTPException(409, "План изменён другим пользователем. Введённые данные сохранены в форме. Обновите план и сопоставьте изменения.")
+    return plan
+
+
 class PlanEmailRequest(BaseModel):
+    audience: Literal["production", "warehouse", "materials"] = "production"
     recipients: list[str] = Field(default_factory=list)
     start: date | None = None
     end: date | None = None
@@ -99,23 +112,31 @@ def active_plan_matrix(
                 "items": [schedule_item_dict(item) for item in sorted(day_items, key=lambda value: (value.shift, value.sequence))],
             })
         workshop["lines"].append({"id": line.id, "code": line.code, "name": line.name, "cells": cells})
-    return {"plan": {"id": plan.id, "name": plan.name, "status": plan.status.value, "version": plan_dict(db, plan)["version"]}, "dates": dates, "workshops": list(workshops.values())}
+    unplaced = list(db.scalars(select(ProductionScheduleItem).where(
+        ProductionScheduleItem.plan_id == plan.id, ProductionScheduleItem.production_date.is_(None),
+        ProductionScheduleItem.excluded.is_(False),
+    ).options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item))))
+    unplaced = [item for item in unplaced if item.line_id in line_ids or (item.line_id is None and user.role != "master" and not line_id and not workshop_code)]
+    return {"plan": {"id": plan.id, "name": plan.name, "status": plan.status.value, "version": plan.revision}, "dates": dates, "workshops": list(workshops.values()), "unscheduled": [schedule_item_dict(item) for item in unplaced]}
 
 
-@router.patch("/{plan_id}/items/{item_id}")
+@router.patch("/{plan_id}/items/{item_id}", dependencies=[Depends(writable_plan)])
 def update_item(plan_id: int, item_id: int, payload: ScheduleItemUpdate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     item = db.scalar(select(ProductionScheduleItem).where(
         ProductionScheduleItem.id == item_id, ProductionScheduleItem.plan_id == plan_id,
     ).options(joinedload(ProductionScheduleItem.plan), joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item)))
     if not item:
         raise HTTPException(404, "Задание не найдено")
-    plan = PlanService(db).update_item(item, payload.model_dump(exclude_unset=True))
+    try:
+        plan = PlanService(db).update_item(item, payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     db.add(AuditEvent(username=user.username, action="schedule_item_updated", entity_type="schedule_item", entity_id=str(item.id), details=payload.model_dump(mode="json", exclude_unset=True)))
     db.commit()
     return plan_dict(db, plan)
 
 
-@router.post("/{plan_id}/items")
+@router.post("/{plan_id}/items", dependencies=[Depends(writable_plan)])
 def create_manual_task(plan_id: int, payload: ManualTaskCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     if payload.shift not in {"day", "night"}:
         raise HTTPException(422, "Смена должна быть «day» или «night»")
@@ -133,7 +154,7 @@ def create_manual_task(plan_id: int, payload: ManualTaskCreate, db: Session = De
     return plan_dict(db, plan)
 
 
-@router.post("/{plan_id}/events")
+@router.post("/{plan_id}/events", dependencies=[Depends(writable_plan)])
 def create_event(plan_id: int, payload: ScheduleEventCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     plan = db.get(ProductionPlan, plan_id)
     if not plan:
@@ -147,7 +168,7 @@ def create_event(plan_id: int, payload: ScheduleEventCreate, db: Session = Depen
     return plan_dict(db, plan)
 
 
-@router.delete("/{plan_id}/items/{item_id}")
+@router.delete("/{plan_id}/items/{item_id}", dependencies=[Depends(writable_plan)])
 def delete_item(plan_id: int, item_id: int, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     item = db.scalar(select(ProductionScheduleItem).where(
         ProductionScheduleItem.id == item_id, ProductionScheduleItem.plan_id == plan_id,
@@ -161,7 +182,7 @@ def delete_item(plan_id: int, item_id: int, db: Session = Depends(get_db), user:
     return plan_dict(db, plan)
 
 
-@router.post("/{plan_id}/approve")
+@router.post("/{plan_id}/approve", dependencies=[Depends(writable_plan)])
 def approve_plan(plan_id: int, payload: PlanApprovalRequest, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     plan = db.get(ProductionPlan, plan_id)
     if not plan:
@@ -176,7 +197,7 @@ def approve_plan(plan_id: int, payload: PlanApprovalRequest, db: Session = Depen
         raise HTTPException(422, str(exc)) from exc
 
 
-@router.patch("/{plan_id}/items/{item_id}/execution-status")
+@router.patch("/{plan_id}/items/{item_id}/execution-status", dependencies=[Depends(writable_plan)])
 def update_execution_status(
     plan_id: int, item_id: int, payload: ExecutionStatusUpdate,
     db: Session = Depends(get_db), user: UserContext = Depends(current_user),
@@ -232,10 +253,12 @@ def email_plan(
     start, end = payload.start or plan.horizon_start, payload.end or plan.horizon_end
     if end < start:
         raise HTTPException(422, "Дата окончания раньше даты начала")
+    date_column = func.coalesce(ProductionScheduleItem.marking_date, ProductionScheduleItem.production_date) if payload.audience == "warehouse" else ProductionScheduleItem.production_date
     items = list(db.scalars(select(ProductionScheduleItem).where(
         ProductionScheduleItem.plan_id == plan.id,
-        ProductionScheduleItem.production_date >= start,
-        ProductionScheduleItem.production_date <= end,
+        date_column >= start,
+        date_column <= end,
+        ProductionScheduleItem.production_date.is_not(None),
         ProductionScheduleItem.excluded.is_(False),
     ).options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item)).order_by(
         ProductionScheduleItem.production_date, ProductionScheduleItem.line_id, ProductionScheduleItem.shift, ProductionScheduleItem.sequence,
@@ -243,6 +266,8 @@ def email_plan(
     if payload.line_ids:
         selected_ids = set(payload.line_ids)
         items = [item for item in items if item.line_id in selected_ids]
+    if payload.audience != "production":
+        items = [item for item in items if item.schedule_kind == "production" and item.status.value not in {"conflict", "unscheduled"}]
     configuration = get_mail_configuration(db)
     try:
         subject = str(configuration.get("plan_subject") or "План производства ФК · {start} — {end}").format(
@@ -250,12 +275,15 @@ def email_plan(
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(422, "В шаблоне темы разрешены только {start}, {end} и {plan}") from exc
-    html = build_plan_email_html(configuration, plan.name, start, end, [schedule_item_dict(item) for item in items])
+    html = build_plan_email_html(configuration, plan.name, start, end, [schedule_item_dict(item) for item in items], payload.audience)
+    if payload.audience != "production" and not payload.recipients:
+        raise HTTPException(422, "Укажите адресатов выбранного варианта письма")
+    subject = {"production": "Производство", "warehouse": "Склад", "materials": "Сырьевой отдел"}[payload.audience] + " · " + subject
     line_recipients = [value.strip() for item in items if item.line and item.line.mail_recipients for value in item.line.mail_recipients.replace(";", ",").replace("\n", ",").split(",") if value.strip()]
     log = send_notification(
         db, "production_plan_email", subject,
         f"План «{plan.name}» за период {start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}. Позиций: {len(items)}.",
-        [*line_recipients, *payload.recipients], html,
+        payload.recipients or line_recipients, html, exact_recipients=bool(payload.recipients),
     )
     db.add(AuditEvent(username=user.username, action="production_plan_emailed", entity_type="production_plan", entity_id=str(plan.id), details={"start": start.isoformat(), "end": end.isoformat(), "line_ids": payload.line_ids, "item_count": len(items), "status": log.status, "recipients": log.recipients}))
     db.commit()

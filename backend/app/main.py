@@ -2,6 +2,8 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.api.router import api_router
 from app.core.config import settings
@@ -22,11 +24,24 @@ app.add_middleware(
 app.include_router(api_router, prefix="/api")
 
 
+@app.exception_handler(StaleDataError)
+async def stale_plan(request, exc):
+    return JSONResponse(status_code=409, content={"detail": "План уже изменён другим пользователем. Ваши изменения не записаны. Обновите план и повторите корректировку."})
+
+
 @app.on_event("startup")
 def correct_legacy_ohl_source_units() -> None:
     """Apply the one-time kg correction to plans imported before this release."""
     db = SessionLocal()
     try:
+        if not settings.demo_enabled:
+            if settings.auth_mode != "ldap" or len(settings.session_secret) < 32 or settings.session_secret == "local-development-secret-change-in-production":
+                raise RuntimeError("Production требует AUTH_MODE=ldap и собственный SESSION_SECRET (не менее 32 символов)")
+            from sqlalchemy import select, func
+            from app.models.entities import User
+            for user in db.scalars(select(User).where(func.lower(User.username).in_(["demo.admin", "demo.planner"]))):
+                user.active = False
+            db.commit()
         service = PlanService(db)
         corrected = service.correct_legacy_ohl_source_units()
         if corrected:

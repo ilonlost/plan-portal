@@ -34,6 +34,7 @@ export interface MatrixCell {
 export interface MatrixLine { id: number; code: string; name: string; cells: MatrixCell[]; }
 export interface MatrixWorkshop { code: string; name: string; lines: MatrixLine[]; }
 export interface MatrixData {
+  unscheduled: ScheduleItem[];
   plan: { id: number; name: string; status: string; version: number };
   dates: string[]; workshops: MatrixWorkshop[];
 }
@@ -49,6 +50,8 @@ export interface LineData {
 export interface WorkshopData { code: string; name: string; lines: { id: number; code: string; name: string; status: string }[]; }
 
 export interface CatalogRow {
+  line_status: string | null;
+  advance_status: string | null; fk_status: string | null;
   capability_id: number; product_id: number; sku: string; product_name: string; state: string | null; category: string | null;
   unit_weight_kg: number | null; units_per_box: number | null; box_weight_kg: number | null;
   workshop_code: string; workshop_name: string; line_id: number; line_name: string;
@@ -74,11 +77,13 @@ export interface SourceFile {
   valid_rows: number; invalid_rows: number; imported_at: string;
 }
 export interface CatalogData {
+  unmapped_products: { product_id: number; sku: string; product_name: string }[];
   summary: { products: number; capabilities: number; lines: number; with_recipes: number };
   rows: CatalogRow[]; sources: SourceFile[];
 }
 
 export interface ImportRow {
+  advance_status: string | null; fk_status: string | null;
   row_number: number; sku: string; product_name: string; quantity: number | null; requested_date: string | null;
   due_date: string | null; priority: number; customer: string | null; valid: boolean; errors: string[]; warnings: string[];
   source_quantity: number | null; source_unit: string; quantity_kg: number | null; unit_weight_kg: number | null;

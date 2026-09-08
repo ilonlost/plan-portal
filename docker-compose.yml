@@ -25,7 +25,8 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-planner}:${POSTGRES_PASSWORD:-local_planner_password}@ppp-postgres:5432/${POSTGRES_DB:-production_planning}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:15500,http://127.0.0.1:15500}
       APP_URL: ${APP_URL:-http://127.0.0.1:15500}
-      AUTH_MODE: ${AUTH_MODE:-mock}
+      APP_ENV: ${APP_ENV:-production}
+      AUTH_MODE: ${AUTH_MODE:-ldap}
       SESSION_SECRET: ${SESSION_SECRET:-local-development-secret-change-in-production}
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-plan_portal_session}
       SESSION_MAX_AGE_SECONDS: ${SESSION_MAX_AGE_SECONDS:-28800}

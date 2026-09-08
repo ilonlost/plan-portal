@@ -81,6 +81,7 @@ class PlanningEngine:
         capabilities: list[CapabilityInput],
         capacities: list[CapacityInput],
         horizon_end: date,
+        reserved_groups: dict | None = None,
     ) -> list[PlannedItem]:
         compatible: dict[int, list[CapabilityInput]] = defaultdict(list)
         for capability in capabilities:
@@ -98,6 +99,8 @@ class PlanningEngine:
         used_hours: dict[tuple[int, date, str], Decimal] = defaultdict(lambda: Decimal("0"))
         last_group: dict[tuple[int, date, str], str] = {}
         seen_groups: dict[tuple[int, date], set[str]] = defaultdict(set)
+        for key, groups in (reserved_groups or {}).items():
+            seen_groups[key].update(groups)
         result: list[PlannedItem] = []
 
         source_rank = {"ohl": 0, "generic": 1, "zam": 2}
@@ -107,7 +110,7 @@ class PlanningEngine:
             options = compatible.get(demand.product_id, [])
             if not options:
                 quantum = self._quantum(demand, [])
-                rounded_kg = self._ceil_kg(demand.quantity)
+                rounded_kg = demand.quantity
                 planned_total = self._ceil_quantum(rounded_kg, quantum)
                 warnings = list(demand.warnings)
                 if rounded_kg > demand.quantity:
@@ -121,7 +124,7 @@ class PlanningEngine:
                 continue
 
             quantum = self._quantum(demand, options)
-            rounded_kg = self._ceil_kg(demand.quantity)
+            rounded_kg = demand.quantity
             # The source is expressed in kilograms, but production is released in
             # complete packages.  First raise kg to the next whole kg, then raise
             # the result to a full box so that neither pieces nor boxes become
@@ -134,9 +137,7 @@ class PlanningEngine:
                 warnings.append(f"Объём увеличен с {rounded_kg} до {planned_total} кг по кванту {quantum} кг")
             min_order = min((item.min_order_kg for item in options if item.min_order_kg and item.min_order_kg > 0), default=None)
             if min_order and planned_total < min_order:
-                old_total = planned_total
-                planned_total = self._ceil_quantum(min_order, quantum)
-                warnings.append(f"Минимальный заказ: объём увеличен с {old_total} до {planned_total} кг")
+                warnings.append(f"Объём {planned_total} кг ниже минимального заказа {min_order} кг. Исходный объём не увеличен автоматически")
 
             remaining = planned_total
             first_date = demand.requested_date
@@ -154,7 +155,7 @@ class PlanningEngine:
                 available = []
                 for capability, production_date, shift in candidates:
                     key = (capability.line_id, production_date, shift)
-                    day_key = (capability.line_id, production_date)
+                    day_key = (capability.line_id, production_date, shift)
                     capacity = capacity_by_slot[key]
                     # На ПЦ каждый новый блок монопродукта резервирует часовую мойку.
                     # Остальные SKU той же группы используют уже зарезервированную мойку.
@@ -169,7 +170,7 @@ class PlanningEngine:
                     # it must contain a whole number of boxes rather than only
                     # the total demand being package-quantized.
                     free_quantized = self._floor_quantum(free_kg, quantum)
-                    can_fit = free_quantized >= quantum
+                    can_fit = free_quantized >= quantum and self._hours(min(remaining, free_quantized), capability.units_per_hour) <= free_hours
                     if can_fit:
                         utilization = used_hours[key] / capacity if capacity else Decimal("999")
                         if capability.workshop_code == "PC":
@@ -188,7 +189,7 @@ class PlanningEngine:
                 slot_key = (capability.line_id, production_date, shift)
                 used_hours[slot_key] += wash_hours + hours
                 last_group[slot_key] = demand.mono_group or demand.sku
-                seen_groups[(capability.line_id, production_date)].add(demand.mono_group or demand.sku)
+                seen_groups[(capability.line_id, production_date, shift)].add(demand.mono_group or demand.sku)
                 remaining -= quantity
                 result.append(self._item(
                     demand, capability, production_date, quantity, hours,
@@ -207,9 +208,9 @@ class PlanningEngine:
                     conflict_warnings.append("Дата зафиксирована источником ОХЛ; перенос на другой день запрещён")
                 conflict_warnings.append("Недостаточно мощности в допустимом производственном окне")
                 hours = self._hours(remaining, best.units_per_hour)
-                used_hours[(best.line_id, conflict_date, shift)] += hours
                 result.append(self._item(
-                    demand, best, conflict_date, remaining, hours, "conflict", shift, quantum, conflict_warnings,
+                    demand, best, None, remaining, hours, "unscheduled", shift, quantum,
+                    [*conflict_warnings, "Невозможно проработать / разместить такой объем"],
                 ))
         return result
 
@@ -269,7 +270,7 @@ class PlanningEngine:
     def _hours(quantity: Decimal, speed: Decimal) -> Decimal:
         if quantity <= 0 or speed <= 0:
             return Decimal("0")
-        return max(Decimal("0.02"), (quantity / speed).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        return max(Decimal("0.02"), (quantity / speed).quantize(Decimal("0.01"), rounding=ROUND_CEILING))
 
     @staticmethod
     def _shift_order(shift: str) -> int:

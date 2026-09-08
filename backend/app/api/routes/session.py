@@ -32,15 +32,19 @@ def _user_dict(user: UserContext) -> dict:
 def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
     login_name = payload.username.strip()
     try:
+        if not settings.demo_enabled and login_name.lower().split("\\")[-1].split("@")[0].startswith("demo."):
+            raise ValueError("Неверный логин или пароль")
         if settings.auth_mode.lower() == "ldap":
             identity = authenticate_ldap(login_name, payload.password)
             context = UserContext(identity.username, identity.display_name, identity.role, identity.email)
             groups = identity.groups
-        else:
+        elif settings.demo_enabled:
             if payload.password != settings.mock_password or login_name not in DEMO_USERS:
                 raise ValueError("Неверный логин или пароль")
             context = DEMO_USERS[login_name]
             groups = []
+        else:
+            raise ValueError("Локальная авторизация отключена")
         stored = db.scalar(select(User).where(User.username == context.username))
         if not stored:
             stored = User(
@@ -49,6 +53,8 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
             )
             db.add(stored)
         else:
+            if not stored.active:
+                raise ValueError("Учётная запись отключена администратором")
             stored.display_name = context.display_name
             stored.email = context.email or stored.email
             stored.ldap_groups = groups
@@ -96,4 +102,4 @@ def me(user: UserContext = Depends(current_user)) -> dict:
 
 @router.get("/mode")
 def mode() -> dict:
-    return {"auth_mode": settings.auth_mode.lower(), "mock_hint": "demo.admin / demo" if settings.auth_mode.lower() == "mock" else None}
+    return {"auth_mode": "mock" if settings.demo_enabled else "ldap", "mock_hint": None}

@@ -31,7 +31,7 @@ class ExcelImportService:
         try:
             if "ОХЛ" in workbook.sheetnames:
                 return self._parse_ohl_daily(workbook, file_name)
-            if "План ЗАМ+Напитки" in workbook.sheetnames:
+            if any(self._normalize(name) in {"план зам+напитки", "план зам", "зам"} for name in workbook.sheetnames):
                 return self._parse_quarter_weekly(workbook, file_name)
             if "Справочник" in workbook.sheetnames and any(name in workbook.sheetnames for name in ("ПЦ", "КЦ 1", "КЦ 2")):
                 return self._parse_production_reference(workbook, file_name)
@@ -47,7 +47,7 @@ class ExcelImportService:
         sheet = workbook["ОХЛ"]
         reference = self._fk_reference(workbook)
         year = self._year_from_workbook(sheet, file_name)
-        headers = next(sheet.iter_rows(min_row=2, max_row=2, values_only=True))
+        header_row, mapping, headers = self._find_headers(sheet)
         date_columns = [
             (column, parsed)
             for column, value in enumerate(headers)
@@ -57,21 +57,22 @@ class ExcelImportService:
             raise ValueError("На листе ОХЛ не найдены календарные даты во второй строке")
 
         rows: list[ImportRow] = []
-        for row_number, values in enumerate(sheet.iter_rows(min_row=3, values_only=True), start=3):
-            sku = self._sku(values[4] if len(values) > 4 else None)
-            name = str((values[5] if len(values) > 5 else None) or "").strip()
+        for row_number, values in enumerate(sheet.iter_rows(min_row=header_row + 1, values_only=True), start=header_row + 1):
+            sku = self._sku(self._value(values, mapping["sku"]))
+            name = str(self._value(values, mapping["name"]) or "").strip()
             if not sku or not name:
                 continue
             packaging = self.parse_packaging(name)
             ref = reference.get(sku, {})
-            advance_value = str((values[3] if len(values) > 3 else None) or "").strip().lower()
-            line_name = str(ref.get("line") or "").lower()
-            product_text = name.lower().replace("ё", "е")
-            is_advance_product = any(token in line_name or token in product_text for token in ("сэндвич", "сендвич", "бургер"))
-            advance_marking = is_advance_product and advance_value not in {"", "нет", "0", "false", "none"}
+            advance_value = str(self._value(values, mapping.get("advance")) or "").strip().lower()
+            advance_marking = advance_value in {"аз", "да"}
             for column, source_date in date_columns:
-                source_value = self._number(values[column] if column < len(values) else None)
-                if source_value is None or source_value <= 0:
+                raw = values[column] if column < len(values) else None
+                source_value = self._number(raw)
+                if raw in (None, "") or source_value == 0:
+                    continue
+                if source_value is None or source_value < 0:
+                    rows.append(ImportRow(row_number=row_number, sku=sku, product_name=name, requested_date=source_date, valid=False, errors=[f"Колонка {column + 1}: некорректный объём {raw}"]))
                     continue
                 errors: list[str] = []
                 warnings: list[str] = []
@@ -92,44 +93,63 @@ class ExcelImportService:
                     due_date=source_date - timedelta(days=1) if advance_marking else source_date,
                     source_plan_date=source_date, marking_date=source_date,
                     advance_marking=advance_marking,
+                    advance_status="АЗ" if advance_marking else "По графику" if advance_value in {"по графику", "по плану", "нет", "0"} else None,
+                    fk_status=ref.get("status"),
                     production_week=(source_date - timedelta(days=1) if advance_marking else source_date).isocalendar().week,
                     exact_date=True,
                     line_hint=ref.get("line"), speed_kg_hour=ref.get("speed"), category=ref.get("category"),
                     valid=not errors, errors=errors, warnings=warnings,
                 ))
-        return self._preview(
+        preview = self._preview(
             file_name, "ohl_daily_v1", "ohl_daily", "ОХЛ", rows,
             ["Даты ОХЛ зафиксированы: алгоритм не переносит объём на соседние дни.",
              "Для сэндвичей и бургеров с признаком авансовой маркировки ДП ставится на один день раньше ДМ.",
              "Значения источника уже указаны в килограммах и сохраняются без пересчёта из штук.",
              "Вес единицы и упаковка используются только для расчёта справочных штук и коробов."],
         )
+        # Include catalogue statuses even when that SKU has no demand this week.
+        status_rows = {sku: ImportRow(row_number=1, sku=sku, product_name=ref.get("name") or sku, fk_status=ref.get("status")) for sku, ref in reference.items()}
+        for row_number, values in enumerate(sheet.iter_rows(min_row=header_row + 1, values_only=True), header_row + 1):
+            sku = self._sku(self._value(values, mapping["sku"]))
+            if not sku:
+                continue
+            entry = status_rows.setdefault(sku, ImportRow(row_number=row_number, sku=sku, product_name=str(self._value(values, mapping["name"]) or sku)))
+            raw = self._normalize(str(self._value(values, mapping.get("advance")) or ""))
+            entry.advance_status = "АЗ" if raw in {"да", "аз"} else "По графику" if raw in {"нет", "по графику", "по плану", "0"} else None
+        preview.reference_rows = list(status_rows.values())
+        return preview
 
     def _parse_quarter_weekly(self, workbook, file_name: str) -> ImportPreview:
-        sheet = workbook["План ЗАМ+Напитки"]
+        sheet = next(workbook[name] for name in workbook.sheetnames if self._normalize(name) in {"план зам+напитки", "план зам", "зам"})
         reference = self._fk_reference(workbook)
         week_columns: list[tuple[int, int]] = []
-        headers = next(sheet.iter_rows(min_row=2, max_row=2, values_only=True))
+        header_row, mapping, headers = self._find_headers(sheet)
         for column, raw_value in enumerate(headers):
             value = str(raw_value or "")
-            match = re.search(r"(\d{1,2})\s*(?:w|нед)", value, re.IGNORECASE)
+            match = re.fullmatch(r"\s*(\d{1,2})\s*(?:w|нед(?:еля)?)\s*", value, re.IGNORECASE)
             if match:
                 week_columns.append((column, int(match.group(1))))
         if not week_columns:
             raise ValueError("На листе «План ЗАМ+Напитки» не найдены недельные колонки")
+        if len({week for _, week in week_columns}) != len(week_columns):
+            raise ValueError("Повторяются недельные колонки ЗАМ: проверьте шапку, чтобы не удвоить объёмы")
 
         year = self._year_from_workbook(sheet, file_name)
         rows: list[ImportRow] = []
-        for row_number, values in enumerate(sheet.iter_rows(min_row=3, values_only=True), start=3):
-            sku = self._sku(values[1] if len(values) > 1 else None)
-            name = str((values[2] if len(values) > 2 else None) or "").strip()
+        for row_number, values in enumerate(sheet.iter_rows(min_row=header_row + 1, values_only=True), start=header_row + 1):
+            sku = self._sku(self._value(values, mapping["sku"]))
+            name = str(self._value(values, mapping["name"]) or "").strip()
             if not sku or not name:
                 continue
             packaging = self.parse_packaging(name)
             ref = reference.get(sku, {})
             for column, week in week_columns:
-                quantity = self._number(values[column] if column < len(values) else None)
-                if quantity is None or quantity <= 0:
+                raw = values[column] if column < len(values) else None
+                quantity = self._number(raw)
+                if raw in (None, "") or quantity == 0:
+                    continue
+                if quantity is None or quantity < 0:
+                    rows.append(ImportRow(row_number=row_number, sku=sku, product_name=name, production_week=week, valid=False, errors=[f"Колонка {column + 1}: некорректный объём {raw}"]))
                     continue
                 monday = date.fromisocalendar(year, week, 1)
                 rows.append(ImportRow(
@@ -141,7 +161,7 @@ class ExcelImportService:
                     line_hint=ref.get("line"), speed_kg_hour=ref.get("speed"), category=ref.get("category"),
                 ))
         return self._preview(
-            file_name, "quarter_weekly_v1", "quarter_weekly", "План ЗАМ+Напитки", rows,
+            file_name, "quarter_weekly_v1", "quarter_weekly", sheet.title, rows,
             ["Объёмы источника трактуются как кг.",
              "Каждая потребность распределяется только внутри своей ISO-недели.",
              "При расчёте применяется квант замеса из актуального справочника ПЦ/КЦ."],
@@ -149,15 +169,18 @@ class ExcelImportService:
 
     def _parse_production_reference(self, workbook, file_name: str) -> ImportPreview:
         sheet = workbook["Справочник"]
+        header_row, mapping, headers = self._find_headers(sheet)
+        fields = {self._normalize(str(value or "")): index for index, value in enumerate(headers) if value}
         rows: list[ImportRow] = []
-        for row_number, values in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        for row_number, values in enumerate(sheet.iter_rows(min_row=header_row + 1, values_only=True), start=header_row + 1):
             value = lambda index: values[index] if index < len(values) else None
-            sku = self._sku(value(0))
-            name = str(value(1) or "").strip()
+            field = lambda *names: next((self._value(values, fields[name]) for name in names if name in fields), None)
+            sku = self._sku(value(mapping["sku"]))
+            name = str(value(mapping["name"]) or "").strip()
             if not sku or not name:
                 continue
-            line = str(value(3) or "").strip() or None
-            speed = self._number(value(7))
+            line = str(field("линия") or "").strip() or None
+            speed = self._number(field("скорость", "скорость, кг/час", "скорость кг/час"))
             errors: list[str] = []
             if not line:
                 errors.append("Не указана производственная линия")
@@ -168,12 +191,12 @@ class ExcelImportService:
                 row_number=row_number, sku=sku, product_name=name, source_unit="кг",
                 unit_weight_kg=packaging["unit_weight_kg"], units_per_box=packaging["units_per_box"],
                 box_weight_kg=packaging["box_weight_kg"], line_hint=line, speed_kg_hour=speed,
-                batch_quantum_kg=self._number(value(9)), min_order_kg=self._number(value(15)),
-                capacity_type=str(value(10) or "").strip() or None,
-                restrictions=str(value(16) or "").strip() or None,
-                state=str(value(2) or "").strip() or None,
-                category=str(value(4) or "").strip() or None,
-                short_name=str(value(5) or "").strip() or None,
+                batch_quantum_kg=self._number(field("замес", "квант замеса")), min_order_kg=self._number(field("мин. заказ", "мин заказ", "минимальный заказ")),
+                capacity_type=str(field("заказ", "тип") or "").strip() or None,
+                restrictions="; ".join(str(values[i]) for i, h in enumerate(headers) if self._normalize(str(h or "")) in {"комментарии", "ограничение", "ограничения"} and values[i]) or None,
+                state=str(field("состояние") or "").strip() or None,
+                category=str(field("категория") or "").strip() or None,
+                line_status=str(field("статус") or "").strip() or None,
                 reference_source=file_name,
                 valid=not errors, errors=errors,
             ))
@@ -323,15 +346,20 @@ class ExcelImportService:
         if "Справочник ФК" not in workbook.sheetnames:
             return {}
         sheet = workbook["Справочник ФК"]
+        header_row, mapping, headers = self._find_headers(sheet)
+        fields = {self._normalize(str(value or "")): index for index, value in enumerate(headers) if value}
         result: dict[str, dict] = {}
-        for values in sheet.iter_rows(min_row=2, values_only=True):
-            sku = self._sku(values[0] if values else None)
+        for values in sheet.iter_rows(min_row=header_row + 1, values_only=True):
+            field = lambda *names: next((self._value(values, fields[name]) for name in names if name in fields), None)
+            sku = self._sku(self._value(values, mapping["sku"]))
             if not sku:
                 continue
             result[sku] = {
-                "line": str(values[2] if len(values) > 2 and values[2] else "").strip() or None,
-                "category": str(values[3] if len(values) > 3 and values[3] else "").strip() or None,
-                "speed": self._number(values[4] if len(values) > 4 else None),
+                "name": str(self._value(values, mapping["name"]) or sku),
+                "line": str(field("линия") or "").strip() or None,
+                "category": str(field("категория") or "").strip() or None,
+                "speed": self._number(field("скорость, кг/час", "скорость")),
+                "status": str(field("статус") or "").strip() or None,
             }
         return result
 
@@ -374,8 +402,25 @@ class ExcelImportService:
         )
 
     @staticmethod
+    def _find_headers(sheet):
+        aliases = {
+            "sku": {"артикул", "sap-код", "код", "код товара sap", "sku"},
+            "name": {"наименование", "название", "наименование продукции"},
+            "advance": {"статус", "авансовая маркировка"},
+        }
+        for row_number, values in enumerate(sheet.iter_rows(max_row=15, values_only=True), 1):
+            mapping = {}
+            for index, value in enumerate(values):
+                for field, names in aliases.items():
+                    if ExcelImportService._normalize(str(value or "")) in names:
+                        mapping.setdefault(field, index)
+            if "sku" in mapping and "name" in mapping:
+                return row_number, mapping, values
+        raise ValueError(f"Лист {sheet.title}: не найдены заголовки артикула и наименования")
+
+    @staticmethod
     def _year_from_workbook(sheet, file_name: str) -> int:
-        for value in (sheet.cell(1, 1).value, sheet.cell(2, 4).value, file_name):
+        for value in [file_name, *(cell for row in sheet.iter_rows(max_row=2, values_only=True) for cell in row)]:
             match = re.search(r"20\d{2}", str(value or ""))
             if match:
                 return int(match.group(0))
