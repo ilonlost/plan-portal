@@ -302,3 +302,31 @@ body { min-width: 820px; }
   .plan-head { flex-direction: column; }
   .date-toolbar { flex-wrap: wrap; }
 }
+
+/* В графике линии остаётся один скролл всего окна; шаблоны и ручные даты разделены. */
+.schedule-modal { max-height: 94vh; margin: 3vh auto; overflow-y: auto; }
+.schedule-modal > header p { margin: 4px 0 0; color: var(--muted); font-size: 9px; }
+.schedule-common { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 9px; padding: 12px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-soft); }
+.schedule-common label { margin: 0; }
+.schedule-common .full { grid-column: span 2; }
+.schedule-mode-tabs { display: flex; gap: 6px; margin: 12px 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.schedule-mode-tabs button { min-height: 34px; padding: 8px 13px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--surface); font-size: 9px; font-weight: 600; }
+.schedule-mode-tabs button.active { color: #fff; border-color: var(--red); background: var(--red); }
+.schedule-mode-panel { display: grid; gap: 12px; min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-soft); }
+.schedule-mode-panel h3 { margin: 0; font-size: 13px; }
+.schedule-mode-panel p { margin: 4px 0 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.schedule-mode-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.schedule-mode-fields label,.schedule-create-head label,.schedule-start { margin: 0; }
+.schedule-create-head { display: grid; grid-template-columns: 1fr 1.3fr auto; gap: 9px; align-items: end; }
+.schedule-grid { max-height: none; margin-top: 0; overflow: visible; background: var(--surface); }
+.schedule-grid-head { position: static; }
+.inline-success { margin: 10px 0; padding: 9px; border: 1px solid #3d7353; border-radius: 4px; color: #9cdeb4; background: #183126; font-size: 9px; }
+
+/* Недельная матрица прокручивается по вертикали вместе со страницей. */
+.matrix-card { min-width: 0; overflow: hidden; }
+.matrix-scroll { width: 100%; max-width: 100%; max-height: none; overflow-x: auto; overflow-y: visible; }
+
+@media (max-width: 1000px) {
+  .schedule-common { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .schedule-create-head { grid-template-columns: 1fr; }
+}

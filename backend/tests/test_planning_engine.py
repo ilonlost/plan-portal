@@ -112,6 +112,53 @@ def test_weekly_plan_balances_day_and_night_shifts_by_batch() -> None:
     assert all(item.quantity % Decimal("100") == 0 for item in items)
 
 
+def test_zam_remainder_uses_free_capacity_after_source_week() -> None:
+    monday = date(2026, 8, 31)
+    sunday = date(2026, 9, 6)
+    next_monday = date(2026, 9, 7)
+    items = PlanningEngine().plan(
+        demands=[DemandInput(
+            1, 10, "ZAM", Decimal("600"), monday, sunday,
+            source_kind="zam", exact_date=False,
+        )],
+        capabilities=[CapabilityInput(2, 10, Decimal("100"), batch_quantum_kg=Decimal("100"))],
+        capacities=[
+            CapacityInput(2, monday, Decimal("2"), shift="day"),
+            CapacityInput(2, next_monday, Decimal("4"), shift="day"),
+        ],
+        horizon_end=next_monday,
+    )
+
+    assert [(item.production_date, item.quantity) for item in items] == [
+        (monday, Decimal("200")),
+        (next_monday, Decimal("400")),
+    ]
+    assert not any(item.status == "unscheduled" for item in items)
+
+
+def test_zam_fills_earlier_daily_gap_before_later_empty_day() -> None:
+    first = date(2026, 9, 7)
+    second = date(2026, 9, 8)
+    items = PlanningEngine().plan(
+        demands=[
+            DemandInput(1, 10, "OHL", Decimal("20"), first, first, source_kind="ohl", exact_date=True),
+            DemandInput(2, 10, "ZAM", Decimal("200"), first, first, source_kind="zam", exact_date=False),
+        ],
+        capabilities=[CapabilityInput(2, 10, Decimal("100"), batch_quantum_kg=Decimal("20"))],
+        capacities=[
+            CapacityInput(2, first, Decimal("1"), shift="day"),
+            CapacityInput(2, second, Decimal("2"), shift="day"),
+        ],
+        horizon_end=second,
+    )
+
+    zam = [item for item in items if item.source_kind == "zam"]
+    assert [(item.production_date, item.quantity) for item in zam] == [
+        (first, Decimal("80")),
+        (second, Decimal("120")),
+    ]
+
+
 def test_ohl_uses_capacity_before_zam() -> None:
     day = date(2026, 8, 12)
     items = PlanningEngine().plan(

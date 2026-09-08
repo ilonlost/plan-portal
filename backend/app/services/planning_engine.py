@@ -71,8 +71,9 @@ class PlanningEngine:
     """Finite-capacity planner for exact-date and weekly FK demand.
 
     Quantities are planned in kg. Daily OHL demand stays on its source date and is
-    divisible by the box quantum. Weekly demand never leaves its ISO-week and is
-    divisible by the production batch quantum. Day/night slots are balanced by load.
+    divisible by the box quantum. Weekly ZAM demand starts in its ISO-week and any
+    remainder moves forward through free capacity to the end of the plan horizon.
+    Every released split remains divisible by its production quantum.
     """
 
     def plan(
@@ -141,7 +142,11 @@ class PlanningEngine:
 
             remaining = planned_total
             first_date = demand.requested_date
-            last_date = demand.requested_date if demand.exact_date else min(horizon_end, demand.due_date)
+            last_date = (
+                demand.requested_date
+                if demand.exact_date
+                else horizon_end if demand.source_kind == "zam" else min(horizon_end, demand.due_date)
+            )
             candidates: list[tuple[CapabilityInput, date, str]] = []
             current = first_date
             while current <= last_date:
@@ -180,7 +185,13 @@ class PlanningEngine:
                         available.append((setup_rank, utilization, production_date, self._shift_order(shift), capability.line_priority, capability, shift, free_quantized, wash_hours))
                 if not available:
                     break
-                available.sort(key=lambda item: item[:5])
+                if demand.source_kind == "zam":
+                    # Weekly demand fills the earliest available production day
+                    # before opening a later day. This closes small daily gaps and
+                    # prevents a large remainder while earlier capacity is idle.
+                    available.sort(key=lambda item: (item[2], item[0], item[1], item[3], item[4]))
+                else:
+                    available.sort(key=lambda item: item[:5])
                 _, _, production_date, _, _, capability, shift, free_kg, wash_hours = available[0]
                 # Keep a batch together when it fits. The next demand will select the
                 # least-loaded slot, which balances shifts without fragmenting every SKU.
