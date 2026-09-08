@@ -6,6 +6,8 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 from app.core.config import settings
+from app.core.line_catalog import LINE_BY_KEY, LINE_DEFINITIONS, line_key
+from app.core.security import LOCAL_USER_MARKER, configured_local_users
 
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
@@ -15,35 +17,67 @@ from app.services.plan_service import PlanService
 
 
 WORKSHOPS = {
-    "PC": ("ПЦ", ["Булка", "Слойка", "Хлеба", "Ручная зона ПЦ", "Сухари"]),
-    "KC": ("КЦ", ["Сэндвичи", "Жареные блюда", "Лазанья", "Миквак", "Бургеры", "Супы", "Салаты", "Напитки", "Ручная зона КЦ"]),
+    "PC": ("ПЦ", [name for code, _, name, _ in LINE_DEFINITIONS if code == "PC"]),
+    "KC": ("КЦ", [name for code, _, name, _ in LINE_DEFINITIONS if code == "KC"]),
 }
 
 
 def seed() -> None:
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
-        demo_users = [
-            User(username="demo.admin", display_name="Локальный администратор", role="admin", email="admin@localhost"),
-            User(username="demo.planner", display_name="Анна · планер", role="planner", email="planner@localhost"),
-            User(username="master.sandwich", display_name="Иван · мастер сэндвичей", role="master", workshop_code="KC", line_name="Сэндвичи"),
-            User(username="master.sloyka", display_name="Ольга · мастер слойки", role="master", workshop_code="PC", line_name="Слойка"),
-            User(username="viewer", display_name="Просмотр", role="viewer"),
-        ]
-        existing_users = set(db.scalars(select(User.username)))
-        if settings.demo_enabled:
-            db.add_all(user for user in demo_users if user.username not in existing_users)
+        existing_users = {user.username: user for user in db.scalars(select(User))}
+        if settings.local_auth_enabled:
+            for context, _ in configured_local_users().values():
+                user = existing_users.get(context.username)
+                if not user:
+                    user = User(username=context.username)
+                    db.add(user)
+                user.display_name = context.display_name
+                user.role = context.role
+                user.email = context.email or None
+                user.workshop_code = context.workshop_code
+                user.line_name = context.line_name
+                user.ldap_groups = [LOCAL_USER_MARKER]
+                user.active = True
         else:
-            for user in db.scalars(select(User).where(User.username.in_(["demo.admin", "demo.planner"]))):
-                user.active = False
-        if db.scalar(select(ProductionLine.id).limit(1)):
-            lines = list(db.scalars(select(ProductionLine)))
+            for user in existing_users.values():
+                if user.username.lower() in {"demo.admin", "demo.planner"} or LOCAL_USER_MARKER in (user.ldap_groups or []):
+                    user.active = False
+        lines = list(db.scalars(select(ProductionLine).order_by(ProductionLine.id)))
+        if lines:
+            first_by_name: dict[str, ProductionLine] = {}
             for line in lines:
+                key = line_key(line.name)
+                definition = LINE_BY_KEY.get(key)
+                if not definition or key in first_by_name:
+                    line.status = "inactive"
+                    continue
+                first_by_name[key] = line
+                line.workshop_code, line.workshop_name, canonical_name, line.csb_line_code = definition
+                line.name = canonical_name
+                line.status = "active"
                 line.schedule_code = line.schedule_code or default_schedule_code(line.name)
                 line.schedule_anchor_date = line.schedule_anchor_date or DEFAULT_ANCHOR
+            priority = max((line.priority for line in lines), default=0) + 10
+            for workshop_code, workshop_name, line_name, csb_code in LINE_DEFINITIONS:
+                if line_key(line_name) in first_by_name:
+                    continue
+                line = ProductionLine(
+                    code=f"FK-{workshop_code}-{priority:03d}", name=line_name,
+                    workshop_code=workshop_code, workshop_name=workshop_name,
+                    production_day_start_hour=15 if workshop_code == "PC" else 0,
+                    working_hours=Decimal("22"), default_capacity=Decimal("0"),
+                    capacity_unit="кг/день", priority=priority, status="active",
+                    schedule_code=default_schedule_code(line_name), schedule_anchor_date=DEFAULT_ANCHOR,
+                    csb_line_code=csb_code, csb_t5="4",
+                    comments="Каноническая структура линий ФК",
+                )
+                db.add(line); lines.append(line); first_by_name[line_key(line_name)] = line
+                priority += 10
+            active_lines = [line for line in lines if line.status == "active"]
             active_plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
             if active_plan:
-                ensure_line_capacities(db, lines, active_plan.horizon_start, active_plan.horizon_end, refresh_generated=True)
+                ensure_line_capacities(db, active_lines, active_plan.horizon_start, active_plan.horizon_end, refresh_generated=True)
                 capacity = {
                     (row.line_id, row.capacity_date, row.shift): row.available and Decimal(row.available_hours) > 0
                     for row in db.scalars(select(LineCapacity).where(
@@ -70,18 +104,18 @@ def seed() -> None:
             db.commit()
             return
         priority = 10
-        for workshop_code, (workshop_name, line_names) in WORKSHOPS.items():
-            for line_name in line_names:
-                db.add(ProductionLine(
-                    code=f"FK-{workshop_code}-{priority:02d}", name=line_name,
-                    workshop_code=workshop_code, workshop_name=workshop_name,
-                    production_day_start_hour=15 if workshop_code == "PC" else 0,
-                    working_hours=Decimal("22"), default_capacity=Decimal("0"),
-                    capacity_unit="кг/день", priority=priority,
-                    schedule_code=default_schedule_code(line_name), schedule_anchor_date=DEFAULT_ANCHOR,
-                    comments="Структура из файла «План производства 12.08.2026» · 22 ч производства + 2 ч обеда",
-                ))
-                priority += 10
+        for workshop_code, workshop_name, line_name, csb_code in LINE_DEFINITIONS:
+            db.add(ProductionLine(
+                code=f"FK-{workshop_code}-{priority:02d}", name=line_name,
+                workshop_code=workshop_code, workshop_name=workshop_name,
+                production_day_start_hour=15 if workshop_code == "PC" else 0,
+                working_hours=Decimal("22"), default_capacity=Decimal("0"),
+                capacity_unit="кг/день", priority=priority,
+                schedule_code=default_schedule_code(line_name), schedule_anchor_date=DEFAULT_ANCHOR,
+                csb_line_code=csb_code, csb_t5="4",
+                comments="Структура из файла «План производства 12.08.2026» · 22 ч производства + 2 ч обеда",
+            ))
+            priority += 10
         db.add_all([
             PlanningRule(code="OHL_FIRST", name="ОХЛ занимает мощности первым", priority=10, parameters={"exact_date": True}),
             PlanningRule(code="ADVANCE_MARKING", name="Сэндвичи и бургеры: ДП = ДМ − 1", priority=20, parameters={"days": 1}),

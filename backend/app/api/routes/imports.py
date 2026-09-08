@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.core.security import UserContext, require_planner
+from app.core.line_catalog import line_key, workshop_for_line
 from app.models.entities import (
     AuditEvent, DemandItem, ImportedOrder, ImportFile, LineCapability, LineCapacity, Product,
     ProductionLine, ProductionPlan,
@@ -29,15 +30,17 @@ async def preview_import(file: UploadFile = File(...), user: UserContext = Depen
         raise HTTPException(413, "Файл превышает 30 МБ")
     try:
         preview = ExcelImportService().parse(content, file.filename)
-        names = {_line_key(line.name) for line in db.scalars(select(ProductionLine))}
+        names = {line_key(line.name) for line in db.scalars(select(ProductionLine).where(ProductionLine.status == "active"))}
         for row in preview.rows:
-            if row.line_hint and _line_key(row.line_hint) not in names:
+            if row.line_hint and line_key(row.line_hint) not in names:
                 text = f"Неизвестная линия «{row.line_hint}»: линия не будет создана автоматически"
                 if preview.template_type in {"production_reference", "capacity_reference"}:
                     row.errors.append(text)
                     row.valid = False
                 else:
                     row.warnings.append(text)
+            elif preview.template_type in {"ohl_daily", "quarter_weekly"} and not row.line_hint:
+                row.warnings.append("Артикул отсутствует в справочнике мощностей: он будет добавлен в список нераспределённых")
         preview.valid_rows = sum(row.valid for row in preview.rows)
         preview.invalid_rows = len(preview.rows) - preview.valid_rows
         return preview
@@ -66,6 +69,8 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
     if preview.template_type in {"production_reference", "legacy_reference", "capacity_reference"}:
         updated = 0
         for row in preview.rows:
+            if row.sku:
+                _upsert_product(db, product_by_sku, row, overwrite=row.valid)
             if not row.valid:
                 continue
             product = _upsert_product(db, product_by_sku, row)
@@ -91,7 +96,7 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
             continue
         product = _upsert_product(db, product_by_sku, row, overwrite=False)
         # Demand workbooks never change line speeds, batches or restrictions.
-        if row.line_hint and not any(_line_key(line.name) == _line_key(row.line_hint) for line in db.scalars(select(ProductionLine))):
+        if row.line_hint and not any(line_key(line.name) == line_key(row.line_hint) for line in db.scalars(select(ProductionLine).where(ProductionLine.status == "active"))):
             row.warnings = [*row.warnings, f"Неизвестная линия «{row.line_hint}»: проверьте справочник"]
         source_date = row.source_plan_date or row.requested_date
         production_date = source_date - timedelta(days=1) if source_kind == "ohl" and product.advance_status == "АЗ" else source_date
@@ -175,11 +180,11 @@ def _upsert_product(db: Session, product_by_sku: dict[str, Product], row, overwr
 def _upsert_capability(db: Session, product: Product, row) -> LineCapability | None:
     if not row.line_hint or not row.speed_kg_hour:
         return None
-    line = next((line for line in db.scalars(select(ProductionLine)) if _line_key(line.name) == _line_key(row.line_hint)), None)
+    line = next((line for line in db.scalars(select(ProductionLine).where(ProductionLine.status == "active")) if line_key(line.name) == line_key(row.line_hint)), None)
     if not line:
         raise HTTPException(422, f"Неизвестная линия «{row.line_hint}». Импорт не создаёт линии: исправьте сопоставление в справочнике.")
     else:
-        line.workshop_code, line.workshop_name = _workshop_for_line(line.name)
+        line.workshop_code, line.workshop_name = workshop_for_line(line.name)
     capability = db.scalar(select(LineCapability).where(
         LineCapability.line_id == line.id, LineCapability.product_id == product.id,
     ))
@@ -208,26 +213,8 @@ def _upsert_capability(db: Session, product: Product, row) -> LineCapability | N
 def _ensure_shift_capacities(db: Session, demands: list[DemandItem], start, end) -> None:
     product_ids = {item.product_id for item in demands if item.product_id}
     line_ids = set(db.scalars(select(LineCapability.line_id).where(LineCapability.product_id.in_(product_ids))))
-    lines = list(db.scalars(select(ProductionLine).where(ProductionLine.id.in_(line_ids))))
+    lines = list(db.scalars(select(ProductionLine).where(ProductionLine.id.in_(line_ids), ProductionLine.status == "active")))
     ensure_line_capacities(db, lines, start, end)
-
-
-WORKSHOP_LINES = {
-    "PC": ("ПЦ", {"Булка", "Слойка", "Хлеба", "Ручная зона ПЦ", "Сухари"}),
-    "KC": ("КЦ", {"Сэндвичи", "Жареные блюда", "Лазанья", "Миквак", "Бургеры", "Супы", "Салаты", "Напитки", "Ручная зона КЦ"}),
-}
-
-
-def _workshop_for_line(line_name: str) -> tuple[str, str]:
-    normalized = line_name.strip().lower().replace("линия ", "")
-    for code, (name, lines) in WORKSHOP_LINES.items():
-        if any(normalized == item.lower() or item.lower() in normalized for item in lines):
-            return code, name
-    return "UNASSIGNED", "Не распределено"
-
-
-def _line_key(value: str) -> str:
-    return " ".join(value.lower().replace("ё", "е").split())
 
 
 def _latest_real_demands(db: Session) -> list[DemandItem]:

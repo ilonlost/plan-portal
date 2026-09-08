@@ -82,7 +82,7 @@ def create_schedule_template(
 
 @router.get("")
 def list_lines(db: Session = Depends(get_db), user: UserContext = Depends(current_user)) -> list[dict]:
-    lines = list(db.scalars(select(ProductionLine).order_by(ProductionLine.priority, ProductionLine.code)))
+    lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.priority, ProductionLine.code)))
     templates = {row.id: row for row in db.scalars(select(LineScheduleTemplate))}
     result = []
     for line in lines:
@@ -107,7 +107,7 @@ def list_lines(db: Session = Depends(get_db), user: UserContext = Depends(curren
 
 @router.get("/workshops")
 def list_workshops(db: Session = Depends(get_db), user: UserContext = Depends(current_user)) -> list[dict]:
-    lines = list(db.scalars(select(ProductionLine).order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name)))
+    lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name)))
     result: dict[str, dict] = {}
     for line in lines:
         workshop = result.setdefault(line.workshop_code, {"code": line.workshop_code, "name": line.workshop_name, "lines": []})

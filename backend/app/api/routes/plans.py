@@ -71,7 +71,7 @@ def active_plan_matrix(
         raise HTTPException(404, "Активный план не найден")
     start = start or plan.horizon_start
     end = min(plan.horizon_end, start + timedelta(days=max(1, min(days, 92)) - 1))
-    lines_query = select(ProductionLine).order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name)
+    lines_query = select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name)
     if workshop_code:
         lines_query = lines_query.where(ProductionLine.workshop_code == workshop_code)
     if line_id:

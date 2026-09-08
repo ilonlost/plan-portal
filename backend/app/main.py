@@ -34,13 +34,15 @@ def correct_legacy_ohl_source_units() -> None:
     """Apply the one-time kg correction to plans imported before this release."""
     db = SessionLocal()
     try:
-        if not settings.demo_enabled:
+        if not settings.local_auth_enabled:
             if settings.auth_mode != "ldap" or len(settings.session_secret) < 32 or settings.session_secret == "local-development-secret-change-in-production":
                 raise RuntimeError("Production требует AUTH_MODE=ldap и собственный SESSION_SECRET (не менее 32 символов)")
-            from sqlalchemy import select, func
+            from sqlalchemy import select
+            from app.core.security import LOCAL_USER_MARKER
             from app.models.entities import User
-            for user in db.scalars(select(User).where(func.lower(User.username).in_(["demo.admin", "demo.planner"]))):
-                user.active = False
+            for user in db.scalars(select(User)):
+                if user.username.lower() in {"demo.admin", "demo.planner"} or LOCAL_USER_MARKER in (user.ldap_groups or []):
+                    user.active = False
             db.commit()
         service = PlanService(db)
         corrected = service.correct_legacy_ohl_source_units()

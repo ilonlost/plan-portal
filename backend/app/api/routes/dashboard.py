@@ -34,7 +34,7 @@ def dashboard(db: Session = Depends(get_db), user: UserContext = Depends(current
             line_days[item.line_id] += 1
         if item.production_date and item.status in {ScheduleStatus.CONFLICT, ScheduleStatus.UNSCHEDULED}:
             problems[item.production_date] += 1
-    lines = list(db.scalars(select(ProductionLine).order_by(ProductionLine.priority)))
+    lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.priority)))
     avg_load = sum((Decimal(item.load_percent) for item in items if item.line_id), Decimal("0")) / max(1, len([item for item in items if item.line_id]))
     return {
         "active_plan": {"id": plan.id, "name": plan.name, "status": plan.status.value, "updated_at": plan.updated_at},

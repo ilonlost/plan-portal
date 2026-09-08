@@ -66,9 +66,9 @@ def test_production_rejects_demo_and_header_bypass(client, db, monkeypatch):
         monkeypatch.setattr(settings, "auth_mode", mode)
         assert client.post("/session/login", json={"username": "demo.admin", "password": "demo"}).status_code == 401
         assert client.get("/session/me", headers={"X-User": "demo.admin"}).status_code == 401
-        assert client.get("/session/mode").json()["mock_hint"] is None
+        assert client.get("/session/mode").json() == {"auth_mode": "ldap"}
     monkeypatch.setattr(settings, "app_env", "development")
-    monkeypatch.setattr(settings, "auth_mode", "mock")
+    monkeypatch.setattr(settings, "auth_mode", "local")
     token = create_session_token(UserContext("demo.admin", "Demo", "admin"))
     monkeypatch.setattr(settings, "app_env", "production")
     monkeypatch.setattr(settings, "auth_mode", "ldap")
@@ -198,13 +198,37 @@ def test_manual_quantity_override_is_not_recreated_on_recalculation(db):
     assert sum(i.quantity for i in plan.schedule_items if not i.excluded and i.schedule_kind == "production") == 90
 
 
+def test_production_and_marking_dates_can_be_edited_independently(client, db):
+    plan, _ = make_plan(db)
+    item = next(i for i in plan.schedule_items if i.schedule_kind == "production")
+    original_production_date = item.production_date
+    marking_date = original_production_date + timedelta(days=2)
+    response = client.patch(
+        f"/plans/{plan.id}/items/{item.id}",
+        json={"marking_date": marking_date.isoformat()},
+        headers={"If-Match": str(plan.revision)},
+    )
+    assert response.status_code == 200, response.text
+    assert item.production_date == original_production_date
+    assert item.marking_date == marking_date
+
+    response = client.patch(
+        f"/plans/{plan.id}/items/{item.id}",
+        json={"production_date": (original_production_date + timedelta(days=1)).isoformat()},
+        headers={"If-Match": str(plan.revision)},
+    )
+    assert response.status_code == 200, response.text
+    assert item.production_date == original_production_date + timedelta(days=1)
+    assert item.marking_date == marking_date
+
+
 def test_unknown_reference_line_is_rejected_without_inserting_it(client, db):
     product = Product(sku="unknown-line", name="Test"); db.add(product); db.commit()
     from app.schemas.common import ImportRow
     with pytest.raises(Exception) as caught:
         imports._upsert_capability(db, product, ImportRow(row_number=1, sku=product.sku, line_hint="Новая случайная линия", speed_kg_hour=100))
     assert caught.value.status_code == 422
-    assert db.scalar(select(func.count(ProductionLine.id))) == 14
+    assert db.scalar(select(func.count(ProductionLine.id))) == 15
 
 
 def test_department_templates_do_not_leak_production_fields():
@@ -240,6 +264,8 @@ def test_supplied_workbooks_reconcile(name, kind):
         sheet = workbook["План ЗАМ"]
         expected = [Decimal(str(values[i])) for values in sheet.iter_rows(min_row=3, values_only=True) for i in range(4, 8) if isinstance(values[i], (float, int)) and values[i] > 0 and values[1] and values[2]]
         assert len(preview.rows) == len(expected) == 129
+        assert preview.valid_rows == 127
+        assert preview.invalid_rows == 2
         assert sum(row.source_quantity for row in preview.rows) == sum(expected)
         assert {row.production_week for row in preview.rows} == {36, 37, 38, 39}
     else:
@@ -263,7 +289,7 @@ def test_real_import_pipeline_preserves_capacity_and_status(db, monkeypatch):
         result = imports.confirm_import(ImportConfirmRequest(preview=preview), db, user)
         snapshots.append({c.id: (c.units_per_hour, c.batch_quantum_kg, c.min_order_kg) for c in db.scalars(select(LineCapability))})
     assert snapshots[0] == snapshots[1] == snapshots[2]
-    assert db.scalar(select(func.count(ProductionLine.id))) == 14
+    assert db.scalar(select(func.count(ProductionLine.id))) == 15
     service = PlanService(db)
     plan = service.active_plan()
     assert plan and any(item.status.value == "unscheduled" for item in plan.schedule_items)
@@ -283,4 +309,4 @@ def test_real_import_pipeline_preserves_capacity_and_status(db, monkeypatch):
     imports.confirm_import(ImportConfirmRequest(preview=preview), db, user)
     assert product.advance_status == "По графику"
     assert product.fk_status == "Изменено вручную"
-    assert len(service._latest_source_demands()) == 802 + 129
+    assert len(service._latest_source_demands()) == 802 + 127

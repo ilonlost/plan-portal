@@ -158,8 +158,11 @@ class PlanService:
             plan.horizon_start = min(d.requested_date for d in demands)
             plan.horizon_end = max(d.due_date for d in demands)
             from app.services.line_schedule_service import ensure_line_capacities
-            ensure_line_capacities(self.db, list(self.db.scalars(select(ProductionLine))), plan.horizon_start, plan.horizon_end)
-        capabilities = list(self.db.scalars(select(LineCapability).options(joinedload(LineCapability.line))))
+            active_lines = list(self.db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
+            ensure_line_capacities(self.db, active_lines, plan.horizon_start, plan.horizon_end)
+        capabilities = list(self.db.scalars(
+            select(LineCapability).join(LineCapability.line).where(ProductionLine.status == "active").options(joinedload(LineCapability.line))
+        ))
         capacities = list(self.db.scalars(select(LineCapacity)))
         # Preserve manually handled splits, including deleted quantities, across reimports.
         handled = defaultdict(lambda: Decimal("0"))
@@ -281,6 +284,8 @@ class PlanService:
         for field in ("production_date", "line_id", "shift", "locked", "excluded"):
             if field in values and values[field] is not None:
                 setattr(item, field, values[field])
+        if "marking_date" in values:
+            item.marking_date = values["marking_date"]
         if values.get("quantity") is not None:
             item.quantity = self._round_quantity_for_product(Decimal(values["quantity"]), item.product)
             item.quantity_kg = item.quantity

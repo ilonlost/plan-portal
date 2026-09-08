@@ -108,6 +108,7 @@ class PlanOut(ORMModel):
 
 class ScheduleItemUpdate(BaseModel):
     production_date: date | None = None
+    marking_date: date | None = None
     line_id: int | None = None
     shift: str | None = None
     quantity: Decimal | None = Field(default=None, gt=0)

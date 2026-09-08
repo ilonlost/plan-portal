@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import hmac
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -7,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth_service import authenticate_ldap
 from app.core.config import settings
-from app.core.security import DEMO_USERS, UserContext, create_session_token, current_user
+from app.core.security import LOCAL_USER_MARKER, UserContext, configured_local_users, create_session_token, current_user
 from app.db.session import get_db
 from app.models.entities import AuthAuditEvent, User
 
@@ -32,17 +33,16 @@ def _user_dict(user: UserContext) -> dict:
 def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
     login_name = payload.username.strip()
     try:
-        if not settings.demo_enabled and login_name.lower().split("\\")[-1].split("@")[0].startswith("demo."):
-            raise ValueError("Неверный логин или пароль")
         if settings.auth_mode.lower() == "ldap":
             identity = authenticate_ldap(login_name, payload.password)
             context = UserContext(identity.username, identity.display_name, identity.role, identity.email)
             groups = identity.groups
-        elif settings.demo_enabled:
-            if payload.password != settings.mock_password or login_name not in DEMO_USERS:
+        elif settings.local_auth_enabled:
+            local_entry = configured_local_users().get(login_name)
+            if not local_entry or not hmac.compare_digest(payload.password, local_entry[1]):
                 raise ValueError("Неверный логин или пароль")
-            context = DEMO_USERS[login_name]
-            groups = []
+            context = local_entry[0]
+            groups = [LOCAL_USER_MARKER]
         else:
             raise ValueError("Локальная авторизация отключена")
         stored = db.scalar(select(User).where(User.username == context.username))
@@ -58,7 +58,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
             stored.display_name = context.display_name
             stored.email = context.email or stored.email
             stored.ldap_groups = groups
-            if settings.auth_mode.lower() == "mock":
+            if settings.auth_mode.lower() == "local":
                 stored.role, stored.workshop_code, stored.line_name = context.role, context.workshop_code, context.line_name
             elif context.role == "admin":
                 # Администраторы из ENV / группы AD сохраняют аварийный доступ
@@ -102,4 +102,4 @@ def me(user: UserContext = Depends(current_user)) -> dict:
 
 @router.get("/mode")
 def mode() -> dict:
-    return {"auth_mode": "mock" if settings.demo_enabled else "ldap", "mock_hint": None}
+    return {"auth_mode": "local" if settings.local_auth_enabled else "ldap"}

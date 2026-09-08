@@ -34,7 +34,11 @@ class CapabilityUpdate(BaseModel):
 @router.get("/manual-products")
 def manual_products(line_id: int, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> list[dict]:
     rows = list(db.scalars(
-        select(LineCapability).join(LineCapability.product).where(LineCapability.line_id == line_id)
+        select(LineCapability).join(LineCapability.product).join(LineCapability.line).where(
+            LineCapability.line_id == line_id,
+            Product.active.is_(True),
+            ProductionLine.status == "active",
+        )
         .options(joinedload(LineCapability.product)).order_by(Product.name)
     ))
     return [{"product_id": row.product_id, "sku": row.product.sku, "name": row.product.name, "speed_kg_hour": row.units_per_hour} for row in rows]
@@ -48,7 +52,9 @@ def catalog(
 ) -> dict:
     query = select(LineCapability).options(
         joinedload(LineCapability.product), joinedload(LineCapability.line),
-    ).join(LineCapability.product).join(LineCapability.line)
+    ).join(LineCapability.product).join(LineCapability.line).where(
+        Product.active.is_(True), ProductionLine.status == "active",
+    )
     if workshop_code:
         query = query.where(ProductionLine.workshop_code == workshop_code)
     if line_id:
@@ -57,15 +63,42 @@ def catalog(
         pattern = f"%{search.strip()}%"
         query = query.where(or_(Product.sku.ilike(pattern), Product.name.ilike(pattern), ProductionLine.name.ilike(pattern)))
     capabilities = list(db.scalars(query.order_by(ProductionLine.workshop_code, ProductionLine.name, Product.name).limit(limit)))
-    products_total = db.scalar(select(func.count(Product.id))) or 0
+    products = list(db.scalars(
+        select(Product).where(Product.active.is_(True)).options(
+            joinedload(Product.capabilities).joinedload(LineCapability.line),
+        ).order_by(Product.sku)
+    ).unique())
+    products_total = len(products)
     sources = list(db.scalars(select(ImportedOrder).order_by(ImportedOrder.imported_at.desc()).limit(20)))
+    product_rows = []
+    unmapped_products = []
+    for product in products:
+        active_capabilities = [capability for capability in product.capabilities if capability.line and capability.line.status == "active"]
+        line_names = sorted({capability.line.name for capability in active_capabilities})
+        product_rows.append({
+            "product_id": product.id, "sku": product.sku, "product_name": product.name,
+            "state": product.state, "category": product.category,
+            "advance_status": product.advance_status, "fk_status": product.fk_status,
+            "unit_weight_kg": product.unit_weight_kg, "units_per_box": product.units_per_box,
+            "box_weight_kg": product.box_weight_kg,
+            "capability_count": len(active_capabilities), "line_names": line_names,
+        })
+        if not active_capabilities:
+            unmapped_products.append({"product_id": product.id, "sku": product.sku, "product_name": product.name})
     return {
-        "unmapped_products": [{"product_id": p.id, "sku": p.sku, "product_name": p.name} for p in db.scalars(select(Product).where(~Product.capabilities.any()).order_by(Product.sku))],
+        "products": product_rows,
+        "unmapped_products": unmapped_products,
         "summary": {
             "products": products_total,
-            "capabilities": db.scalar(select(func.count(LineCapability.id))) or 0,
-            "lines": db.scalar(select(func.count(ProductionLine.id))) or 0,
-            "with_recipes": db.scalar(select(func.count(Product.id)).where(Product.recipe_component_count > 0)) or 0,
+            "capabilities": db.scalar(
+                select(func.count(LineCapability.id)).join(LineCapability.product).join(LineCapability.line).where(
+                    Product.active.is_(True), ProductionLine.status == "active",
+                )
+            ) or 0,
+            "lines": db.scalar(select(func.count(ProductionLine.id)).where(ProductionLine.status == "active")) or 0,
+            "with_recipes": db.scalar(select(func.count(Product.id)).where(
+                Product.active.is_(True), Product.recipe_component_count > 0,
+            )) or 0,
         },
         "rows": [{
             "capability_id": item.id,
@@ -110,7 +143,7 @@ def update_capability(
         raise HTTPException(422, "Скорость должна быть положительным числом")
     if "line_id" in values:
         line = db.get(ProductionLine, values.pop("line_id"))
-        if not line:
+        if not line or line.status != "active":
             raise HTTPException(422, "Выберите существующую производственную линию")
         duplicate = db.scalar(select(LineCapability).where(LineCapability.line_id == line.id, LineCapability.product_id == capability.product_id, LineCapability.id != capability.id))
         if duplicate:
@@ -140,7 +173,12 @@ def update_capability(
     if plan:
         demands = service._latest_source_demands()
         if demands:
-            ensure_line_capacities(db, list(db.scalars(select(ProductionLine))), plan.horizon_start, plan.horizon_end)
+            ensure_line_capacities(
+                db,
+                list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active"))),
+                plan.horizon_start,
+                plan.horizon_end,
+            )
             service.calculate(plan, demands, "catalog_updated")
     db.commit()
     return {"ok": True, "capability_id": capability.id}
@@ -153,7 +191,9 @@ class CapabilityCreate(BaseModel):
 
 @router.post("/products/{product_id}/capabilities")
 def assign_product(product_id: int, payload: CapabilityCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)):
-    if not db.get(Product, product_id) or not db.get(ProductionLine, payload.line_id):
+    line = db.get(ProductionLine, payload.line_id)
+    product = db.get(Product, product_id)
+    if not product or not product.active or not line or line.status != "active":
         raise HTTPException(422, "Выберите существующие артикул и линию")
     if db.scalar(select(LineCapability).where(LineCapability.line_id == payload.line_id, LineCapability.product_id == product_id)):
         raise HTTPException(409, "Связь артикула и линии уже существует")

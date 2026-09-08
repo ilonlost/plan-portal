@@ -108,7 +108,7 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
             "plans": db.scalar(select(func.count(ProductionPlan.id))) or 0,
             "schedule_items": db.scalar(select(func.count(ProductionScheduleItem.id))) or 0,
             "products": db.scalar(select(func.count(Product.id))) or 0,
-            "lines": db.scalar(select(func.count(ProductionLine.id))) or 0,
+            "lines": db.scalar(select(func.count(ProductionLine.id)).where(ProductionLine.status == "active")) or 0,
         },
         "active_plan": ({"id": active.id, "name": active.name, "status": active.status.value} if active else None),
         "ldap": ldap_health(),
@@ -128,7 +128,7 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
         "lines": [{
             "id": row.id, "workshop_code": row.workshop_code,
             "workshop_name": row.workshop_name, "name": row.name,
-        } for row in db.scalars(select(ProductionLine).order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name))],
+        } for row in db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name))],
         "recent_audit": [_audit_dict(row) for row in db.scalars(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(15))],
         "recent_notifications": [_notification_dict(row) for row in db.scalars(select(NotificationLog).order_by(NotificationLog.created_at.desc()).limit(15))],
         "recent_integrations": [_integration_dict(row) for row in db.scalars(select(IntegrationRun).order_by(IntegrationRun.created_at.desc()).limit(15))],

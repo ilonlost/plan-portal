@@ -151,6 +151,14 @@ class ExcelImportService:
                 if quantity is None or quantity < 0:
                     rows.append(ImportRow(row_number=row_number, sku=sku, product_name=name, production_week=week, valid=False, errors=[f"Колонка {column + 1}: некорректный объём {raw}"]))
                     continue
+                if not any(character.isdigit() for character in sku):
+                    rows.append(ImportRow(
+                        row_number=row_number, sku=sku, product_name=name,
+                        source_quantity=quantity, source_unit="кг", quantity_kg=quantity,
+                        production_week=week, valid=False,
+                        errors=[f"Код товара «{sku}» не похож на артикул SAP"],
+                    ))
+                    continue
                 monday = date.fromisocalendar(year, week, 1)
                 rows.append(ImportRow(
                     row_number=row_number, sku=sku, product_name=name, quantity=quantity,

@@ -26,13 +26,40 @@ class UserContext:
     line_name: str | None = None
 
 
-DEMO_USERS = {
-    "demo.admin": UserContext("demo.admin", "Локальный администратор", "admin", "admin@localhost"),
-    "demo.planner": UserContext("demo.planner", "Анна · планер", "planner", "planner@localhost"),
-    "master.sandwich": UserContext("master.sandwich", "Иван · мастер сэндвичей", "master", "master@localhost", "KC", "Сэндвичи"),
-    "master.sloyka": UserContext("master.sloyka", "Ольга · мастер слойки", "master", "master@localhost", "PC", "Слойка"),
-    "viewer": UserContext("viewer", "Просмотр", "viewer"),
-}
+LOCAL_USER_MARKER = "__local_development__"
+
+
+def configured_local_users() -> dict[str, tuple[UserContext, str]]:
+    """Read development-only accounts from the ignored local environment."""
+    if not settings.local_auth_enabled:
+        return {}
+    try:
+        rows = json.loads(settings.local_auth_users_json)
+    except json.JSONDecodeError:
+        return {}
+    users: dict[str, tuple[UserContext, str]] = {}
+    if not isinstance(rows, list):
+        return users
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        username = str(row.get("username", "")).strip()
+        password = str(row.get("password", ""))
+        role = str(row.get("role", "viewer"))
+        if not username or not password or role not in {"admin", "planner", "master", "viewer"}:
+            continue
+        users[username] = (
+            UserContext(
+                username=username,
+                display_name=str(row.get("display_name") or username),
+                role=role,
+                email=str(row.get("email") or ""),
+                workshop_code=row.get("workshop_code"),
+                line_name=row.get("line_name"),
+            ),
+            password,
+        )
+    return users
 
 
 def _encode(value: bytes) -> str:
@@ -59,7 +86,7 @@ def parse_session_token(token: str | None) -> UserContext | None:
         return None
     try:
         payload = json.loads(_decode(encoded))
-        if not settings.demo_enabled and (payload.get("auth_method") != "ldap" or payload.get("username", "").lower().startswith("demo.")):
+        if not settings.local_auth_enabled and payload.get("auth_method") != "ldap":
             return None
         if int(payload.get("exp", 0)) < int(time.time()):
             return None

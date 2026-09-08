@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     session_max_age_seconds: int = 28800
     session_cookie_secure: bool = False
     session_cookie_samesite: str = "Lax"
-    mock_password: str = "demo"
+    local_auth_users_json: str = ""
     ldap_server_url: str = ""
     ldap_server: str = ""
     ldap_port: int = 389
@@ -67,8 +67,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
-    def demo_enabled(self) -> bool:
-        return self.app_env == "development" and self.auth_mode == "mock"
+    def local_auth_enabled(self) -> bool:
+        return self.app_env == "development" and self.auth_mode == "local" and bool(self.local_auth_users_json.strip())
 
     @property
     def cors_origin_list(self) -> list[str]:

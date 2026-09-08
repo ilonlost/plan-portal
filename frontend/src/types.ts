@@ -6,7 +6,7 @@ export interface UserProfile {
   access_label: string; auth_mode: string;
 }
 
-export interface SessionMode { auth_mode: string; mock_hint: string | null; }
+export interface SessionMode { auth_mode: string; }
 
 export interface ScheduleItem {
   id: number; sequence: number; production_date: string | null; marking_date: string | null; line_id: number | null;
@@ -77,6 +77,11 @@ export interface SourceFile {
   valid_rows: number; invalid_rows: number; imported_at: string;
 }
 export interface CatalogData {
+  products: {
+    product_id: number; sku: string; product_name: string; state: string | null; category: string | null;
+    advance_status: string | null; fk_status: string | null; unit_weight_kg: number | null;
+    units_per_box: number | null; box_weight_kg: number | null; capability_count: number; line_names: string[];
+  }[];
   unmapped_products: { product_id: number; sku: string; product_name: string }[];
   summary: { products: number; capabilities: number; lines: number; with_recipes: number };
   rows: CatalogRow[]; sources: SourceFile[];
