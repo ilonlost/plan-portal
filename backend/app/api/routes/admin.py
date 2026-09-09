@@ -15,7 +15,7 @@ from app.core.security import UserContext, require_admin, require_planner
 from app.db.session import get_db
 from app.models.entities import (
     AuditEvent, DemandItem, ExportFile, ImportedOrder, ImportFile, IntegrationRun,
-    NotificationLog, Product, ProductionLine, ProductionPlan, ProductionScheduleItem, User,
+    NotificationLog, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, User,
 )
 from app.services.notification_service import build_plan_email_html, send_notification
 from app.services.plan_service import schedule_item_dict
@@ -248,6 +248,32 @@ def create_user_access(
     db.add(AuditEvent(username=user.username, action="user_access_created", entity_type="user", entity_id=str(target.id), details=details))
     db.commit()
     return {"ok": True, "id": target.id, **details}
+
+
+@router.delete("/users/{user_id}")
+def delete_user_access(
+    user_id: int,
+    db: Session = Depends(get_db),
+    user: UserContext = Depends(require_admin),
+) -> dict:
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(404, "Пользователь не найден")
+    if target.username.lower() == user.username.lower():
+        raise HTTPException(409, "Нельзя удалить собственную учётную запись")
+    if target.role == "admin" and target.active:
+        active_admins = db.scalar(select(func.count(User.id)).where(User.role == "admin", User.active.is_(True))) or 0
+        if active_admins <= 1:
+            raise HTTPException(409, "Нельзя удалить последнего активного администратора")
+    details = {"target": target.username, "role": target.role}
+    for plan in db.scalars(select(ProductionPlan).where(ProductionPlan.created_by_id == target.id)):
+        plan.created_by_id = None
+    for version in db.scalars(select(ProductionPlanVersion).where(ProductionPlanVersion.changed_by_id == target.id)):
+        version.changed_by_id = None
+    db.add(AuditEvent(username=user.username, action="user_access_deleted", entity_type="user", entity_id=str(target.id), details=details))
+    db.delete(target)
+    db.commit()
+    return {"ok": True, **details}
 
 
 @router.post("/delete-plan-data")

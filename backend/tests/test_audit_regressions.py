@@ -18,8 +18,8 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.core.config import settings
 from app.core.security import UserContext, create_session_token, parse_session_token
-from app.api.routes import session, plans, imports, catalog
-from app.models.entities import User, Product, ProductionLine, ProductionPlan, ProductionScheduleItem, LineCapability, LineCapacity, DemandItem, ImportedOrder
+from app.api.routes import session, plans, imports, catalog, admin
+from app.models.entities import User, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, LineCapability, LineCapacity, DemandItem, ImportedOrder
 from app.schemas.common import ImportConfirmRequest
 from app.services.import_service import ExcelImportService
 from app.services.plan_service import PlanService
@@ -52,6 +52,7 @@ def client(db, monkeypatch):
     app.include_router(plans.router)
     app.include_router(imports.router)
     app.include_router(catalog.router)
+    app.include_router(admin.router)
     app.dependency_overrides[get_db] = lambda: db
     client = TestClient(app)
     client.cookies.set(settings.session_cookie_name, create_session_token(UserContext("regular.admin", "Administrator", "admin")))
@@ -118,6 +119,79 @@ def test_database_revision_prevents_simultaneous_writers(db):
         stale.name = "Second writer"
         with pytest.raises(StaleDataError):
             other.commit()
+
+
+def test_product_soft_delete_keeps_plan_and_catalog_relations(client, db):
+    plan, demand = make_plan(db)
+    item_ids = [item.id for item in plan.schedule_items]
+    product_id = demand.product_id
+    response = client.delete(f"/catalog/products/{product_id}")
+    assert response.status_code == 200, response.text
+    assert db.get(Product, product_id).catalog_status == "deleted"
+    assert db.get(Product, product_id).active is False
+    assert db.get(ProductionPlan, plan.id) is not None
+    assert [item.id for item in db.scalars(select(ProductionScheduleItem).where(ProductionScheduleItem.plan_id == plan.id))] == item_ids
+    assert client.get("/catalog").json()["products"] == []
+
+
+def test_catalog_xlsx_roundtrip_updates_without_deleting_missing_rows(client, db):
+    plan, demand = make_plan(db)
+    exported = client.get("/catalog/export.xlsx")
+    assert exported.status_code == 200
+    workbook = load_workbook(BytesIO(exported.content))
+    sheet = workbook["Артикулы"]
+    sheet.cell(2, 3).value = "Обновлённое название"
+    sheet.cell(2, 4).value = "ЗАМ"
+    sheet.cell(2, 10).value = "blocked"
+    payload = BytesIO(); workbook.save(payload)
+    response = client.post("/catalog/import.xlsx", files={"file": ("catalog.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert response.status_code == 200, response.text
+    product = db.get(Product, demand.product_id)
+    assert product.name == "Обновлённое название"
+    assert product.state == "ЗАМ"
+    assert product.catalog_status == "blocked"
+    assert db.get(ProductionPlan, plan.id) is not None
+
+
+def test_bom_request_uses_sku_and_marks_1000_unit_basis(client, db, monkeypatch):
+    _, demand = make_plan(db)
+    requested = []
+
+    class FakeResponse:
+        def raise_for_status(self): pass
+        def json(self): return {"components": [{"material": "Тесто", "quantity": 250}, {"material": "Соус", "quantity": 20}]}
+
+    class FakeClient:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, url, **kwargs): requested.append(url); return FakeResponse()
+
+    monkeypatch.setattr(catalog.httpx, "Client", FakeClient)
+    response = client.get(f"/catalog/products/{demand.product_id}/bom")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert requested[0].endswith("/101")
+    assert body["basis_units"] == 1000
+    assert body["columns"] == ["material", "quantity"]
+    assert len(body["rows"]) == 2
+
+
+def test_admin_can_delete_other_user_without_deleting_plan_history(client, db):
+    target = User(username="former.user", display_name="Former", role="planner", active=True)
+    db.add(target); db.flush()
+    day = date(2026, 9, 8)
+    plan = ProductionPlan(name="Retained", horizon_start=day, horizon_end=day, created_by_id=target.id)
+    db.add(plan); db.flush()
+    version = ProductionPlanVersion(plan_id=plan.id, version_number=1, change_type="test", snapshot={}, changed_by_id=target.id)
+    db.add(version); db.commit()
+    response = client.delete(f"/admin/users/{target.id}")
+    assert response.status_code == 200, response.text
+    assert db.get(User, target.id) is None
+    assert db.get(ProductionPlan, plan.id).created_by_id is None
+    assert db.get(ProductionPlanVersion, version.id).changed_by_id is None
+    regular = db.scalar(select(User).where(User.username == "regular.admin"))
+    assert client.delete(f"/admin/users/{regular.id}").status_code == 409
 
 
 def test_delete_split_stays_deleted_and_other_volume_survives(db):

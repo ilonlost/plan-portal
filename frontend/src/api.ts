@@ -1,5 +1,5 @@
 import type {
-  AdminOverview, CatalogData, CsbRun, DirectoryUser, FeedbackData, FeedbackEntry, ImportPreview, LineData, MatrixData,
+  AdminOverview, BomData, CatalogData, CsbRun, DirectoryUser, FeedbackData, FeedbackEntry, ImportPreview, LineData, MatrixData,
   LineScheduleData, MailConfiguration, PlanData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 
@@ -54,6 +54,13 @@ export const api = {
   updateCapability: (id: number, data: object) => request<{ ok: boolean }>(`/catalog/capabilities/${id}`, {
     method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
   }),
+  createProduct: (data: object) => request<{ ok: boolean; product_id: number; capability_id: number | null }>("/catalog/products", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
+  updateProduct: (id: number, data: object) => request<{ ok: boolean; product_id: number; capability_id: number | null }>(`/catalog/products/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
+  updateProductStatus: (id: number, status: "active" | "blocked") => request<{ ok: boolean; status: string }>(`/catalog/products/${id}/status`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) }),
+  deleteProduct: (id: number) => request<{ ok: boolean; deleted: boolean }>(`/catalog/products/${id}`, { method: "DELETE" }),
+  productBom: (id: number) => request<BomData>(`/catalog/products/${id}/bom`),
+  catalogExportUrl: () => `${API}/catalog/export.xlsx`,
+  importCatalog: async (file: File) => { const data = new FormData(); data.append("file", file); return request<{ ok: boolean; products_created: number; products_updated: number; capabilities_created: number; capabilities_updated: number }>("/catalog/import.xlsx", { method: "POST", body: data }); },
   updateItem: (planId: number, itemId: number, data: object, version?: number) => request<PlanData>(`/plans/${planId}/items/${itemId}`, {
     method: "PATCH", headers: { "Content-Type": "application/json", ...(version == null ? {} : { "If-Match": String(version) }) }, body: JSON.stringify(data),
   }),
@@ -82,6 +89,7 @@ export const api = {
   createUserAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean }) => request<{ ok: boolean; id: number }>("/admin/users", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
   }),
+  deleteUserAccess: (userId: number) => request<{ ok: boolean }>(`/admin/users/${userId}`, { method: "DELETE" }),
   feedback: (status = "", query = "") => request<FeedbackData>(`/feedback?${new URLSearchParams({ ...(status ? { status } : {}), ...(query ? { query } : {}) }).toString()}`),
   createFeedback: (data: { category: string; subject: string; message: string }) => request<{ ok: boolean; entry: FeedbackEntry }>("/feedback", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),

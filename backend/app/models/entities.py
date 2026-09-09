@@ -62,6 +62,7 @@ class Product(Base):
     reference_source: Mapped[str | None] = mapped_column(String(240))
     mono_group: Mapped[str | None] = mapped_column(String(160), index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    catalog_status: Mapped[str] = mapped_column(String(20), default="active", server_default="active", index=True)
     capabilities: Mapped[list[LineCapability]] = relationship(back_populates="product", cascade="all, delete-orphan")
 
 

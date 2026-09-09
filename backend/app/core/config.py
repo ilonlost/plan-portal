@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     csb_endpoint: str = ""
     csb_token: str = ""
     plan_export_template: str = ""
+    bom_api_base_url: str = "http://bom.fkportal.agrohold.ru/api/bom-procedure"
+    bom_timeout_seconds: int = 20
+    bom_basis_units: int = 1000
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

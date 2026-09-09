@@ -161,7 +161,9 @@ class PlanService:
             active_lines = list(self.db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
             ensure_line_capacities(self.db, active_lines, plan.horizon_start, plan.horizon_end)
         capabilities = list(self.db.scalars(
-            select(LineCapability).join(LineCapability.line).where(ProductionLine.status == "active").options(joinedload(LineCapability.line))
+            select(LineCapability).join(LineCapability.line).join(LineCapability.product).where(
+                ProductionLine.status == "active", Product.active.is_(True), Product.catalog_status == "active",
+            ).options(joinedload(LineCapability.line))
         ))
         capacities = list(self.db.scalars(select(LineCapacity)))
         # Preserve manually handled splits, including deleted quantities, across reimports.
