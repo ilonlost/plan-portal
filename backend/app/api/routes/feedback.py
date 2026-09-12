@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -72,13 +76,7 @@ def _validate_create(payload: FeedbackCreate) -> tuple[str, str, str]:
     return category, subject, message
 
 
-@router.get("")
-def list_feedback(
-    status: str = Query(default="", max_length=30),
-    query: str = Query(default="", max_length=180),
-    db: Session = Depends(get_db),
-    user: UserContext = Depends(current_user),
-) -> dict:
+def _feedback_statement(user: UserContext, status: str, query: str):
     is_admin = user.role == "admin"
     statement = select(FeedbackEntry)
     if not is_admin:
@@ -94,10 +92,96 @@ def list_feedback(
             func.lower(FeedbackEntry.author_name).like(pattern),
             func.lower(FeedbackEntry.author_username).like(pattern),
         ))
+    return statement
+
+
+def _excel_text(value: object | None) -> str:
+    text = "" if value is None else str(value)
+    return f"'{text}" if text.startswith(("=", "+", "-", "@", "\t", "\r")) else text
+
+
+def _excel_datetime(value: datetime | None) -> str:
+    return value.strftime("%d.%m.%Y %H:%M") if value else ""
+
+
+@router.get("")
+def list_feedback(
+    status: str = Query(default="", max_length=30),
+    query: str = Query(default="", max_length=180),
+    db: Session = Depends(get_db),
+    user: UserContext = Depends(current_user),
+) -> dict:
+    is_admin = user.role == "admin"
+    statement = _feedback_statement(user, status, query)
     entries = list(db.scalars(statement.order_by(FeedbackEntry.created_at.desc()).limit(500)))
     ids = [entry.id for entry in entries]
     events = list(db.scalars(select(FeedbackEvent).where(FeedbackEvent.feedback_id.in_(ids)).order_by(FeedbackEvent.created_at))) if ids else []
     return {"entries": [_entry_dict(entry) for entry in entries], "events": [_event_dict(event) for event in events], "can_manage": is_admin}
+
+
+@router.get("/export.xlsx")
+def export_feedback(
+    status: str = Query(default="", max_length=30),
+    query: str = Query(default="", max_length=180),
+    db: Session = Depends(get_db),
+    user: UserContext = Depends(current_user),
+) -> Response:
+    entries = list(db.scalars(
+        _feedback_statement(user, status, query).order_by(FeedbackEntry.created_at.desc())
+    ))
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Обратная связь"
+    headers = [
+        "№", "Тип", "Статус", "Тема", "Описание", "Автор", "Логин", "E-mail",
+        "Создано", "Обновлено", "Комментарий ИТ", "Решено", "Решил",
+        "Статус уведомления", "Правки / комментарий",
+    ]
+    sheet.append(headers)
+    for entry in entries:
+        sheet.append([
+            entry.id,
+            FEEDBACK_CATEGORY_LABELS.get(entry.category, entry.category),
+            FEEDBACK_STATUS_LABELS.get(entry.status, entry.status),
+            _excel_text(entry.subject),
+            _excel_text(entry.message),
+            _excel_text(entry.author_name),
+            _excel_text(entry.author_username),
+            _excel_text(entry.author_email),
+            _excel_datetime(entry.created_at),
+            _excel_datetime(entry.updated_at),
+            _excel_text(entry.it_comment),
+            _excel_datetime(entry.resolved_at),
+            _excel_text(entry.resolved_by),
+            _excel_text(entry.notification_status),
+            "",
+        ])
+
+    header_fill = PatternFill("solid", fgColor="D80C35")
+    edit_fill = PatternFill("solid", fgColor="FFF2CC")
+    for cell in sheet[1]:
+        cell.fill = header_fill
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+        row[-1].fill = edit_fill
+    widths = [8, 18, 15, 34, 68, 28, 24, 30, 20, 20, 52, 20, 28, 22, 52]
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[sheet.cell(1, index).column_letter].width = width
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    sheet.row_dimensions[1].height = 32
+
+    output = BytesIO()
+    workbook.save(output)
+    filename = f"feedback-{datetime.now(timezone.utc):%Y-%m-%d}.xlsx"
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("")

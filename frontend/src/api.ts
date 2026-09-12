@@ -91,6 +91,10 @@ export const api = {
   }),
   deleteUserAccess: (userId: number) => request<{ ok: boolean }>(`/admin/users/${userId}`, { method: "DELETE" }),
   feedback: (status = "", query = "") => request<FeedbackData>(`/feedback?${new URLSearchParams({ ...(status ? { status } : {}), ...(query ? { query } : {}) }).toString()}`),
+  feedbackExportUrl: (status = "", query = "") => {
+    const params = new URLSearchParams({ ...(status ? { status } : {}), ...(query ? { query } : {}) });
+    return `${API}/feedback/export.xlsx${params.size ? `?${params.toString()}` : ""}`;
+  },
   createFeedback: (data: { category: string; subject: string; message: string }) => request<{ ok: boolean; entry: FeedbackEntry }>("/feedback", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
   }),
