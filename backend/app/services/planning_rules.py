@@ -8,6 +8,17 @@ def mono_group(product_name: str, explicit: str | None = None) -> str:
     if explicit and explicit.strip():
         return explicit.strip()
     value = product_name.lower().replace("ё", "е")
+    if "лазан" in value:
+        if "болон" in value:
+            return "Лазанья Болоньезе"
+        if "куриц" in value and "гриб" in value:
+            return "Лазанья с курицей и грибами"
+        if "куриц" in value and "шпинат" in value:
+            return "Лазанья с курицей и шпинатом"
+        if "ветчин" in value:
+            return "Лазанья с ветчиной"
+        if "овощ" in value:
+            return "Лазанья с овощами"
     if "бул" in value and "бург" in value:
         return "Булочка для бургера"
     if "бриош" in value:

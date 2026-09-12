@@ -56,6 +56,7 @@ class CapacityOut(ORMModel):
 class ScheduleItemOut(ORMModel):
     id: int
     sequence: int = 0
+    sort_rank: Decimal | None = None
     production_date: date | None
     shift: str = "day"
     line_id: int | None
@@ -115,6 +116,7 @@ class ScheduleItemUpdate(BaseModel):
     locked: bool | None = None
     excluded: bool | None = None
     comment: str | None = None
+    before_item_id: int | None = None
 
 
 class ScheduleEventCreate(BaseModel):
@@ -177,6 +179,9 @@ class ImportRow(BaseModel):
     valid: bool = True
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    event_kind: str | None = None
+    duration_hours: Decimal | None = None
+    shift: str | None = None
 
 
 class ImportPreview(BaseModel):

@@ -1,7 +1,14 @@
 from datetime import timedelta
 from decimal import Decimal
 
+from io import BytesIO
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.worksheet.datavalidation import DataValidation
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,7 +17,7 @@ from app.core.security import UserContext, require_planner
 from app.core.line_catalog import line_key, workshop_for_line
 from app.models.entities import (
     AuditEvent, DemandItem, ImportedOrder, ImportFile, LineCapability, LineCapacity, Product,
-    ProductionLine, ProductionPlan,
+    ProductionLine, ProductionPlan, ProductionScheduleItem, ScheduleStatus,
 )
 from app.schemas.common import ImportConfirmRequest, ImportPreview
 from app.services.import_service import ExcelImportService
@@ -19,6 +26,43 @@ from app.services.plan_service import PlanService, plan_dict
 from app.services.notification_service import send_notification
 
 router = APIRouter(prefix="/imports", tags=["imports"])
+
+
+@router.get("/maintenance-template.xlsx")
+def maintenance_template(db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> StreamingResponse:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "График ТО"
+    headers = ["Линия", "Дата", "Смена", "Тип события", "Длительность, ч", "Причина / работы"]
+    sheet.append(headers)
+    red = "D90B32"
+    for cell in sheet[1]:
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.fill = PatternFill("solid", fgColor=red)
+        cell.alignment = Alignment(horizontal="center")
+    lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name)))
+    for line in lines:
+        sheet.append([line.name, None, "День", "ТО", None, "Плановое техническое обслуживание"])
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = f"A1:F{max(2, len(lines) + 1)}"
+    widths = [28, 14, 13, 17, 18, 48]
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[chr(64 + index)].width = width
+    for row in range(2, max(1002, len(lines) + 2)):
+        sheet.cell(row, 2).number_format = "DD.MM.YYYY"
+    shift_validation = DataValidation(type="list", formula1='"День,Ночь"')
+    type_validation = DataValidation(type="list", formula1='"ТО,Мойка,Простой"')
+    sheet.add_data_validation(shift_validation); shift_validation.add("C2:C1001")
+    sheet.add_data_validation(type_validation); type_validation.add("D2:D1001")
+    guide = workbook.create_sheet("Инструкция")
+    guide.append(["Шаблон графика ТО"])
+    guide.append(["Заполните дату, смену, тип события, длительность и описание работ. Название линии не меняйте."])
+    guide.append(["Повторная загрузка заменяет только события из предыдущего файла ТО. Текущий производственный план и ручные события сохраняются."])
+    guide.column_dimensions["A"].width = 115
+    guide["A1"].font = Font(bold=True, color=red, size=14)
+    output = BytesIO(); workbook.save(output); workbook.close(); output.seek(0)
+    filename = "Шаблон графика ТО.xlsx"
+    return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
 
 
 @router.post("/preview", response_model=ImportPreview)
@@ -34,7 +78,7 @@ async def preview_import(file: UploadFile = File(...), user: UserContext = Depen
         for row in preview.rows:
             if row.line_hint and line_key(row.line_hint) not in names:
                 text = f"Неизвестная линия «{row.line_hint}»: линия не будет создана автоматически"
-                if preview.template_type in {"production_reference", "capacity_reference"}:
+                if preview.template_type in {"production_reference", "capacity_reference", "maintenance_schedule"}:
                     row.errors.append(text)
                     row.valid = False
                 else:
@@ -65,6 +109,47 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
     for row in preview.reference_rows:
         if row.valid and row.sku:
             _upsert_product(db, product_by_sku, row, overwrite=False)
+
+    if preview.template_type == "maintenance_schedule":
+        plan = PlanService(db).active_plan()
+        if not plan:
+            raise HTTPException(422, "Сначала создайте производственный план, затем загрузите график ТО")
+        line_by_name = {line_key(line.name): line for line in db.scalars(select(ProductionLine).where(ProductionLine.status == "active"))}
+        for existing in plan.schedule_items:
+            if existing.source == "maintenance_import" and existing.schedule_kind in {"maintenance", "cleaning", "downtime"}:
+                existing.excluded = True
+        imported = 0
+        valid_rows = [row for row in preview.rows if row.valid and row.line_hint and row.requested_date and row.duration_hours and row.event_kind]
+        if valid_rows:
+            start = min(row.requested_date for row in valid_rows)
+            end = max(row.requested_date for row in valid_rows)
+            plan.horizon_start = min(plan.horizon_start, start)
+            plan.horizon_end = max(plan.horizon_end, end)
+            ensure_line_capacities(db, list(line_by_name.values()), plan.horizon_start, plan.horizon_end)
+        for row in valid_rows:
+            line = line_by_name.get(line_key(row.line_hint))
+            if not line:
+                continue
+            plan.schedule_items.append(ProductionScheduleItem(
+                line_id=line.id, production_date=row.requested_date, shift=row.shift or "day", sequence=0,
+                quantity=Decimal("0"), quantity_kg=Decimal("0"), required_hours=row.duration_hours, duration_hours=row.duration_hours,
+                schedule_kind=row.event_kind, reason=row.product_name or "Плановое ТО", source_kind="generic",
+                source="maintenance_import", locked=True, status=ScheduleStatus.PLANNED,
+            ))
+            imported += 1
+        service = PlanService(db)
+        order.status = "maintenance_imported"
+        db.flush()
+        demands = service._latest_source_demands()
+        if demands:
+            service.calculate(plan, demands, "maintenance_import")
+        else:
+            service.refresh_sequence_and_cleanings(plan)
+            service.recalculate_load(plan)
+            service.create_version(plan, "maintenance_import", f"График ТО: {preview.file_name} · {imported} событий")
+        db.add(AuditEvent(username=user.username, action="maintenance_schedule_imported", entity_type="production_plan", entity_id=str(plan.id), details={"file_name": preview.file_name, "events": imported}))
+        db.commit()
+        return {"order_id": order.id, "plan": plan_dict(db, plan), "maintenance_updated": imported}
 
     if preview.template_type in {"production_reference", "legacy_reference", "capacity_reference"}:
         updated = 0

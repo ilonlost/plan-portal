@@ -54,5 +54,8 @@ def correct_legacy_ohl_source_units() -> None:
         packaged = service.apply_piece_and_box_rounding_upgrade()
         if packaged:
             logger.warning("План пересчитан: штуки округлены вверх, задания приведены к полным коробам")
+        line_rules = service.apply_line_planning_rules_upgrade()
+        if line_rules:
+            logger.warning("Активный план пересчитан с правилами запуска и переходов по линиям")
     finally:
         db.close()

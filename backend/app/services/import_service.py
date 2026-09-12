@@ -29,6 +29,8 @@ class ExcelImportService:
             BytesIO(content), read_only=True, data_only=True,
         )
         try:
+            if any(self._normalize(name) == "график то" for name in workbook.sheetnames):
+                return self._parse_maintenance_schedule(workbook, file_name)
             if "ОХЛ" in workbook.sheetnames:
                 return self._parse_ohl_daily(workbook, file_name)
             if any(self._normalize(name) in {"план зам+напитки", "план зам", "зам"} for name in workbook.sheetnames):
@@ -42,6 +44,49 @@ class ExcelImportService:
             return self._parse_generic(workbook, file_name)
         finally:
             workbook.close()
+
+    def _parse_maintenance_schedule(self, workbook, file_name: str) -> ImportPreview:
+        sheet = next(sheet for sheet in workbook.worksheets if self._normalize(sheet.title) == "график то")
+        headers = [self._normalize(str(value or "")) for value in next(sheet.iter_rows(values_only=True))]
+        aliases = {
+            "line": {"линия", "производственная линия"},
+            "date": {"дата", "дата то"},
+            "shift": {"смена"},
+            "kind": {"тип события", "тип"},
+            "hours": {"длительность, ч", "длительность", "часы"},
+            "reason": {"причина / работы", "работы", "причина", "описание"},
+        }
+        mapping = {key: next((idx for idx, value in enumerate(headers) if value in values), None) for key, values in aliases.items()}
+        missing = [label for key, label in (("line", "Линия"), ("date", "Дата"), ("hours", "Длительность, ч")) if mapping[key] is None]
+        if missing:
+            raise ValueError("В шаблоне ТО отсутствуют колонки: " + ", ".join(missing))
+        kind_map = {"то": "maintenance", "мойка": "cleaning", "простой": "downtime"}
+        rows: list[ImportRow] = []
+        for row_number, values in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+            if not any(value not in (None, "") for value in values):
+                continue
+            errors: list[str] = []
+            line = str(self._value(values, mapping["line"]) or "").strip()
+            event_date = self._date(self._value(values, mapping["date"]), errors, "Дата")
+            hours = self._decimal(self._value(values, mapping["hours"]), errors, "Длительность")
+            raw_kind = self._normalize(str(self._value(values, mapping.get("kind")) or "ТО"))
+            kind = kind_map.get(raw_kind)
+            shift_raw = self._normalize(str(self._value(values, mapping.get("shift")) or "День"))
+            shift = "night" if shift_raw in {"ночь", "ночная"} else "day" if shift_raw in {"день", "дневная"} else None
+            reason = str(self._value(values, mapping.get("reason")) or "Плановое ТО").strip()
+            if not line:
+                errors.append("Не указана линия")
+            if not kind:
+                errors.append("Тип события должен быть ТО, Мойка или Простой")
+            if not shift:
+                errors.append("Смена должна быть День или Ночь")
+            if hours is not None and not (Decimal("0") < hours <= Decimal("24")):
+                errors.append("Длительность должна быть больше 0 и не больше 24 часов")
+            rows.append(ImportRow(
+                row_number=row_number, product_name=reason, line_hint=line, requested_date=event_date, due_date=event_date,
+                event_kind=kind, duration_hours=hours, shift=shift, valid=not errors, errors=errors,
+            ))
+        return self._preview(file_name, "maintenance_schedule_v1", "maintenance_schedule", sheet.title, rows, ["Импорт синхронизирует только события из предыдущего файла ТО; ручные задания и производственный план сохраняются."])
 
     def _parse_ohl_daily(self, workbook, file_name: str) -> ImportPreview:
         sheet = workbook["ОХЛ"]

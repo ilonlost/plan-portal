@@ -99,6 +99,138 @@ def make_plan(db, quantity=100):
     return plan, demand
 
 
+def test_pc_auto_wash_can_be_removed_without_deleting_production(db):
+    day = date(2026, 9, 14)
+    line = db.scalar(select(ProductionLine).where(ProductionLine.workshop_code == "PC"))
+    first = Product(sku="WASH-A", name="Булка A", mono_group="A")
+    second = Product(sku="WASH-B", name="Булка B", mono_group="B")
+    plan = ProductionPlan(name="Wash test", horizon_start=day, horizon_end=day)
+    db.add_all([first, second, plan]); db.flush()
+    plan.schedule_items.extend([
+        ProductionScheduleItem(product_id=first.id, line_id=line.id, production_date=day, shift="day", sequence=1, quantity=100, quantity_kg=100, required_hours=1, schedule_kind="production", source="manual"),
+        ProductionScheduleItem(product_id=second.id, line_id=line.id, production_date=day, shift="day", sequence=2, quantity=100, quantity_kg=100, required_hours=1, schedule_kind="production", source="manual"),
+    ])
+    service = PlanService(db); db.flush(); service.refresh_sequence_and_cleanings(plan)
+    washes = sorted([item for item in plan.schedule_items if item.schedule_kind == "cleaning" and not item.excluded], key=lambda item: item.sequence)
+    assert len(washes) == 2
+    service.delete_item(washes[0])
+    assert len([item for item in plan.schedule_items if item.schedule_kind == "production" and not item.excluded]) == 2
+    assert len([item for item in plan.schedule_items if item.schedule_kind == "cleaning" and not item.excluded]) == 1
+    service.calculate(plan, [])
+    assert len([item for item in plan.schedule_items if item.schedule_kind == "production" and not item.excluded]) == 2
+    assert len([item for item in plan.schedule_items if item.schedule_kind == "cleaning" and not item.excluded]) == 1
+
+
+def test_manual_priority_reorders_tasks_inside_same_shift(db):
+    day = date(2026, 9, 14)
+    line = db.scalar(select(ProductionLine).where(ProductionLine.workshop_code == "KC"))
+    first_product = Product(sku="ORDER-A", name="Первое задание")
+    second_product = Product(sku="ORDER-B", name="Второе задание")
+    plan = ProductionPlan(name="Priority test", horizon_start=day, horizon_end=day)
+    db.add_all([first_product, second_product, plan]); db.flush()
+    db.add_all([
+        LineCapability(line_id=line.id, product_id=first_product.id, units_per_hour=100),
+        LineCapability(line_id=line.id, product_id=second_product.id, units_per_hour=100),
+    ])
+    first = ProductionScheduleItem(product_id=first_product.id, line_id=line.id, production_date=day, shift="day", sequence=1, quantity=100, quantity_kg=100, required_hours=1, schedule_kind="production", source="manual")
+    second = ProductionScheduleItem(product_id=second_product.id, line_id=line.id, production_date=day, shift="day", sequence=2, quantity=100, quantity_kg=100, required_hours=1, schedule_kind="production", source="manual")
+    plan.schedule_items.extend([first, second]); db.flush()
+    PlanService(db).update_item(second, {"before_item_id": first.id, "comment": "Поменять приоритет"})
+    assert second.sequence < first.sequence
+    assert second.sort_rank < first.sort_rank
+
+
+def test_priority_order_survives_automatic_recalculation(db):
+    day = date(2026, 9, 14)
+    line = db.scalar(select(ProductionLine).where(ProductionLine.workshop_code == "KC"))
+    order = ImportedOrder(source_name="ОХЛ.xlsx", template_type="ohl_daily")
+    plan = ProductionPlan(name="Persistent priority", horizon_start=day, horizon_end=day)
+    products = [Product(sku=f"PRIORITY-{letter}", name=f"Продукт {letter}") for letter in "ABC"]
+    db.add_all([order, plan, *products]); db.flush()
+    db.add_all([LineCapability(line_id=line.id, product_id=product.id, units_per_hour=100) for product in products])
+    db.add_all([
+        LineCapacity(line_id=line.id, capacity_date=day, shift="day", available_hours=3, manual_override=True),
+        LineCapacity(line_id=line.id, capacity_date=day, shift="night", available_hours=0, manual_override=True),
+    ])
+    demands = [DemandItem(order_id=order.id, product=product, source_row=index + 2, sku=product.sku, product_name=product.name, quantity=100, source_kind="ohl", source_quantity=100, source_unit="кг", requested_date=day, due_date=day, exact_date=True) for index, product in enumerate(products)]
+    db.add_all(demands); db.flush()
+    service = PlanService(db); service.calculate(plan, demands)
+    first, second, third = sorted((item for item in plan.schedule_items if item.schedule_kind == "production"), key=lambda item: item.sequence)
+    service.update_item(third, {"before_item_id": second.id, "comment": "C перед B"})
+    service.calculate(plan, demands)
+    ordered_names = [item.product.name for item in sorted((row for row in plan.schedule_items if row.schedule_kind == "production" and not row.excluded), key=lambda row: row.sequence)]
+    assert ordered_names == ["Продукт A", "Продукт C", "Продукт B"]
+
+
+def test_maintenance_template_download_contains_lines_and_validations(client):
+    response = client.get("/imports/maintenance-template.xlsx")
+    assert response.status_code == 200
+    workbook = load_workbook(BytesIO(response.content))
+    assert workbook.sheetnames == ["График ТО", "Инструкция"]
+    sheet = workbook["График ТО"]
+    assert [cell.value for cell in sheet[1]] == ["Линия", "Дата", "Смена", "Тип события", "Длительность, ч", "Причина / работы"]
+    assert sum(1 for row in range(2, sheet.max_row + 1) if sheet.cell(row, 1).value) == 15
+    assert len(sheet.data_validations.dataValidation) == 2
+    workbook.close()
+
+
+def test_imported_maintenance_reserves_capacity_during_recalculation(db):
+    day = date(2026, 9, 14)
+    future_day = day + timedelta(days=5)
+    line = db.scalar(select(ProductionLine).where(ProductionLine.workshop_code == "KC"))
+    product = Product(sku="TO-CAPACITY", name="Продукт после ТО")
+    order = ImportedOrder(source_name="ОХЛ.xlsx", template_type="ohl_daily")
+    plan = ProductionPlan(name="Maintenance capacity", horizon_start=day, horizon_end=day)
+    db.add_all([product, order, plan]); db.flush()
+    db.add(LineCapability(line_id=line.id, product_id=product.id, units_per_hour=100))
+    db.add_all([
+        LineCapacity(line_id=line.id, capacity_date=day, shift="day", available_hours=4, manual_override=True),
+        LineCapacity(line_id=line.id, capacity_date=day, shift="night", available_hours=0, manual_override=True),
+    ])
+    demand = DemandItem(order_id=order.id, product=product, source_row=2, sku=product.sku, product_name=product.name, quantity=400, source_kind="ohl", source_quantity=400, source_unit="кг", requested_date=day, due_date=day, exact_date=True)
+    plan.schedule_items.extend([
+        ProductionScheduleItem(line_id=line.id, production_date=day, shift="day", sequence=1, quantity=0, quantity_kg=0, required_hours=2, duration_hours=2, schedule_kind="maintenance", source="maintenance_import", locked=True),
+        ProductionScheduleItem(line_id=line.id, production_date=future_day, shift="day", sequence=2, quantity=0, quantity_kg=0, required_hours=1, duration_hours=1, schedule_kind="maintenance", source="maintenance_import", locked=True),
+    ])
+    db.add(demand); db.flush()
+    PlanService(db).calculate(plan, [demand])
+    scheduled = sum(item.quantity for item in plan.schedule_items if item.schedule_kind == "production" and item.status.value != "unscheduled")
+    assert scheduled == Decimal("200")
+    assert any(item.schedule_kind == "maintenance" and not item.excluded for item in plan.schedule_items)
+    assert plan.horizon_end == future_day
+
+
+def test_kc_downtime_gets_restart_interval(db):
+    day = date(2026, 9, 14)
+    line = db.scalar(select(ProductionLine).where(ProductionLine.workshop_code == "KC"))
+    plan = ProductionPlan(name="CONS test", horizon_start=day, horizon_end=day)
+    db.add(plan); db.flush()
+    service = PlanService(db)
+    service.create_event(plan, {"line_id": line.id, "production_date": day, "shift": "day", "schedule_kind": "downtime", "duration_hours": Decimal("2"), "reason": "Остановка CONS"})
+    restart = next(item for item in plan.schedule_items if item.schedule_kind == "restart" and not item.excluded)
+    assert restart.required_hours == Decimal("0.5")
+    assert restart.sequence > next(item.sequence for item in plan.schedule_items if item.schedule_kind == "downtime")
+
+
+def test_lasagna_defaults_to_ohl_start_and_bolognese_finish(db):
+    day = date(2026, 9, 14)
+    line = db.scalar(select(ProductionLine).where(ProductionLine.name == "Лазанья"))
+    products = [
+        Product(sku="LAS-OHL", name="Лазанья с курицей и грибами охл"),
+        Product(sku="LAS-ZAM", name="Лазанья с ветчиной зам"),
+        Product(sku="LAS-BOL-OHL", name="Лазанья Болоньезе охл"),
+        Product(sku="LAS-BOL-ZAM", name="Лазанья Болоньезе зам"),
+    ]
+    plan = ProductionPlan(name="Lasagna order", horizon_start=day, horizon_end=day)
+    db.add_all([plan, *products]); db.flush()
+    for product, source_kind in zip(products, ("ohl", "zam", "ohl", "zam")):
+        plan.schedule_items.append(ProductionScheduleItem(product_id=product.id, line_id=line.id, production_date=day, shift="day", sequence=len(plan.schedule_items) + 1, quantity=100, quantity_kg=100, required_hours=1, schedule_kind="production", source_kind=source_kind, source="manual"))
+    PlanService(db).refresh_sequence_and_cleanings(plan)
+    ordered = [item.product.sku for item in sorted((row for row in plan.schedule_items if row.schedule_kind == "production"), key=lambda row: row.sequence)]
+    assert ordered == ["LAS-OHL", "LAS-ZAM", "LAS-BOL-OHL", "LAS-BOL-ZAM"]
+    assert next(item for item in plan.schedule_items if item.schedule_kind == "startup").required_hours == Decimal("1")
+
+
 def test_stale_edit_and_missing_version_do_not_write(client, db):
     plan, _ = make_plan(db)
     item = next(i for i in plan.schedule_items if i.schedule_kind == "production")

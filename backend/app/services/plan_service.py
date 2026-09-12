@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
+import json
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
@@ -15,10 +16,31 @@ from app.services.planning_engine import CapabilityInput, CapacityInput, DemandI
 from app.services.planning_rules import mono_group
 
 
+def cleaning_suppression_key(
+    line_id: int,
+    production_date: date,
+    previous_group: str | None,
+    previous_shift: str | None,
+    following_group: str | None = None,
+    following_shift: str | None = None,
+) -> str:
+    """Identify a wash boundary without relying on transient schedule item IDs."""
+    payload = [
+        line_id,
+        production_date.isoformat(),
+        previous_shift or "",
+        previous_group or "",
+        following_shift or "",
+        following_group or "",
+    ]
+    return f"suppress_cleaning:{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
+
+
 class PlanService:
     MIN_PRODUCTION_DURATION = Decimal("0.02")
     KG_ROUNDING_SETTING_KEY = "kg_rounding_up_v1"
     PIECE_AND_BOX_ROUNDING_SETTING_KEY = "piece_and_box_rounding_v3"
+    LINE_PLANNING_RULES_SETTING_KEY = "line_planning_rules_v1"
     def __init__(self, db: Session):
         self.db = db
 
@@ -132,6 +154,32 @@ class PlanService:
         self.db.commit()
         return True
 
+    def apply_line_planning_rules_upgrade(self) -> bool:
+        """Apply newly introduced line-specific setup intervals to the active plan once."""
+        if self.db.scalar(select(PortalSetting).where(PortalSetting.key == self.LINE_PLANNING_RULES_SETTING_KEY)):
+            return False
+        plan = self.active_plan()
+        if plan:
+            demands = self._latest_source_demands()
+            if demands:
+                self.calculate(plan, demands, "line_planning_rules_enabled")
+            else:
+                self.refresh_sequence_and_cleanings(plan)
+                self.recalculate_load(plan)
+                self.create_version(plan, "line_planning_rules_enabled", "Применены правила планирования по линиям")
+        self.db.add(PortalSetting(
+            key=self.LINE_PLANNING_RULES_SETTING_KEY,
+            value={"lasagna_startup_hours": 1, "lasagna_changeover_hours": 1, "kc_restart_hours": 0.5},
+            updated_by="system",
+        ))
+        self.db.add(AuditEvent(
+            username="system", action="line_planning_rules_enabled", entity_type="production_plan",
+            entity_id=str(plan.id) if plan else None,
+            details={"message": "Применены интервалы запуска, переходов и запуска после простоя"},
+        ))
+        self.db.commit()
+        return plan is not None
+
     def _latest_source_demands(self) -> list[DemandItem]:
         orders = list(self.db.scalars(select(ImportedOrder).where(
             ImportedOrder.template_type.in_(("ohl_daily", "quarter_weekly")),
@@ -148,6 +196,11 @@ class PlanService:
         return list(self.db.scalars(select(DemandItem).where(DemandItem.order_id.in_(latest_ids))))
 
     def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation") -> ProductionPlan:
+        auto_sort_ranks = {
+            (item.demand_item_id, item.line_id, item.production_date, item.shift): item.sort_rank
+            for item in plan.schedule_items
+            if item.source == "auto" and item.schedule_kind == "production" and item.sort_rank is not None
+        }
         for demand in demands:
             if demand.source_kind == "ohl" and demand.source_plan_date and demand.product and demand.product.advance_status is not None:
                 demand.advance_production = demand.product.advance_status == "АЗ"
@@ -155,8 +208,12 @@ class PlanService:
                 demand.due_date = demand.requested_date
                 demand.production_week = demand.requested_date.isocalendar().week
         if demands:
-            plan.horizon_start = min(d.requested_date for d in demands)
-            plan.horizon_end = max(d.due_date for d in demands)
+            persistent_event_dates = [
+                item.production_date for item in plan.schedule_items
+                if item.production_date and not item.excluded and item.source != "auto" and item.schedule_kind != "production"
+            ]
+            plan.horizon_start = min([*(d.requested_date for d in demands), *persistent_event_dates])
+            plan.horizon_end = max([*(d.due_date for d in demands), *persistent_event_dates])
             from app.services.line_schedule_service import ensure_line_capacities
             active_lines = list(self.db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
             ensure_line_capacities(self.db, active_lines, plan.horizon_start, plan.horizon_end)
@@ -182,13 +239,17 @@ class PlanService:
         reserved_groups = defaultdict(set)
         capability_map = {(c.line_id, c.product_id): c for c in capabilities}
         for item in plan.schedule_items:
-            if item.source == "manual" and not item.excluded and item.line_id and item.production_date:
+            if item.source != "auto" and not item.excluded and item.line_id and item.production_date:
                 capability = capability_map.get((item.line_id, item.product_id))
                 if item.schedule_kind == "production" and capability:
                     item.required_hours = self._production_duration(Decimal(item.quantity), Decimal(capability.units_per_hour))
                     if capability.line.workshop_code == "PC":
                         reserved_groups[(item.line_id, item.production_date, item.shift)].add(mono_group(item.product.name, item.product.mono_group))
                 reserved[(item.line_id, item.production_date, item.shift)] += Decimal(item.required_hours)
+                if item.schedule_kind == "downtime":
+                    line = item.line or self.db.get(ProductionLine, item.line_id)
+                    default_restart = Decimal("0.5") if line and line.workshop_code == "KC" else Decimal("0")
+                    reserved[(item.line_id, item.production_date, item.shift)] += Decimal(str((line.planning_settings or {}).get("restart_after_downtime_hours", default_restart))) if line else Decimal("0")
         for key, groups in reserved_groups.items():
             reserved[key] += Decimal(len(groups))
         result = PlanningEngine().plan(
@@ -210,6 +271,8 @@ class PlanService:
                 batch_quantum_kg=Decimal(item.batch_quantum_kg) if item.batch_quantum_kg else None,
                 min_order_kg=Decimal(item.min_order_kg) if item.min_order_kg else None,
                 workshop_code=item.line.workshop_code,
+                daily_startup_hours=Decimal(str((item.line.planning_settings or {}).get("daily_startup_hours", 1 if "лазан" in item.line.name.casefold() else 0))),
+                changeover_hours=Decimal(str((item.line.planning_settings or {}).get("changeover_hours", 1 if "лазан" in item.line.name.casefold() else 0))),
             ) for item in capabilities if item.line.status == "active"],
             capacities=[CapacityInput(
                 line_id=item.line_id, capacity_date=item.capacity_date,
@@ -231,6 +294,7 @@ class PlanService:
                 quantity_kg=item.quantity_kg, box_count=item.box_count, batch_count=item.batch_count,
                 source_kind=item.source_kind, marking_date=item.marking_date,
                 shift=item.shift,
+                sort_rank=auto_sort_ranks.get((item.demand_id, item.line_id, item.production_date, item.shift)),
                 required_hours=item.required_hours, status=ScheduleStatus(item.status),
                 source="auto", warnings=item.warnings,
             ))
@@ -315,6 +379,15 @@ class PlanService:
                 if replacement:
                     item.shift = replacement.shift
         item.source = "manual"
+        if "before_item_id" in values and item.line_id and item.production_date:
+            peers = [row for row in plan.schedule_items if not row.excluded and (row.schedule_kind == "production" or row.source != "auto") and row.line_id == item.line_id and row.production_date == item.production_date and row.shift == item.shift]
+            peers.sort(key=lambda row: (Decimal(row.sort_rank) if row.sort_rank is not None else Decimal(row.sequence or 0) * 10, row.id or 0))
+            peers = [row for row in peers if row is not item]
+            before_id = values.get("before_item_id")
+            index = next((idx for idx, row in enumerate(peers) if row.id == before_id), len(peers))
+            peers.insert(index, item)
+            for rank, row in enumerate(peers, start=1):
+                row.sort_rank = Decimal(rank * 10)
         self.refresh_sequence_and_cleanings(plan)
         self.recalculate_load(plan)
         self.create_version(plan, "manual_change", values.get("comment") or "Ручная корректировка задания")
@@ -390,8 +463,8 @@ class PlanService:
 
     def create_event(self, plan: ProductionPlan, values: dict) -> ProductionPlan:
         kind = values["schedule_kind"]
-        if kind not in {"downtime", "maintenance", "trial"}:
-            raise ValueError("Допустимы события: downtime, maintenance, trial")
+        if kind not in {"cleaning", "downtime", "maintenance", "trial"}:
+            raise ValueError("Допустимы события: cleaning, downtime, maintenance, trial")
         event = ProductionScheduleItem(
             plan_id=plan.id, product_id=None, line_id=values["line_id"],
             production_date=values["production_date"], shift=values.get("shift", "day"),
@@ -411,6 +484,24 @@ class PlanService:
     def delete_item(self, item: ProductionScheduleItem) -> ProductionPlan:
         plan = item.plan
         description = item.reason or (item.product.name if item.product else "задание")
+        if item.schedule_kind == "cleaning" and item.source == "auto" and item.line_id and item.production_date:
+            siblings = sorted(
+                [row for row in plan.schedule_items if not row.excluded and row.line_id == item.line_id and row.production_date == item.production_date],
+                key=lambda row: (row.sequence, row.id or 0),
+            )
+            position = siblings.index(item)
+            previous = next((row for row in reversed(siblings[:position]) if row.schedule_kind == "production"), None)
+            following = next((row for row in siblings[position + 1:] if row.schedule_kind == "production"), None)
+            previous_group = mono_group(previous.product.name, previous.product.mono_group) if previous and previous.product else None
+            following_group = mono_group(following.product.name, following.product.mono_group) if following and following.product else None
+            item.reason = cleaning_suppression_key(
+                item.line_id,
+                item.production_date,
+                previous_group,
+                previous.shift if previous else item.shift,
+                following_group,
+                following.shift if following else None,
+            )
         # Keep a tombstone tied to source identity, including after reimport.
         item.excluded = True
         item.source = "manual"
@@ -450,8 +541,9 @@ class PlanService:
 
     def refresh_sequence_and_cleanings(self, plan: ProductionPlan) -> None:
         for existing in list(plan.schedule_items):
-            if existing.schedule_kind == "cleaning" and existing.source == "auto":
+            if existing.source == "auto" and existing.schedule_kind in {"cleaning", "startup", "changeover", "restart"}:
                 plan.schedule_items.remove(existing)
+                self.db.delete(existing)
         self.db.flush()
         lines = {line.id: line for line in self.db.scalars(select(ProductionLine))}
         products = {product.id: product for product in self.db.scalars(select(Product))}
@@ -463,22 +555,52 @@ class PlanService:
             else:
                 unscheduled.append(item)
         source_rank = {"ohl": 0, "generic": 1, "zam": 2}
+        suppressed = {
+            item.reason for item in plan.schedule_items
+            if item.excluded and item.source == "manual" and item.schedule_kind == "cleaning" and (item.reason or "").startswith("suppress_cleaning:")
+        }
         for (line_id, production_date), items in sorted(grouped.items(), key=lambda value: (value[0][1], lines[value[0][0]].priority)):
+            line = lines[line_id]
+            name = line.name.casefold()
+            settings = {
+                "daily_startup_hours": 1 if "лазан" in name else 0,
+                "changeover_hours": 1 if "лазан" in name else 0,
+                "restart_after_downtime_hours": Decimal("0.5") if line.workshop_code == "KC" else 0,
+                "ohl_first": "лазан" in name,
+                "bolognese_last": "лазан" in name,
+                "start_batch_number": 4 if "лазан" in name else 1,
+                **(line.planning_settings or {}),
+            }
             productions = [item for item in items if item.schedule_kind == "production"]
-            events = [item for item in items if item.schedule_kind != "production"]
+            events = [item for item in items if item.schedule_kind != "production" and item.source != "auto"]
             productions.sort(key=lambda item: (
                 0 if item.shift == "day" else 1,
+                Decimal(item.sort_rank) if item.sort_rank is not None else Decimal("999999"),
+                1 if settings["bolognese_last"] and item.product_id in products and "болоньез" in products[item.product_id].name.casefold() else 0,
+                source_rank.get(item.source_kind, 1) if settings["ohl_first"] else 1,
                 mono_group(products[item.product_id].name, products[item.product_id].mono_group) if item.product_id in products else "",
-                source_rank.get(item.source_kind, 1),
                 item.sequence, item.id or 0,
             ))
             sequence = 1
             previous_group: str | None = None
             previous_shift = "day"
+            if productions and Decimal(str(settings["daily_startup_hours"])) > 0:
+                hours = Decimal(str(settings["daily_startup_hours"]))
+                plan.schedule_items.append(ProductionScheduleItem(
+                    plan_id=plan.id, line_id=line_id, production_date=production_date, shift=productions[0].shift,
+                    sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"), required_hours=hours, duration_hours=hours,
+                    schedule_kind="startup", reason=f"Запуск линии · старт с кванта {settings['start_batch_number']}",
+                    source_kind="generic", source="auto", locked=True, status=ScheduleStatus.PLANNED,
+                ))
+                sequence += 1
             for item in productions:
                 product = products.get(item.product_id)
                 current_group = mono_group(product.name, product.mono_group) if product else str(item.product_id)
-                if lines[line_id].workshop_code == "PC" and previous_group and (previous_group != current_group or previous_shift != item.shift):
+                transition = previous_group and (previous_group != current_group or previous_shift != item.shift)
+                suppression_key = cleaning_suppression_key(
+                    line_id, production_date, previous_group, previous_shift, current_group, item.shift,
+                )
+                if line.workshop_code == "PC" and transition and suppression_key not in suppressed:
                     wash = ProductionScheduleItem(
                         plan_id=plan.id, product_id=None, line_id=line_id, production_date=production_date,
                         shift=previous_shift, sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"),
@@ -488,11 +610,22 @@ class PlanService:
                     )
                     plan.schedule_items.append(wash)
                     sequence += 1
+                elif transition and Decimal(str(settings["changeover_hours"])) > 0:
+                    hours = Decimal(str(settings["changeover_hours"]))
+                    plan.schedule_items.append(ProductionScheduleItem(
+                        plan_id=plan.id, line_id=line_id, production_date=production_date, shift=previous_shift,
+                        sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"), required_hours=hours, duration_hours=hours,
+                        schedule_kind="changeover", reason="Переход на другой вид продукции", source_kind="generic", source="auto", locked=True, status=ScheduleStatus.PLANNED,
+                    ))
+                    sequence += 1
                 item.sequence = sequence
                 sequence += 1
                 previous_group = current_group
                 previous_shift = item.shift
-            if lines[line_id].workshop_code == "PC" and previous_group:
+            end_suppression = cleaning_suppression_key(
+                line_id, production_date, previous_group, previous_shift,
+            )
+            if line.workshop_code == "PC" and previous_group and end_suppression not in suppressed:
                 plan.schedule_items.append(ProductionScheduleItem(
                     plan_id=plan.id, product_id=None, line_id=line_id, production_date=production_date,
                     shift=previous_shift, sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"),
@@ -501,9 +634,17 @@ class PlanService:
                     source_kind="generic", source="auto", locked=True, status=ScheduleStatus.PLANNED,
                 ))
                 sequence += 1
-            for event in sorted(events, key=lambda value: (0 if value.shift == "day" else 1, value.sequence, value.id or 0)):
+            for event in sorted(events, key=lambda value: (0 if value.shift == "day" else 1, Decimal(value.sort_rank) if value.sort_rank is not None else Decimal("999999"), value.sequence, value.id or 0)):
                 event.sequence = sequence
                 sequence += 1
+                if event.schedule_kind == "downtime" and Decimal(str(settings["restart_after_downtime_hours"])) > 0:
+                    hours = Decimal(str(settings["restart_after_downtime_hours"]))
+                    plan.schedule_items.append(ProductionScheduleItem(
+                        plan_id=plan.id, line_id=line_id, production_date=production_date, shift=event.shift,
+                        sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"), required_hours=hours, duration_hours=hours,
+                        schedule_kind="restart", reason="Запуск линии после простоя", source_kind="generic", source="auto", locked=True, status=ScheduleStatus.PLANNED,
+                    ))
+                    sequence += 1
         for sequence, item in enumerate(unscheduled, start=1):
             item.sequence = sequence
         self.db.flush()
@@ -533,6 +674,7 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
     return {
         "id": item.id,
         "sequence": item.sequence,
+        "sort_rank": item.sort_rank,
         "production_date": item.production_date,
         "line_id": item.line_id,
         "line_code": item.line.code if item.line else None,
@@ -540,7 +682,7 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "workshop_code": item.line.workshop_code if item.line else None,
         "workshop_name": item.line.workshop_name if item.line else None,
         "product_id": item.product_id,
-        "product_name": item.product.name if item.product else ({"cleaning": "Мойка линии", "downtime": "Простой", "maintenance": "ТО", "trial": "Проработка"}.get(item.schedule_kind, "Служебное событие")),
+        "product_name": item.product.name if item.product else ({"cleaning": "Мойка линии", "downtime": "Простой", "maintenance": "ТО", "trial": "Проработка", "startup": "Запуск линии", "changeover": "Переход", "restart": "Запуск после простоя"}.get(item.schedule_kind, "Служебное событие")),
         "sku": item.product.sku if item.product else "—",
         "quantity": item.quantity,
         "source_quantity": item.source_quantity,

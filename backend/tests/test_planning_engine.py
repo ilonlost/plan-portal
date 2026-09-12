@@ -2,6 +2,13 @@ from datetime import date
 from decimal import Decimal
 
 from app.services.planning_engine import CapabilityInput, CapacityInput, DemandInput, PlanningEngine
+from app.services.planning_rules import mono_group
+
+
+def test_lasagna_ohl_and_zam_share_the_same_variant_group() -> None:
+    ohl = 'Лазанья "Болоньезе" с сыром в соусе "Бешамель" охл 350г*4'
+    zam = 'Лазанья "Болоньезе" с сыром в соусе "Бешамель" зам 350г*6'
+    assert mono_group(ohl) == mono_group(zam) == "Лазанья Болоньезе"
 
 
 def test_engine_splits_and_reports_overload() -> None:
@@ -204,6 +211,23 @@ def test_pc_washing_reduces_available_production_capacity() -> None:
         capabilities=[
             CapabilityInput(2, 10, Decimal("100"), workshop_code="PC"),
             CapabilityInput(2, 11, Decimal("100"), workshop_code="PC"),
+        ],
+        capacities=[CapacityInput(2, day, Decimal("3"))], horizon_end=day,
+    )
+    assert items[0].status == "planned"
+    assert items[1].status == "unscheduled"
+
+
+def test_line_startup_and_changeover_reduce_capacity() -> None:
+    day = date(2026, 9, 14)
+    items = PlanningEngine().plan(
+        demands=[
+            DemandInput(1, 10, "LAS-A", Decimal("100"), day, day, mono_group="A"),
+            DemandInput(2, 11, "LAS-B", Decimal("100"), day, day, mono_group="B"),
+        ],
+        capabilities=[
+            CapabilityInput(2, 10, Decimal("100"), daily_startup_hours=Decimal("1"), changeover_hours=Decimal("1")),
+            CapabilityInput(2, 11, Decimal("100"), daily_startup_hours=Decimal("1"), changeover_hours=Decimal("1")),
         ],
         capacities=[CapacityInput(2, day, Decimal("3"))], horizon_end=day,
     )

@@ -31,6 +31,38 @@ class LineScheduleUpdate(BaseModel):
     csb_t5: str | None = Field(default=None, max_length=20)
     csb_t55: str | None = Field(default=None, max_length=80)
     slots: list[CapacityDayUpdate] = Field(default_factory=list)
+    planning_settings: dict | None = None
+
+
+def effective_planning_settings(line: ProductionLine) -> dict:
+    """Return safe defaults plus the planner's per-line overrides."""
+    name = line.name.casefold()
+    defaults = {
+        "daily_startup_hours": 1.0 if "лазан" in name else 0.0,
+        "changeover_hours": 1.0 if "лазан" in name else 0.0,
+        "restart_after_downtime_hours": 0.5 if line.workshop_code == "KC" else 0.0,
+        "ohl_first": "лазан" in name,
+        "bolognese_last": "лазан" in name,
+        "start_batch_number": 4 if "лазан" in name else 1,
+    }
+    defaults.update(line.planning_settings or {})
+    return defaults
+
+
+def validate_planning_settings(values: dict) -> dict:
+    clean = {}
+    for key in ("daily_startup_hours", "changeover_hours", "restart_after_downtime_hours"):
+        value = Decimal(str(values.get(key, 0)))
+        if value < 0 or value > 4:
+            raise ValueError("Технологический интервал должен быть от 0 до 4 часов")
+        clean[key] = float(value)
+    clean["ohl_first"] = bool(values.get("ohl_first", False))
+    clean["bolognese_last"] = bool(values.get("bolognese_last", False))
+    batch = int(values.get("start_batch_number", 1))
+    if batch < 1 or batch > 99:
+        raise ValueError("Начальный квант должен быть от 1 до 99")
+    clean["start_batch_number"] = batch
+    return clean
 
 
 class ScheduleTemplateCreate(BaseModel):
@@ -100,6 +132,7 @@ def list_lines(db: Session = Depends(get_db), user: UserContext = Depends(curren
             "schedule_anchor_date": line.schedule_anchor_date,
             "schedule_template_id": line.schedule_template_id, "production_day_start_hour": line.production_day_start_hour,
             "mail_recipients": line.mail_recipients, "csb_line_code": line.csb_line_code, "csb_t5": line.csb_t5, "csb_t55": line.csb_t55,
+            "planning_settings": effective_planning_settings(line),
             "product_count": product_count, "today_load": float(today_load),
         })
     return result
@@ -173,6 +206,7 @@ def line_schedule(
         "templates": [_template_dict(row) for row in db.scalars(select(LineScheduleTemplate).order_by(LineScheduleTemplate.name))],
         "template_id": line.schedule_template_id, "production_day_start_hour": line.production_day_start_hour,
         "mail_recipients": line.mail_recipients or "", "csb_line_code": line.csb_line_code or "", "csb_t5": line.csb_t5 or "4", "csb_t55": line.csb_t55 or "",
+        "planning_settings": effective_planning_settings(line),
         "slots": slots,
     }
 
@@ -207,6 +241,12 @@ def update_line_schedule(
     line.csb_line_code = (payload.csb_line_code or "").strip() or None
     line.csb_t5 = (payload.csb_t5 or "4").strip() or "4"
     line.csb_t55 = (payload.csb_t55 or "").strip() or None
+    try:
+        next_settings = effective_planning_settings(line) if payload.planning_settings is None else validate_planning_settings(payload.planning_settings)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    rules_changed = effective_planning_settings(line) != next_settings
+    line.planning_settings = next_settings
     plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
     if plan and pattern_changed:
         for row in db.scalars(select(LineCapacity).where(
@@ -236,13 +276,16 @@ def update_line_schedule(
         ).distinct()))
         demands = list(db.scalars(select(DemandItem).where(DemandItem.id.in_(demand_ids)).options(joinedload(DemandItem.product)))) if demand_ids else []
         if demands:
-            PlanService(db).calculate(plan, demands, "line_schedule_changed")
+            PlanService(db).calculate(plan, demands, "line_rules_changed" if rules_changed else "line_schedule_changed")
             recalculated = True
         else:
+            PlanService(db).refresh_sequence_and_cleanings(plan)
             PlanService(db).recalculate_load(plan)
+            if pattern_changed or rules_changed:
+                PlanService(db).create_version(plan, "line_rules_changed" if rules_changed else "line_schedule_changed", f"Настройки линии {line.name} обновлены")
     db.add(AuditEvent(
         username=user.username, action="line_schedule_updated", entity_type="production_line", entity_id=str(line.id),
-        details={"schedule_code": line.schedule_code, "template_id": line.schedule_template_id, "anchor_date": payload.anchor_date.isoformat(), "manual_days": len(payload.slots), "plan_recalculated": recalculated},
+        details={"schedule_code": line.schedule_code, "template_id": line.schedule_template_id, "anchor_date": payload.anchor_date.isoformat(), "manual_days": len(payload.slots), "planning_settings": next_settings, "plan_recalculated": recalculated},
     ))
     db.commit()
     return {"ok": True, "line_id": line.id, "plan_recalculated": recalculated}

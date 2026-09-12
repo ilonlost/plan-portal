@@ -36,6 +36,8 @@ class CapabilityInput:
     batch_quantum_kg: Decimal | None = None
     min_order_kg: Decimal | None = None
     workshop_code: str = ""
+    daily_startup_hours: Decimal = Decimal("0")
+    changeover_hours: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,7 @@ class PlanningEngine:
         used_hours: dict[tuple[int, date, str], Decimal] = defaultdict(lambda: Decimal("0"))
         last_group: dict[tuple[int, date, str], str] = {}
         seen_groups: dict[tuple[int, date], set[str]] = defaultdict(set)
+        started_days: set[tuple[int, date]] = set()
         for key, groups in (reserved_groups or {}).items():
             seen_groups[key].update(groups)
         result: list[PlannedItem] = []
@@ -168,8 +171,14 @@ class PlanningEngine:
                         capability.workshop_code == "PC"
                         and (demand.mono_group or demand.sku) not in seen_groups[day_key]
                     )
-                    wash_hours = Decimal("1") if needs_wash else Decimal("0")
-                    free_hours = max(Decimal("0"), capacity - used_hours[key] - wash_hours)
+                    setup_hours = Decimal("1") if needs_wash else (
+                        capability.changeover_hours
+                        if last_group.get(key) and last_group.get(key) != (demand.mono_group or demand.sku)
+                        else Decimal("0")
+                    )
+                    startup_hours = capability.daily_startup_hours if (capability.line_id, production_date) not in started_days else Decimal("0")
+                    reserve_hours = setup_hours + startup_hours
+                    free_hours = max(Decimal("0"), capacity - used_hours[key] - reserve_hours)
                     free_kg = free_hours * capability.units_per_hour
                     # A split task is also a released production task, therefore
                     # it must contain a whole number of boxes rather than only
@@ -182,7 +191,7 @@ class PlanningEngine:
                             setup_rank = 0 if last_group.get(key) == (demand.mono_group or demand.sku) else 1 if used_hours[key] == 0 else 2
                         else:
                             setup_rank = 0
-                        available.append((setup_rank, utilization, production_date, self._shift_order(shift), capability.line_priority, capability, shift, free_quantized, wash_hours))
+                        available.append((setup_rank, utilization, production_date, self._shift_order(shift), capability.line_priority, capability, shift, free_quantized, reserve_hours))
                 if not available:
                     break
                 if demand.source_kind == "zam":
@@ -192,13 +201,14 @@ class PlanningEngine:
                     available.sort(key=lambda item: (item[2], item[0], item[1], item[3], item[4]))
                 else:
                     available.sort(key=lambda item: item[:5])
-                _, _, production_date, _, _, capability, shift, free_kg, wash_hours = available[0]
+                _, _, production_date, _, _, capability, shift, free_kg, setup_hours = available[0]
                 # Keep a batch together when it fits. The next demand will select the
                 # least-loaded slot, which balances shifts without fragmenting every SKU.
                 quantity = min(remaining, free_kg)
                 hours = self._hours(quantity, capability.units_per_hour)
                 slot_key = (capability.line_id, production_date, shift)
-                used_hours[slot_key] += wash_hours + hours
+                used_hours[slot_key] += setup_hours + hours
+                started_days.add((capability.line_id, production_date))
                 last_group[slot_key] = demand.mono_group or demand.sku
                 seen_groups[(capability.line_id, production_date, shift)].add(demand.mono_group or demand.sku)
                 remaining -= quantity

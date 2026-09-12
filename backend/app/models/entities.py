@@ -88,6 +88,7 @@ class ProductionLine(Base):
     csb_line_code: Mapped[str | None] = mapped_column(String(40))
     csb_t5: Mapped[str] = mapped_column(String(20), default="4")
     csb_t55: Mapped[str | None] = mapped_column(String(80))
+    planning_settings: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     capabilities: Mapped[list[LineCapability]] = relationship(back_populates="line", cascade="all, delete-orphan")
     capacities: Mapped[list[LineCapacity]] = relationship(back_populates="line", cascade="all, delete-orphan")
 
@@ -229,6 +230,7 @@ class ProductionScheduleItem(Base):
     production_date: Mapped[date | None] = mapped_column(Date, index=True)
     shift: Mapped[str] = mapped_column(String(30), default="day")
     sequence: Mapped[int] = mapped_column(Integer, default=0)
+    sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
     source_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     source_unit: Mapped[str] = mapped_column(String(30), default="кг")

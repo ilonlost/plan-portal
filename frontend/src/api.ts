@@ -43,7 +43,7 @@ export const api = {
   matrix: (params = "") => optional<MatrixData>(`/plans/active/matrix${params ? `?${params}` : ""}`),
   lines: () => request<LineData[]>("/lines"),
   lineSchedule: (lineId: number, start: string, days = 14) => request<LineScheduleData>(`/lines/${lineId}/schedule?start=${encodeURIComponent(start)}&days=${days}`),
-  updateLineSchedule: (lineId: number, data: { schedule_code: string; anchor_date: string; template_id?: number | null; mail_recipients?: string; csb_line_code?: string; csb_t5?: string; csb_t55?: string; slots: { capacity_date: string; day_hours: number; night_hours: number; note?: string | null }[] }) => request<{ ok: boolean; plan_recalculated: boolean }>(`/lines/${lineId}/schedule`, {
+  updateLineSchedule: (lineId: number, data: { schedule_code: string; anchor_date: string; template_id?: number | null; mail_recipients?: string; csb_line_code?: string; csb_t5?: string; csb_t55?: string; planning_settings: object; slots: { capacity_date: string; day_hours: number; night_hours: number; note?: string | null }[] }) => request<{ ok: boolean; plan_recalculated: boolean }>(`/lines/${lineId}/schedule`, {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
   }),
   scheduleTemplates: () => request<ScheduleTemplate[]>("/lines/schedule-templates"),
@@ -77,7 +77,8 @@ export const api = {
     const data = new FormData(); data.append("file", file);
     return request<ImportPreview>("/imports/preview", { method: "POST", body: data });
   },
-  confirmImport: (preview: ImportPreview) => request<{ order_id: number; plan: PlanData | null; reference_updated?: number }>("/imports/confirm", {
+  maintenanceTemplateUrl: () => `${API}/imports/maintenance-template.xlsx`,
+  confirmImport: (preview: ImportPreview) => request<{ order_id: number; plan: PlanData | null; reference_updated?: number; maintenance_updated?: number }>("/imports/confirm", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ preview, create_plan: true, merge_into_active: true }),
   }),

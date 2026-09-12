@@ -14,7 +14,8 @@ export interface ScheduleItem {
   product_id: number | null; product_name: string; sku: string; quantity: number; required_hours: number;
   load_percent: number; shift: string; source_quantity: number | null; source_unit: string;
   quantity_kg: number | null; quantity_units: number | null; box_count: number | null; batch_count: number | null;
-  schedule_kind: "production" | "cleaning" | "downtime" | "maintenance" | "trial"; duration_hours: number | null;
+  schedule_kind: "production" | "cleaning" | "downtime" | "maintenance" | "trial" | "startup" | "changeover" | "restart"; duration_hours: number | null;
+  sort_rank: number | null;
   mono_group: string | null;
   reason: string | null; actual_quantity_kg: number | null; status: Status; source_kind: "ohl" | "zam" | "generic";
   source: string; locked: boolean; excluded: boolean; due_date: string | null; warnings: string[];
@@ -46,7 +47,9 @@ export interface LineData {
   schedule_template_id: number | null; production_day_start_hour: number; mail_recipients: string | null;
   csb_line_code: string | null; csb_t5: string; csb_t55: string | null;
   product_count: number; today_load: number;
+  planning_settings: PlanningSettings;
 }
+export interface PlanningSettings { daily_startup_hours: number; changeover_hours: number; restart_after_downtime_hours: number; ohl_first: boolean; bolognese_last: boolean; start_batch_number: number; }
 export interface WorkshopData { code: string; name: string; lines: { id: number; code: string; name: string; status: string }[]; }
 
 export interface CatalogRow {
@@ -85,6 +88,7 @@ export interface LineScheduleData {
   anchor_date: string; patterns: Record<string, string>; template_id: number | null; production_day_start_hour: number;
   mail_recipients: string; csb_line_code: string; csb_t5: string; csb_t55: string;
   templates: ScheduleTemplate[]; slots: LineScheduleSlot[];
+  planning_settings: PlanningSettings;
 }
 export interface ScheduleTemplate { id: number; name: string; description: string | null; pattern: { day_hours: number; night_hours: number }[]; }
 export interface SourceFile {
@@ -108,6 +112,7 @@ export interface ImportRow {
   min_order_kg: number | null; capacity_type: string | null; restrictions: string | null;
   advance_marking: boolean; marking_date: string | null; legacy_quantum_units: number | null;
   legacy_daily_capacity_units: number | null; recipe_component_count: number;
+  event_kind: string | null; duration_hours: number | null; shift: string | null;
 }
 export interface ImportPreview {
   file_name: string; mapping_code: string; template_type: string; detected_sheet: string | null; notes: string[];
