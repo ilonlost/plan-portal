@@ -15,6 +15,7 @@ export interface ScheduleItem {
   load_percent: number; shift: string; source_quantity: number | null; source_unit: string;
   quantity_kg: number | null; quantity_units: number | null; box_count: number | null; batch_count: number | null;
   schedule_kind: "production" | "cleaning" | "downtime" | "maintenance" | "trial" | "startup" | "changeover" | "restart"; duration_hours: number | null;
+  start_time: string | null; end_time: string | null;
   sort_rank: number | null;
   mono_group: string | null;
   reason: string | null; actual_quantity_kg: number | null; status: Status; source_kind: "ohl" | "zam" | "generic";
@@ -113,6 +114,7 @@ export interface ImportRow {
   advance_marking: boolean; marking_date: string | null; legacy_quantum_units: number | null;
   legacy_daily_capacity_units: number | null; recipe_component_count: number;
   event_kind: string | null; duration_hours: number | null; shift: string | null;
+  start_time: string | null; end_time: string | null;
 }
 export interface ImportPreview {
   file_name: string; mapping_code: string; template_type: string; detected_sheet: string | null; notes: string[];

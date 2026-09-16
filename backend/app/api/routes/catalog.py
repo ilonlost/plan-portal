@@ -73,6 +73,12 @@ def _capability_dict(item: LineCapability) -> dict:
     }
 
 
+def _recalculate_active_plan(db: Session) -> bool:
+    from app.services.plan_service import PlanService
+
+    return PlanService(db).recalculate_after_catalog_change() is not None
+
+
 @router.get("/manual-products")
 def manual_products(line_id: int, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> list[dict]:
     rows = list(db.scalars(
@@ -234,8 +240,9 @@ def create_product(
     _product_values(product, values)
     capability = _save_product_capability(db, product, values)
     db.add(AuditEvent(username=user.username, action="product_created", entity_type="product", entity_id=str(product.id), details={"sku": product.sku}))
+    recalculated = _recalculate_active_plan(db)
     db.commit()
-    return {"ok": True, "product_id": product.id, "capability_id": capability.id if capability else None}
+    return {"ok": True, "product_id": product.id, "capability_id": capability.id if capability else None, "plan_recalculated": recalculated}
 
 
 @router.patch("/products/{product_id}")
@@ -253,8 +260,9 @@ def update_product(
     _product_values(product, values)
     capability = _save_product_capability(db, product, values)
     db.add(AuditEvent(username=user.username, action="product_updated", entity_type="product", entity_id=str(product.id), details=payload.model_dump(mode="json", exclude_unset=True)))
+    recalculated = _recalculate_active_plan(db)
     db.commit()
-    return {"ok": True, "product_id": product.id, "capability_id": capability.id if capability else None}
+    return {"ok": True, "product_id": product.id, "capability_id": capability.id if capability else None, "plan_recalculated": recalculated}
 
 
 @router.patch("/products/{product_id}/status")
@@ -274,8 +282,9 @@ def update_product_status(
     elif (product.fk_status or "").lower() == "блокирован":
         product.fk_status = "Активный"
     db.add(AuditEvent(username=user.username, action=f"product_{status}", entity_type="product", entity_id=str(product.id), details={"sku": product.sku}))
+    recalculated = _recalculate_active_plan(db)
     db.commit()
-    return {"ok": True, "status": status}
+    return {"ok": True, "status": status, "plan_recalculated": recalculated}
 
 
 @router.delete("/products/{product_id}")
@@ -288,8 +297,9 @@ def delete_product(
     product.catalog_status = "deleted"
     product.active = False
     db.add(AuditEvent(username=user.username, action="product_deleted", entity_type="product", entity_id=str(product.id), details={"sku": product.sku, "mode": "soft_delete"}))
+    recalculated = _recalculate_active_plan(db)
     db.commit()
-    return {"ok": True, "deleted": True}
+    return {"ok": True, "deleted": True, "plan_recalculated": recalculated}
 
 
 def _scalar(value):
@@ -358,6 +368,7 @@ async def upload_catalog(
         db.rollback()
         raise HTTPException(422, str(exc)) from exc
     db.add(AuditEvent(username=user.username, action="catalog_imported", entity_type="catalog", details={**result, "file_name": file.filename}))
+    result["plan_recalculated"] = _recalculate_active_plan(db)
     db.commit()
     return {"ok": True, **result}
 
@@ -400,22 +411,9 @@ def update_capability(
         entity_id=str(capability.id), details=payload.model_dump(mode="json", exclude_unset=True),
     ))
     db.flush()
-    from app.services.plan_service import PlanService
-    from app.services.line_schedule_service import ensure_line_capacities
-    service = PlanService(db)
-    plan = service.active_plan()
-    if plan:
-        demands = service._latest_source_demands()
-        if demands:
-            ensure_line_capacities(
-                db,
-                list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active"))),
-                plan.horizon_start,
-                plan.horizon_end,
-            )
-            service.calculate(plan, demands, "catalog_updated")
+    recalculated = _recalculate_active_plan(db)
     db.commit()
-    return {"ok": True, "capability_id": capability.id}
+    return {"ok": True, "capability_id": capability.id, "plan_recalculated": recalculated}
 
 
 class CapabilityCreate(BaseModel):

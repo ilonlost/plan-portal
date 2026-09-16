@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import enum
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, Time, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -239,6 +239,8 @@ class ProductionScheduleItem(Base):
     batch_count: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
     schedule_kind: Mapped[str] = mapped_column(String(30), default="production")
     duration_hours: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    start_time: Mapped[time | None] = mapped_column(Time)
+    end_time: Mapped[time | None] = mapped_column(Time)
     reason: Mapped[str | None] = mapped_column(Text)
     actual_quantity_kg: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
     source_kind: Mapped[str] = mapped_column(String(30), default="generic", index=True)

@@ -107,7 +107,7 @@ class PlanningEngine:
             seen_groups[key].update(groups)
         result: list[PlannedItem] = []
 
-        source_rank = {"ohl": 0, "generic": 1, "zam": 2}
+        source_rank = {"ohl": 0, "zam": 1, "generic": 2}
         for demand in sorted(demands, key=lambda item: (
             source_rank.get(item.source_kind, 1), item.due_date, item.mono_group, item.priority, item.requested_date, item.id,
         )):

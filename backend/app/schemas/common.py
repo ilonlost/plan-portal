@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -77,6 +77,8 @@ class ScheduleItemOut(ORMModel):
     batch_count: Decimal | None = None
     schedule_kind: str = "production"
     duration_hours: Decimal | None = None
+    start_time: time | None = None
+    end_time: time | None = None
     reason: str | None = None
     actual_quantity_kg: Decimal | None = None
     source_kind: str = "generic"
@@ -124,7 +126,8 @@ class ScheduleEventCreate(BaseModel):
     production_date: date
     shift: str = "day"
     schedule_kind: str
-    duration_hours: Decimal = Field(gt=0, le=24)
+    start_time: time
+    end_time: time
     reason: str = Field(min_length=2, max_length=500)
 
 
@@ -181,6 +184,8 @@ class ImportRow(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     event_kind: str | None = None
     duration_hours: Decimal | None = None
+    start_time: time | None = None
+    end_time: time | None = None
     shift: str | None = None
 
 

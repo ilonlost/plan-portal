@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -168,7 +168,7 @@ def test_maintenance_template_download_contains_lines_and_validations(client):
     workbook = load_workbook(BytesIO(response.content))
     assert workbook.sheetnames == ["График ТО", "Инструкция"]
     sheet = workbook["График ТО"]
-    assert [cell.value for cell in sheet[1]] == ["Линия", "Дата", "Смена", "Тип события", "Длительность, ч", "Причина / работы"]
+    assert [cell.value for cell in sheet[1]] == ["Линия", "Дата", "Смена", "Тип события", "Начало", "Окончание", "Причина / работы"]
     assert sum(1 for row in range(2, sheet.max_row + 1) if sheet.cell(row, 1).value) == 15
     assert len(sheet.data_validations.dataValidation) == 2
     workbook.close()
@@ -212,6 +212,21 @@ def test_kc_downtime_gets_restart_interval(db):
     assert restart.sequence > next(item.sequence for item in plan.schedule_items if item.schedule_kind == "downtime")
 
 
+def test_manual_event_uses_exact_start_and_end_time(db):
+    day = date(2026, 9, 14)
+    line = db.scalar(select(ProductionLine).where(ProductionLine.workshop_code == "KC"))
+    plan = ProductionPlan(name="Timed event", horizon_start=day, horizon_end=day)
+    db.add(plan); db.flush()
+    PlanService(db).create_event(plan, {
+        "line_id": line.id, "production_date": day, "shift": "night", "schedule_kind": "maintenance",
+        "start_time": time(23, 30), "end_time": time(1, 0), "reason": "Ночное ТО",
+    })
+    event = next(item for item in plan.schedule_items if item.schedule_kind == "maintenance")
+    assert event.start_time == time(23, 30)
+    assert event.end_time == time(1, 0)
+    assert event.required_hours == Decimal("1.50")
+
+
 def test_lasagna_defaults_to_ohl_start_and_bolognese_finish(db):
     day = date(2026, 9, 14)
     line = db.scalar(select(ProductionLine).where(ProductionLine.name == "Лазанья"))
@@ -227,7 +242,7 @@ def test_lasagna_defaults_to_ohl_start_and_bolognese_finish(db):
         plan.schedule_items.append(ProductionScheduleItem(product_id=product.id, line_id=line.id, production_date=day, shift="day", sequence=len(plan.schedule_items) + 1, quantity=100, quantity_kg=100, required_hours=1, schedule_kind="production", source_kind=source_kind, source="manual"))
     PlanService(db).refresh_sequence_and_cleanings(plan)
     ordered = [item.product.sku for item in sorted((row for row in plan.schedule_items if row.schedule_kind == "production"), key=lambda row: row.sequence)]
-    assert ordered == ["LAS-OHL", "LAS-ZAM", "LAS-BOL-OHL", "LAS-BOL-ZAM"]
+    assert ordered == ["LAS-OHL", "LAS-BOL-OHL", "LAS-ZAM", "LAS-BOL-ZAM"]
     assert next(item for item in plan.schedule_items if item.schedule_kind == "startup").required_hours == Decimal("1")
 
 
@@ -366,6 +381,20 @@ def test_catalog_speed_recalculates_without_changing_shift_capacity(client, db):
     assert response.status_code == 200, response.text
     assert {slot.id: slot.available_hours for slot in db.scalars(select(LineCapacity))} == before
     assert not any(i.status.value == "unscheduled" for i in plan.schedule_items if not i.excluded)
+
+
+def test_product_line_change_immediately_rebuilds_active_plan(client, db):
+    plan, demand = make_plan(db)
+    capability = db.scalar(select(LineCapability).where(LineCapability.product_id == demand.product_id))
+    target = db.scalar(select(ProductionLine).where(ProductionLine.workshop_code == "KC", ProductionLine.id != capability.line_id))
+    previous_revision = plan.revision
+    response = client.patch(f"/catalog/products/{demand.product_id}", json={
+        "capability_id": capability.id, "line_id": target.id, "units_per_hour": 100,
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["plan_recalculated"] is True
+    assert plan.revision > previous_revision
+    assert {item.line_id for item in plan.schedule_items if not item.excluded and item.schedule_kind == "production"} == {target.id}
 
 
 def test_advance_date_and_production_day_do_not_shift_twice(db):

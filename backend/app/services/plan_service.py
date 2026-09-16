@@ -41,6 +41,7 @@ class PlanService:
     KG_ROUNDING_SETTING_KEY = "kg_rounding_up_v1"
     PIECE_AND_BOX_ROUNDING_SETTING_KEY = "piece_and_box_rounding_v3"
     LINE_PLANNING_RULES_SETTING_KEY = "line_planning_rules_v1"
+    UNIVERSAL_OHL_PRIORITY_SETTING_KEY = "universal_ohl_priority_v1"
     def __init__(self, db: Session):
         self.db = db
 
@@ -180,6 +181,32 @@ class PlanService:
         self.db.commit()
         return plan is not None
 
+    def apply_universal_ohl_priority_upgrade(self) -> bool:
+        """Rebuild the existing active plan once with OHL before ZAM on every line."""
+        if self.db.scalar(select(PortalSetting).where(PortalSetting.key == self.UNIVERSAL_OHL_PRIORITY_SETTING_KEY)):
+            return False
+        plan = self.active_plan()
+        if plan:
+            demands = self._latest_source_demands()
+            if demands:
+                self.calculate(plan, demands, "universal_ohl_priority_enabled")
+            else:
+                self.refresh_sequence_and_cleanings(plan)
+                self.recalculate_load(plan)
+                self.create_version(plan, "universal_ohl_priority_enabled", "ОХЛ размещён перед ЗАМ на всех линиях")
+        self.db.add(PortalSetting(
+            key=self.UNIVERSAL_OHL_PRIORITY_SETTING_KEY,
+            value={"source_order": ["ohl", "zam", "generic"]},
+            updated_by="system",
+        ))
+        self.db.add(AuditEvent(
+            username="system", action="universal_ohl_priority_enabled", entity_type="production_plan",
+            entity_id=str(plan.id) if plan else None,
+            details={"message": "На всех линиях задания ОХЛ размещены перед ЗАМ"},
+        ))
+        self.db.commit()
+        return plan is not None
+
     def _latest_source_demands(self) -> list[DemandItem]:
         orders = list(self.db.scalars(select(ImportedOrder).where(
             ImportedOrder.template_type.in_(("ohl_daily", "quarter_weekly")),
@@ -194,6 +221,21 @@ class PlanService:
         if not latest_ids:
             return []
         return list(self.db.scalars(select(DemandItem).where(DemandItem.order_id.in_(latest_ids))))
+
+    def recalculate_after_catalog_change(self, change_type: str = "catalog_updated") -> ProductionPlan | None:
+        """Immediately rebuild the active plan after any catalog mutation."""
+        self.db.flush()
+        plan = self.active_plan()
+        if not plan:
+            return None
+        demands = self._latest_source_demands()
+        if demands:
+            return self.calculate(plan, demands, change_type)
+        self.refresh_sequence_and_cleanings(plan)
+        self.recalculate_load(plan)
+        self.create_version(plan, change_type, "Справочник изменён; активный план обновлён")
+        self.db.commit()
+        return plan
 
     def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation") -> ProductionPlan:
         auto_sort_ranks = {
@@ -465,11 +507,23 @@ class PlanService:
         kind = values["schedule_kind"]
         if kind not in {"cleaning", "downtime", "maintenance", "trial"}:
             raise ValueError("Допустимы события: cleaning, downtime, maintenance, trial")
+        start_time = values.get("start_time")
+        end_time = values.get("end_time")
+        if start_time is not None and end_time is not None:
+            start_at = datetime.combine(values["production_date"], start_time)
+            end_at = datetime.combine(values["production_date"], end_time)
+            if end_at <= start_at:
+                end_at += timedelta(days=1)
+            duration_hours = Decimal(str((end_at - start_at).total_seconds() / 3600)).quantize(Decimal("0.01"))
+        else:
+            duration_hours = Decimal(values["duration_hours"])
+        if duration_hours <= 0 or duration_hours > 24:
+            raise ValueError("Интервал события должен быть больше 0 и не больше 24 часов")
         event = ProductionScheduleItem(
             plan_id=plan.id, product_id=None, line_id=values["line_id"],
             production_date=values["production_date"], shift=values.get("shift", "day"),
             sequence=len(plan.schedule_items) + 1, quantity=Decimal("0"), quantity_kg=Decimal("0"),
-            required_hours=Decimal(values["duration_hours"]), duration_hours=Decimal(values["duration_hours"]),
+            required_hours=duration_hours, duration_hours=duration_hours, start_time=start_time, end_time=end_time,
             schedule_kind=kind, reason=values["reason"], source="manual", locked=True,
             status=ScheduleStatus.PLANNED,
         )
@@ -554,7 +608,7 @@ class PlanService:
                 grouped[(item.line_id, item.production_date)].append(item)
             else:
                 unscheduled.append(item)
-        source_rank = {"ohl": 0, "generic": 1, "zam": 2}
+        source_rank = {"ohl": 0, "zam": 1, "generic": 2}
         suppressed = {
             item.reason for item in plan.schedule_items
             if item.excluded and item.source == "manual" and item.schedule_kind == "cleaning" and (item.reason or "").startswith("suppress_cleaning:")
@@ -574,10 +628,10 @@ class PlanService:
             productions = [item for item in items if item.schedule_kind == "production"]
             events = [item for item in items if item.schedule_kind != "production" and item.source != "auto"]
             productions.sort(key=lambda item: (
+                source_rank.get(item.source_kind, 2),
                 0 if item.shift == "day" else 1,
                 Decimal(item.sort_rank) if item.sort_rank is not None else Decimal("999999"),
                 1 if settings["bolognese_last"] and item.product_id in products and "болоньез" in products[item.product_id].name.casefold() else 0,
-                source_rank.get(item.source_kind, 1) if settings["ohl_first"] else 1,
                 mono_group(products[item.product_id].name, products[item.product_id].mono_group) if item.product_id in products else "",
                 item.sequence, item.id or 0,
             ))
@@ -694,6 +748,8 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "batch_count": item.batch_count,
         "schedule_kind": item.schedule_kind,
         "duration_hours": item.duration_hours,
+        "start_time": item.start_time,
+        "end_time": item.end_time,
         "reason": item.reason,
         "actual_quantity_kg": item.actual_quantity_kg,
         "source_kind": item.source_kind,

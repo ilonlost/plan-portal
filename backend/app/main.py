@@ -57,5 +57,8 @@ def correct_legacy_ohl_source_units() -> None:
         line_rules = service.apply_line_planning_rules_upgrade()
         if line_rules:
             logger.warning("Активный план пересчитан с правилами запуска и переходов по линиям")
+        ohl_priority = service.apply_universal_ohl_priority_upgrade()
+        if ohl_priority:
+            logger.warning("Активный план пересчитан: ОХЛ размещён перед ЗАМ на всех линиях")
     finally:
         db.close()

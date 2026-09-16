@@ -33,7 +33,7 @@ def maintenance_template(db: Session = Depends(get_db), user: UserContext = Depe
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "График ТО"
-    headers = ["Линия", "Дата", "Смена", "Тип события", "Длительность, ч", "Причина / работы"]
+    headers = ["Линия", "Дата", "Смена", "Тип события", "Начало", "Окончание", "Причина / работы"]
     sheet.append(headers)
     red = "D90B32"
     for cell in sheet[1]:
@@ -42,21 +42,23 @@ def maintenance_template(db: Session = Depends(get_db), user: UserContext = Depe
         cell.alignment = Alignment(horizontal="center")
     lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name)))
     for line in lines:
-        sheet.append([line.name, None, "День", "ТО", None, "Плановое техническое обслуживание"])
+        sheet.append([line.name, None, "День", "ТО", None, None, "Плановое техническое обслуживание"])
     sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:F{max(2, len(lines) + 1)}"
-    widths = [28, 14, 13, 17, 18, 48]
+    sheet.auto_filter.ref = f"A1:G{max(2, len(lines) + 1)}"
+    widths = [28, 14, 13, 17, 13, 13, 48]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + index)].width = width
     for row in range(2, max(1002, len(lines) + 2)):
         sheet.cell(row, 2).number_format = "DD.MM.YYYY"
+        sheet.cell(row, 5).number_format = "HH:MM"
+        sheet.cell(row, 6).number_format = "HH:MM"
     shift_validation = DataValidation(type="list", formula1='"День,Ночь"')
     type_validation = DataValidation(type="list", formula1='"ТО,Мойка,Простой"')
     sheet.add_data_validation(shift_validation); shift_validation.add("C2:C1001")
     sheet.add_data_validation(type_validation); type_validation.add("D2:D1001")
     guide = workbook.create_sheet("Инструкция")
     guide.append(["Шаблон графика ТО"])
-    guide.append(["Заполните дату, смену, тип события, длительность и описание работ. Название линии не меняйте."])
+    guide.append(["Заполните дату, смену, тип события, время начала и окончания, описание работ. Если окончание раньше начала, событие завершается на следующие сутки. Название линии не меняйте."])
     guide.append(["Повторная загрузка заменяет только события из предыдущего файла ТО. Текущий производственный план и ручные события сохраняются."])
     guide.column_dimensions["A"].width = 115
     guide["A1"].font = Font(bold=True, color=red, size=14)
@@ -133,6 +135,7 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
             plan.schedule_items.append(ProductionScheduleItem(
                 line_id=line.id, production_date=row.requested_date, shift=row.shift or "day", sequence=0,
                 quantity=Decimal("0"), quantity_kg=Decimal("0"), required_hours=row.duration_hours, duration_hours=row.duration_hours,
+                start_time=row.start_time, end_time=row.end_time,
                 schedule_kind=row.event_kind, reason=row.product_name or "Плановое ТО", source_kind="generic",
                 source="maintenance_import", locked=True, status=ScheduleStatus.PLANNED,
             ))
@@ -167,12 +170,14 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
             username=user.username, action="reference_imported", entity_type="imported_order",
             entity_id=str(order.id), details={"file_name": preview.file_name, "template_type": preview.template_type, "updated": updated},
         ))
+        service = PlanService(db)
+        plan = service.recalculate_after_catalog_change("reference_catalog_updated")
         db.commit()
         send_notification(
             db, "reference_imported", f"PLAN Portal: загружен справочник {preview.file_name}",
             f"Пользователь {user.display_name} обновил справочник. Обработано строк: {updated}.",
         )
-        return {"order_id": order.id, "plan": None, "reference_updated": updated}
+        return {"order_id": order.id, "plan": plan_dict(db, plan) if plan else None, "reference_updated": updated}
 
     source_kind = {"ohl_daily": "ohl", "quarter_weekly": "zam"}.get(preview.template_type, "generic")
     demands = []

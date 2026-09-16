@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
@@ -54,10 +54,14 @@ class ExcelImportService:
             "shift": {"смена"},
             "kind": {"тип события", "тип"},
             "hours": {"длительность, ч", "длительность", "часы"},
+            "start": {"начало", "время начала", "с"},
+            "end": {"окончание", "время окончания", "до"},
             "reason": {"причина / работы", "работы", "причина", "описание"},
         }
         mapping = {key: next((idx for idx, value in enumerate(headers) if value in values), None) for key, values in aliases.items()}
-        missing = [label for key, label in (("line", "Линия"), ("date", "Дата"), ("hours", "Длительность, ч")) if mapping[key] is None]
+        missing = [label for key, label in (("line", "Линия"), ("date", "Дата")) if mapping[key] is None]
+        if mapping["hours"] is None and (mapping["start"] is None or mapping["end"] is None):
+            missing.extend(["Начало", "Окончание"])
         if missing:
             raise ValueError("В шаблоне ТО отсутствуют колонки: " + ", ".join(missing))
         kind_map = {"то": "maintenance", "мойка": "cleaning", "простой": "downtime"}
@@ -68,7 +72,17 @@ class ExcelImportService:
             errors: list[str] = []
             line = str(self._value(values, mapping["line"]) or "").strip()
             event_date = self._date(self._value(values, mapping["date"]), errors, "Дата")
-            hours = self._decimal(self._value(values, mapping["hours"]), errors, "Длительность")
+            start_time = self._time(self._value(values, mapping["start"]), errors, "Начало") if mapping["start"] is not None else None
+            end_time = self._time(self._value(values, mapping["end"]), errors, "Окончание") if mapping["end"] is not None else None
+            if start_time is not None and end_time is not None:
+                anchor = event_date or date.today()
+                starts_at = datetime.combine(anchor, start_time)
+                ends_at = datetime.combine(anchor, end_time)
+                if ends_at <= starts_at:
+                    ends_at += timedelta(days=1)
+                hours = Decimal(str((ends_at - starts_at).total_seconds() / 3600)).quantize(Decimal("0.01"))
+            else:
+                hours = self._decimal(self._value(values, mapping["hours"]), errors, "Длительность") if mapping["hours"] is not None else None
             raw_kind = self._normalize(str(self._value(values, mapping.get("kind")) or "ТО"))
             kind = kind_map.get(raw_kind)
             shift_raw = self._normalize(str(self._value(values, mapping.get("shift")) or "День"))
@@ -84,7 +98,7 @@ class ExcelImportService:
                 errors.append("Длительность должна быть больше 0 и не больше 24 часов")
             rows.append(ImportRow(
                 row_number=row_number, product_name=reason, line_hint=line, requested_date=event_date, due_date=event_date,
-                event_kind=kind, duration_hours=hours, shift=shift, valid=not errors, errors=errors,
+                event_kind=kind, duration_hours=hours, start_time=start_time, end_time=end_time, shift=shift, valid=not errors, errors=errors,
             ))
         return self._preview(file_name, "maintenance_schedule_v1", "maintenance_schedule", sheet.title, rows, ["Импорт синхронизирует только события из предыдущего файла ТО; ручные задания и производственный план сохраняются."])
 
@@ -554,4 +568,22 @@ class ExcelImportService:
                 except ValueError:
                     pass
         errors.append(f"{label}: ожидается дата")
+        return None
+
+    @staticmethod
+    def _time(value, errors: list[str], label: str) -> time | None:
+        if isinstance(value, datetime):
+            return value.time().replace(microsecond=0)
+        if isinstance(value, time):
+            return value.replace(microsecond=0)
+        if isinstance(value, (int, float)):
+            seconds = round((float(value) % 1) * 86400) % 86400
+            return time(seconds // 3600, (seconds % 3600) // 60, seconds % 60)
+        if isinstance(value, str):
+            for fmt in ("%H:%M", "%H:%M:%S"):
+                try:
+                    return datetime.strptime(value.strip(), fmt).time()
+                except ValueError:
+                    pass
+        errors.append(f"{label}: ожидается время в формате ЧЧ:ММ")
         return None
