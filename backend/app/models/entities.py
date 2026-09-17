@@ -189,6 +189,46 @@ class DemandItem(Base):
     product: Mapped[Product | None] = relationship()
 
 
+class AdvanceConfirmationBatch(Base):
+    __tablename__ = "advance_confirmation_batches"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    file_name: Mapped[str] = mapped_column(String(240))
+    marking_date: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="applied", index=True)
+    total_rows: Mapped[int] = mapped_column(Integer, default=0)
+    total_quantity_kg: Mapped[Decimal] = mapped_column(Numeric(18, 3), default=0)
+    total_actual_kg: Mapped[Decimal] = mapped_column(Numeric(18, 3), default=0)
+    created_by: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    items: Mapped[list[AdvanceConfirmationItem]] = relationship(back_populates="batch", cascade="all, delete-orphan")
+
+
+class AdvanceConfirmationItem(Base):
+    __tablename__ = "advance_confirmation_items"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("advance_confirmation_batches.id", ondelete="CASCADE"), index=True)
+    source_row: Mapped[int] = mapped_column(Integer)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    line_id: Mapped[int] = mapped_column(ForeignKey("production_lines.id"), index=True)
+    sku: Mapped[str] = mapped_column(String(80), index=True)
+    product_name: Mapped[str] = mapped_column(String(200))
+    line_name: Mapped[str] = mapped_column(String(200))
+    production_date: Mapped[date] = mapped_column(Date, index=True)
+    marking_date: Mapped[date] = mapped_column(Date, index=True)
+    previous_quantity_kg: Mapped[Decimal] = mapped_column(Numeric(18, 3), default=0)
+    quantity_kg: Mapped[Decimal] = mapped_column(Numeric(18, 3))
+    actual_quantity_kg: Mapped[Decimal] = mapped_column(Numeric(18, 3), default=0)
+    delta_quantity_kg: Mapped[Decimal] = mapped_column(Numeric(18, 3), default=0)
+    advance_status: Mapped[str | None] = mapped_column(String(40))
+    demand_item_ids: Mapped[list] = mapped_column(JSON, default=list)
+    schedule_item_ids: Mapped[list] = mapped_column(JSON, default=list)
+    warnings: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    batch: Mapped[AdvanceConfirmationBatch] = relationship(back_populates="items")
+    product: Mapped[Product] = relationship()
+    line: Mapped[ProductionLine] = relationship()
+
+
 class ProductionPlan(Base):
     __tablename__ = "production_plans"
     id: Mapped[int] = mapped_column(primary_key=True)

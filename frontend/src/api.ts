@@ -1,5 +1,5 @@
 import type {
-  AdminOverview, BomData, CatalogData, CsbRun, DirectoryUser, FeedbackData, FeedbackEntry, ImportPreview, LineData, MatrixData,
+  AdminOverview, AdvanceConfirmationBatch, AdvanceConfirmationPreview, BomData, CatalogData, CsbRun, DirectoryUser, FeedbackData, FeedbackEntry, ImportPreview, LineData, MatrixData,
   LineScheduleData, MailConfiguration, PlanData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 
@@ -90,6 +90,15 @@ export const api = {
   createUserAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean }) => request<{ ok: boolean; id: number }>("/admin/users", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
   }),
+  previewAdvanceConfirmation: async (file: File) => {
+    const data = new FormData(); data.append("file", file);
+    return request<AdvanceConfirmationPreview>("/advance-confirmations/preview", { method: "POST", body: data });
+  },
+  applyAdvanceConfirmation: (preview: AdvanceConfirmationPreview) => request<{ ok: boolean; batch_id: number; plan_id: number; plan_recalculated: boolean; rows: number }>("/advance-confirmations/apply", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file_name: preview.file_name, rows: preview.rows }),
+  }),
+  advanceConfirmationHistory: () => request<AdvanceConfirmationBatch[]>("/advance-confirmations"),
+  advanceConfirmationExportUrl: (batchId: number) => `${API}/advance-confirmations/${batchId}/export.xlsx`,
   deleteUserAccess: (userId: number) => request<{ ok: boolean }>(`/admin/users/${userId}`, { method: "DELETE" }),
   feedback: (status = "", query = "") => request<FeedbackData>(`/feedback?${new URLSearchParams({ ...(status ? { status } : {}), ...(query ? { query } : {}) }).toString()}`),
   feedbackExportUrl: (status = "", query = "") => {

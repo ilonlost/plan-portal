@@ -244,9 +244,10 @@ class PlanService:
             if item.source == "auto" and item.schedule_kind == "production" and item.sort_rank is not None
         }
         for demand in demands:
-            if demand.source_kind == "ohl" and demand.source_plan_date and demand.product and demand.product.advance_status is not None:
+            if demand.source_kind == "ohl" and demand.source_plan_date and demand.product:
                 demand.advance_production = demand.product.advance_status == "АЗ"
-                demand.requested_date = demand.source_plan_date - timedelta(days=int(demand.advance_production))
+                override_date = (demand.raw_data or {}).get("az_override_production_date")
+                demand.requested_date = date.fromisoformat(override_date) if override_date else demand.source_plan_date - timedelta(days=int(demand.advance_production))
                 demand.due_date = demand.requested_date
                 demand.production_week = demand.requested_date.isocalendar().week
         if demands:
@@ -306,6 +307,7 @@ class PlanService:
                 exact_date=item.exact_date, source_kind=item.source_kind, marking_date=item.marking_date,
                 warnings=tuple(item.validation_errors or []),
                 mono_group=mono_group(item.product.name if item.product else item.product_name, item.product.mono_group if item.product else None),
+                preferred_line_id=(item.raw_data or {}).get("preferred_line_id"),
             ) for item in demands if item.valid and remaining_quantity[item.id] > 0],
             capabilities=[CapabilityInput(
                 line_id=item.line_id, product_id=item.product_id, units_per_hour=Decimal(item.units_per_hour),

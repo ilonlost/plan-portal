@@ -25,6 +25,7 @@ class DemandInput:
     marking_date: date | None = None
     warnings: tuple[str, ...] = ()
     mono_group: str = ""
+    preferred_line_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,8 @@ class PlanningEngine:
             source_rank.get(item.source_kind, 1), item.due_date, item.mono_group, item.priority, item.requested_date, item.id,
         )):
             options = compatible.get(demand.product_id, [])
+            if demand.preferred_line_id is not None:
+                options = [item for item in options if item.line_id == demand.preferred_line_id]
             if not options:
                 quantum = self._quantum(demand, [])
                 rounded_kg = demand.quantity

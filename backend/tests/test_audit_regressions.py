@@ -18,7 +18,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.core.config import settings
 from app.core.security import UserContext, create_session_token, parse_session_token
-from app.api.routes import session, plans, imports, catalog, admin
+from app.api.routes import session, plans, imports, catalog, admin, advance_confirmations
 from app.models.entities import User, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, LineCapability, LineCapacity, DemandItem, ImportedOrder
 from app.schemas.common import ImportConfirmRequest
 from app.services.import_service import ExcelImportService
@@ -51,6 +51,7 @@ def client(db, monkeypatch):
     app.include_router(session.router)
     app.include_router(plans.router)
     app.include_router(imports.router)
+    app.include_router(advance_confirmations.router)
     app.include_router(catalog.router)
     app.include_router(admin.router)
     app.dependency_overrides[get_db] = lambda: db
@@ -97,6 +98,47 @@ def make_plan(db, quantity=100):
     db.add_all([demand, plan]); db.flush()
     PlanService(db).calculate(plan, [demand])
     return plan, demand
+
+
+def test_advance_confirmation_preview_apply_and_fact_export(client, db):
+    plan, demand = make_plan(db, quantity=100)
+    demand.product.advance_status = "АЗ"
+    db.commit()
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Материал", "Всего КГ", "Сколько произвели"])
+    sheet.append(["101", 75.5, 72])
+    content = BytesIO()
+    workbook.save(content)
+
+    response = client.post(
+        "/advance-confirmations/preview",
+        files={"file": ("Потверждение АЗ 08.09.2026.xlsx", content.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert preview["marking_date"] == "2026-09-08"
+    assert preview["rows"][0]["production_date"] == "2026-09-07"
+    assert preview["summary"]["total_rows"] == 1
+    assert preview["rows"][0]["line_name"] == "Сэндвичи"
+    assert Decimal(str(preview["rows"][0]["quantity_kg"])) == Decimal("75.5")
+
+    response = client.post("/advance-confirmations/apply", json={"file_name": preview["file_name"], "rows": preview["rows"]})
+    assert response.status_code == 200, response.text
+    assert response.json()["plan_recalculated"] is True
+    db.refresh(demand)
+    assert demand.quantity == Decimal("75.500000")
+    assert demand.requested_date == date(2026, 9, 7)
+    assert demand.raw_data["preferred_line_id"]
+    history = client.get("/advance-confirmations").json()
+    assert history[0]["file_name"] == preview["file_name"]
+    assert history[0]["items"][0]["production_date"] == "2026-09-07"
+    assert Decimal(str(history[0]["items"][0]["actual_quantity_kg"])) == Decimal("72")
+    exported = client.get(f"/advance-confirmations/{history[0]['id']}/export.xlsx")
+    assert exported.status_code == 200
+    fact = load_workbook(BytesIO(exported.content), read_only=True, data_only=True)
+    assert fact.active["A2"].value == "101"
+    assert fact.active["I2"].value == 72
 
 
 def test_pc_auto_wash_can_be_removed_without_deleting_production(db):

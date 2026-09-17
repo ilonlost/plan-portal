@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { ApiError, api } from "./api";
 import type {
-  AdminOverview, BomData, CatalogData, CatalogProduct, CatalogRow, ImportPreview, LineData, MatrixCell,
+  AdminOverview, AdvanceConfirmationBatch, AdvanceConfirmationPreview, AdvanceConfirmationRow, BomData, CatalogData, CatalogProduct, CatalogRow, ImportPreview, LineData, MatrixCell,
   DirectoryUser, FeedbackData, FeedbackEntry, FeedbackEvent, LineScheduleData, MailConfiguration, MatrixData, ScheduleItem, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 import "./styles.css";
 
-type Page = "plan" | "catalog" | "import" | "sources" | "feedback" | "admin";
+type Page = "plan" | "catalog" | "import" | "az" | "sources" | "feedback" | "admin";
 type ViewDays = 1 | 7 | 21;
 type Theme = "dark" | "light";
 type DayLayout = "cards" | "table";
@@ -132,6 +132,7 @@ export default function App() {
         <Nav active={page === "plan"} icon="▦" label="План производства" onClick={() => setPage("plan")} />
         <Nav active={page === "catalog"} icon="≡" label="Справочник" onClick={() => setPage("catalog")} />
         {canPlan(user) && <Nav active={page === "import"} icon="⇧" label="Загрузка Excel" onClick={() => setPage("import")} />}
+        {canPlan(user) && <Nav active={page === "az"} icon="АЗ" label="Подтверждение АЗ" onClick={() => setPage("az")} />}
         <Nav active={page === "sources"} icon="◫" label="Источники данных" onClick={() => setPage("sources")} />
         <Nav active={page === "feedback"} icon="✎" label="Обратная связь" onClick={() => setPage("feedback")} />
         {user.role === "admin" && <Nav active={page === "admin"} icon="⚙" label="Администрирование" onClick={() => setPage("admin")} />}
@@ -167,6 +168,7 @@ export default function App() {
           onItem={setSelectedItem} onUpload={() => setPage("import")} /></div>}
         {page === "catalog" && catalog && <CatalogView data={catalog} lines={lines} user={user} onSaved={async text => { setNotice(text); await loadBase(user); }} />}
         {page === "import" && <ImportView user={user} onImported={async text => { setNotice(text); await refreshPlan(); setPage("plan"); }} />}
+        {page === "az" && <AdvanceConfirmationView user={user} lines={lines} onApplied={async text => { setNotice(text); await refreshPlan(); }} onError={setError} />}
         {page === "sources" && catalog && <SourcesView data={catalog} />}
         {page === "feedback" && <FeedbackView user={user} onNotice={setNotice} onError={setError} />}
         {page === "admin" && user.role === "admin" && <AdminView onDeleted={async text => { setNotice(text); setMatrix(null); setPage("import"); await loadBase(user); }} onError={setError} />}
@@ -461,6 +463,50 @@ function ImportView({ user, onImported }: { user: UserProfile; onImported: (t: s
   return <div className="stack"><section className="card import-hero"><div><span>XL</span><div><small>АВТОМАТИЧЕСКАЯ ЗАГРУЗКА</small><h2>Загрузить производственные данные</h2><p>ОХЛ, ЗАМ, график ТО и справочники распознаются автоматически.</p></div></div><div className="inline-actions"><a className="button secondary" href={api.maintenanceTemplateUrl()}>Скачать шаблон ТО</a><label className="button primary">Выбрать Excel<input type="file" accept=".xlsx,.xlsm" onChange={e => void choose(e.target.files?.[0])} /></label></div></section>{error && <div className="inline-error">{error}</div>}{busy && <Loading />}{preview && <section className="card preview-card"><header><div><small>{templateLabel(preview.template_type)}</small><h2>{preview.file_name}</h2><p>Лист «{preview.detected_sheet}» · {preview.total_rows} строк</p></div><div className="preview-stats"><span className="valid"><b>{preview.valid_rows}</b> корректно</span><span className="invalid"><b>{preview.invalid_rows}</b> ошибки</span></div></header><div className="notes">{preview.notes.map(note => <p key={note}>✓ {note}</p>)}</div><div className="table-scroll"><table><thead><tr><th>Строка</th><th>SKU / наименование</th><th>Источник</th><th>План, кг</th><th>ДП / ДМ</th><th>Линия</th><th>Квант / время</th><th>Контроль</th></tr></thead><tbody>{preview.rows.slice(0, 150).map((row, i) => <tr key={`${row.row_number}-${i}`}><td>{row.row_number}</td><td><b>{row.sku}</b><small>{row.product_name}</small><small>{row.advance_status || "Авансовая дата не задана"} · {row.fk_status || "Статус ФК не задан"}</small></td><td>{row.source_quantity != null ? `${number(row.source_quantity)} ${row.source_unit}` : templateLabel(preview.template_type)}</td><td>{row.quantity_kg == null ? "—" : number(row.quantity_kg)}</td><td><b>{formatDate(row.requested_date)}</b>{row.marking_date && <small>ДМ {formatDate(row.marking_date)}</small>}</td><td>{row.line_hint || "—"}</td><td>{row.batch_quantum_kg ? `${number(row.batch_quantum_kg)} кг` : row.legacy_quantum_units ? `${number(row.legacy_quantum_units)} шт.` : row.duration_hours ? `${number(row.duration_hours)} ч` : "—"}</td><td>{!row.valid ? <span className="bad">! {row.errors[0]}</span> : row.warnings.length ? <span className="warn">! {row.warnings[0]}</span> : <span className="good">✓</span>}</td></tr>)}</tbody></table></div><footer><button className="button secondary" onClick={() => setPreview(null)}>Другой файл</button><button className="button primary" disabled={!preview.valid_rows || busy} onClick={() => void confirm()}>{preview.template_type.includes("reference") ? "Обновить справочник" : preview.template_type === "maintenance_schedule" ? "Загрузить график ТО" : "Загрузить и рассчитать"}</button></footer></section>}</div>;
 }
 
+function AdvanceConfirmationView({ user, lines, onApplied, onError }: { user: UserProfile; lines: LineData[]; onApplied: (text: string) => Promise<void>; onError: (text: string) => void }) {
+  const [preview, setPreview] = useState<AdvanceConfirmationPreview | null>(null);
+  const [history, setHistory] = useState<AdvanceConfirmationBatch[]>([]);
+  const [busy, setBusy] = useState(false);
+  const loadHistory = async () => { try { setHistory(await api.advanceConfirmationHistory()); } catch (reason) { onError(message(reason)); } };
+  useEffect(() => { void loadHistory(); }, []);
+  if (!canPlan(user)) return <Empty title="Раздел АЗ недоступен" text="Для корректировки нужен доступ планера или администратора." />;
+  const choose = async (file?: File) => {
+    if (!file) return;
+    setBusy(true);
+    try { setPreview(await api.previewAdvanceConfirmation(file)); }
+    catch (reason) { onError(message(reason)); }
+    finally { setBusy(false); }
+  };
+  const update = (index: number, patch: Partial<AdvanceConfirmationRow>) => setPreview(current => {
+    if (!current) return current;
+    const rows = current.rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row);
+    const normalized = rows.map(row => ({ ...row, delta_quantity_kg: Number(row.quantity_kg || 0) - Number(row.current_quantity_kg || 0) }));
+    const currentTotal = normalized.reduce((sum, row) => sum + Number(row.current_quantity_kg || 0), 0);
+    const quantityTotal = normalized.reduce((sum, row) => sum + Number(row.quantity_kg || 0), 0);
+    return { ...current, rows: normalized, summary: { ...current.summary, current_quantity_kg: currentTotal, quantity_kg: quantityTotal, delta_quantity_kg: quantityTotal - currentTotal } };
+  });
+  const apply = async () => {
+    if (!preview) return;
+    setBusy(true);
+    try {
+      const result = await api.applyAdvanceConfirmation(preview);
+      setPreview(null);
+      await loadHistory();
+      await onApplied(`Корректировка АЗ применена: ${result.rows} позиций, план пересчитан`);
+    } catch (reason) { onError(message(reason)); }
+    finally { setBusy(false); }
+  };
+  return <div className="stack az-page">
+    <section className="card import-hero az-hero"><div><span>АЗ</span><div><small>ЕЖЕДНЕВНОЕ ПОДТВЕРЖДЕНИЕ</small><h2>Корректировка объёмов АЗ</h2><p>Загрузите файл «Подтверждение АЗ ДД.ММ.ГГГГ». Сначала откроется проверка, план изменится только после подтверждения.</p></div></div><label className="button primary">Выбрать Excel<input type="file" accept=".xlsx,.xlsm" onChange={event => void choose(event.target.files?.[0])} /></label></section>
+    {busy && !preview && <Loading />}
+    {preview && <>
+      <section className="metric-grid az-metrics"><Metric tone="blue" label="План сейчас" value={`${number(preview.summary.current_quantity_kg)} кг`} note="по найденным заданиям" /><Metric tone="green" label="После корректировки" value={`${number(preview.summary.quantity_kg)} кг`} note={`${preview.summary.total_rows} позиций`} /><Metric tone={preview.summary.delta_quantity_kg >= 0 ? "amber" : "violet"} label="Изменение" value={`${preview.summary.delta_quantity_kg >= 0 ? "+" : ""}${number(preview.summary.delta_quantity_kg)} кг`} note={`ДМ ${formatDate(preview.marking_date)}`} /><Metric tone={preview.summary.invalid_rows ? "red" : "green"} label="Проверка" value={preview.summary.invalid_rows ? `${preview.summary.invalid_rows} ошибок` : "Готово"} note={`${preview.summary.valid_rows} строк сопоставлено`} /></section>
+      <section className="card az-editor"><header><div><small>ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА</small><h2>{preview.file_name}</h2><p>Все поля доступны для правки. «План сейчас» показывает объём уже существующих заданий.</p></div><button className="button secondary" onClick={() => setPreview(null)}>Другой файл</button></header><div className="table-scroll"><table><thead><tr><th>Артикул / продукция</th><th>Линия</th><th>ДП</th><th>ДМ</th><th>План сейчас, кг</th><th>Подтверждено, кг</th><th>Изменение</th><th>Произведено, кг</th><th>Проверка</th></tr></thead><tbody>{preview.rows.map((row, index) => <tr key={`${row.row_number}-${index}`} className={!row.valid ? "az-invalid" : ""}><td><input value={row.sku} onChange={event => update(index, { sku: event.target.value })} /><input value={row.product_name} onChange={event => update(index, { product_name: event.target.value })} /></td><td><select value={row.line_id ?? ""} onChange={event => { const line = lines.find(item => item.id === Number(event.target.value)); update(index, { line_id: line?.id ?? null, line_name: line?.name ?? "" }); }}><option value="">Выберите линию</option>{lines.filter(line => line.status === "active").map(line => <option key={line.id} value={line.id}>{line.workshop_code} · {line.name}</option>)}</select></td><td><input type="date" value={row.production_date} onChange={event => update(index, { production_date: event.target.value })} /></td><td><input type="date" value={row.marking_date} onChange={event => update(index, { marking_date: event.target.value })} /></td><td className="az-current">{number(row.current_quantity_kg)}</td><td><input type="number" min="0" step="0.001" value={row.quantity_kg} onChange={event => update(index, { quantity_kg: Number(event.target.value) })} /></td><td><b className={row.delta_quantity_kg < 0 ? "bad" : row.delta_quantity_kg > 0 ? "warn" : "good"}>{row.delta_quantity_kg > 0 ? "+" : ""}{number(row.delta_quantity_kg)}</b></td><td><input type="number" min="0" step="0.001" value={row.actual_quantity_kg} onChange={event => update(index, { actual_quantity_kg: Number(event.target.value) })} /></td><td>{row.errors.length ? <span className="bad">{row.errors[0]}</span> : row.warnings.length ? <span className="warn">{row.warnings[0]}</span> : <span className="good">✓ Сопоставлено</span>}{row.advance_status && <small>{row.advance_status}</small>}</td></tr>)}</tbody></table></div><footer><span>После подтверждения исходный файл ОХЛ останется в истории, а действующий план будет пересчитан.</span><button className="button primary" disabled={busy} onClick={() => void apply()}>{busy ? "Применяем…" : "Применить и пересчитать план"}</button></footer></section>
+    </>}
+    <section className="card az-history"><header><div><small>ИСТОРИЯ КОРРЕКТИРОВОК</small><h2>Применённые подтверждения</h2><p>Файл факта формируется из сохранённых данных портала.</p></div></header>{history.length ? <div className="table-scroll"><table><thead><tr><th>Дата / файл</th><th>Строк</th><th>Подтверждено</th><th>Произведено</th><th>Кто загрузил</th><th></th></tr></thead><tbody>{history.map(batch => <tr key={batch.id}><td><b>ДМ {formatDate(batch.marking_date)}</b><small>{batch.file_name}</small><small>{new Date(batch.created_at).toLocaleString("ru-RU")}</small></td><td>{batch.total_rows}</td><td>{number(batch.total_quantity_kg)} кг</td><td>{number(batch.total_actual_kg)} кг</td><td>{batch.created_by}</td><td><a className="button secondary" href={api.advanceConfirmationExportUrl(batch.id)}>Выгрузить факт XLSX</a></td></tr>)}</tbody></table></div> : <div className="az-history-empty">Подтверждения АЗ ещё не загружались.</div>}</section>
+  </div>;
+}
+
 function SourcesView({ data }: { data: CatalogData }) { return <div className="stack"><section className="source-intro card"><div><small>ЕДИНАЯ МОДЕЛЬ ДАННЫХ</small><h2>Журнал исходных файлов</h2><p>ОХЛ фиксирует даты, ЗАМ занимает доступную мощность, справочники дают квантовки, скорости и рецептуры.</p></div><div className="source-flow"><span>ОХЛ</span><i>+</i><span>ЗАМ</span><i>→</i><b>План</b></div></section><section className="card source-list"><header><h2>Загрузки</h2><p>Ошибочные строки не попадают в расчёт.</p></header>{data.sources.map(source => <article key={source.id}><span className="source-icon">XL</span><div><b>{source.file_name}</b><small>{templateLabel(source.template_type)} · {new Date(source.imported_at).toLocaleString("ru-RU")}</small></div><em>{source.valid_rows} / {source.total_rows}</em><strong className={source.invalid_rows ? "warn" : "good"}>{source.invalid_rows ? `${source.invalid_rows} ошибок` : "Проверено"}</strong></article>)}</section></div>; }
 
 function FeedbackView({ user, onNotice, onError }: { user: UserProfile; onNotice: (text: string) => void; onError: (text: string) => void }) {
@@ -575,7 +621,7 @@ function Metric({ label, value, note, tone }: { label: string; value: string; no
 function Toast({ tone, text, close }: { tone: string; text: string; close: () => void }) { return <div className={`toast ${tone}`}>{tone === "success" ? "✓" : "!"}<span>{text}</span><button onClick={close}>×</button></div>; }
 function Loading() { return <div className="loading"><i /><p>Загружаем производственные данные…</p></div>; }
 function Empty({ title, text, action }: { title: string; text: string; action?: React.ReactNode }) { return <section className="empty"><span>◇</span><h2>{title}</h2><p>{text}</p>{action}</section>; }
-function pageTitle(page: Page) { return ({ plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", sources: "Источники данных", feedback: "Обратная связь", admin: "Администрирование" } as const)[page]; }
+function pageTitle(page: Page) { return ({ plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", sources: "Источники данных", feedback: "Обратная связь", admin: "Администрирование" } as const)[page]; }
 function eventLabel(kind: ScheduleItem["schedule_kind"], compact = false) { const labels = { cleaning: ["Технологическая мойка", "МОЙКА"], downtime: ["Простой линии", "ПРОСТОЙ"], maintenance: ["Плановое ТО", "ТО"], trial: ["Проработка", "ПРОБА"], startup: ["Запуск линии", "ЗАПУСК"], changeover: ["Переход на другой продукт", "ПЕРЕХОД"], restart: ["Запуск после простоя", "СТАРТ"] } as const; return kind === "production" ? "Продукция" : labels[kind][compact ? 1 : 0]; }
 function templateLabel(v: string) { return ({ ohl_daily: "Недельный план ОХЛ", quarter_weekly: "Квартальный план ЗАМ", production_reference: "Актуальный справочник ПЦ/КЦ", capacity_reference: "Мощности линий", legacy_reference: "Старый план и рецептуры", maintenance_schedule: "График ТО и событий", generic: "Универсальный шаблон" } as Record<string, string>)[v] || v; }
 function planStatus(v: string) { return ({ needs_review: "Требует проверки", calculated: "Рассчитан", approved: "Утверждён", draft: "Черновик" } as Record<string, string>)[v] || v; }

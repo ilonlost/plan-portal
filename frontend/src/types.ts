@@ -121,6 +121,22 @@ export interface ImportPreview {
   total_rows: number; valid_rows: number; invalid_rows: number; columns: string[]; rows: ImportRow[];
 }
 
+export interface AdvanceConfirmationRow {
+  row_number: number; sku: string; product_name: string; product_id: number | null;
+  line_id: number | null; line_name: string; production_date: string; marking_date: string;
+  current_quantity_kg: number; quantity_kg: number; actual_quantity_kg: number; delta_quantity_kg: number;
+  advance_status: string | null; valid: boolean; errors: string[]; warnings: string[]; schedule_item_ids?: number[];
+}
+export interface AdvanceConfirmationPreview {
+  file_name: string; sheet_name: string; marking_date: string; rows: AdvanceConfirmationRow[];
+  summary: { total_rows: number; valid_rows: number; invalid_rows: number; current_quantity_kg: number; quantity_kg: number; delta_quantity_kg: number };
+}
+export interface AdvanceConfirmationBatch {
+  id: number; file_name: string; marking_date: string; status: string; total_rows: number;
+  total_quantity_kg: number; total_actual_kg: number; created_by: string; created_at: string;
+  items: AdvanceConfirmationRow[];
+}
+
 export interface AuditRow {
   id: number; username: string; action: string; entity_type: string; entity_id: string | null;
   details: Record<string, unknown>; created_at: string;
