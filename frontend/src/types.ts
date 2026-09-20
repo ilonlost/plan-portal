@@ -4,6 +4,7 @@ export interface UserProfile {
   username: string; display_name: string; role: "admin" | "planner" | "master" | "viewer";
   email: string; workshop_code: string | null; line_name: string | null;
   access_label: string; auth_mode: string;
+  section_visibility?: Record<string, boolean>;
 }
 
 export interface SessionMode { auth_mode: string; }
@@ -155,6 +156,8 @@ export interface AdminOverview {
   ldap: { status: string; configured: boolean };
   email: { enabled: boolean; configured: boolean; host: string };
   mail_configuration: MailConfiguration;
+  portal_configuration: PortalConfiguration;
+  downtime: { configured: boolean };
   smtp_password_configured: boolean;
   csb: { test_mode: boolean; configured: boolean };
   users: { id: number; username: string; display_name: string; email: string | null; role: string; workshop_code: string | null; line_name: string | null; active: boolean; last_login_at: string | null }[];
@@ -188,6 +191,19 @@ export interface MailConfiguration {
 export interface CsbRun {
   run_id: number; target_date: string; item_count: number; status: string;
   response: { accepted: boolean; mode: string; message: string };
+}
+
+export interface PortalConfiguration {
+  section_visibility: Record<string, boolean>;
+  partial_downtime_percent: number;
+  full_downtime_percent: number;
+}
+
+export interface LineInsights {
+  source_status: "connected" | "not_configured" | "unavailable";
+  partial_downtime_percent: number; full_downtime_percent: number;
+  comments: { id: number; line_id: number; date: string; text: string; author_name: string; updated_at: string }[];
+  downtimes: { id: string; line_id: number; date: string; start_at: string; end_at: string; downtime_type: "partial" | "full"; reason: string; hours: number; loss_percent: number; average_rate_kg_hour: number; estimated_loss_kg: number }[];
 }
 
 export type ProductionFactKind = "production" | "pause" | "changeover" | "maintenance";

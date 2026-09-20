@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import smtplib
 import ssl
+from io import BytesIO
 from collections import defaultdict
 from datetime import date
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
 from html import escape
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
 
 from sqlalchemy.orm import Session
 
@@ -19,6 +22,35 @@ def _recipients(configuration: dict, extra: list[str] | None = None) -> list[str
     values = [value.strip().lower() for value in str(configuration.get("notification_emails", "")).split(",") if value.strip()]
     values.extend(value.strip().lower() for value in (extra or []) if value and value.strip())
     return list(dict.fromkeys(value for value in values if "@" in value))
+
+
+def resolve_recipients(configuration: dict, extra: list[str] | None = None) -> list[str]:
+    return _recipients(configuration, extra)
+
+
+def build_plan_xlsx(items: list[dict], audience: str) -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "План"
+    headers = ["Дата производства", "Дата маркировки", "Цех", "Линия", "№", "SKU", "Продукция", "Источник", "Смена", "Штуки", "Кг", "Короба", "Время, ч", "Меркурий"]
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="C8102E")
+    for item in items:
+        sheet.append([
+            _date(item.get("production_date")), _date(item.get("marking_date")), item.get("workshop_name") or item.get("workshop_code") or "—",
+            item.get("line_name") or "—", item.get("sequence") or 0, item.get("sku") or "—", item.get("product_name") or "—",
+            str(item.get("source_kind") or "").upper(), "День" if item.get("shift") == "day" else "Ночь",
+            float(item.get("quantity_units") or 0), float(item.get("quantity_kg") or 0), float(item.get("box_count") or 0),
+            float(item.get("required_hours") or 0), item.get("mercury") or "—",
+        ])
+    widths = [18, 18, 13, 24, 7, 15, 48, 12, 12, 14, 14, 12, 12, 14]
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[chr(64 + index)].width = width
+    sheet.freeze_panes = "A2"
+    stream = BytesIO(); workbook.save(stream)
+    return stream.getvalue()
 
 
 def _date(value: object) -> str:
@@ -60,10 +92,15 @@ def build_plan_email_html(
                 continue
             day = item.get("marking_date") or item.get("production_date") if audience == "warehouse" else item.get("production_date")
             key = (_date(day), str(item.get("sku") or ""), str(item.get("product_name") or ""))
-            quantity, boxes = grouped.get(key, (0.0, 0.0))
-            grouped[key] = (quantity + float(item.get("quantity_kg") or 0), boxes + float(item.get("box_count") or 0))
-        body = "".join(f"<tr><td>{escape(day)}</td><td>{escape(sku)}</td><td>{escape(name)}</td><td>{quantity:,.3f}</td><td>{boxes:,.0f}</td></tr>" for (day, sku, name), (quantity, boxes) in sorted(grouped.items()))
-        return f'<!doctype html><html><body style="font:14px Arial;color:#202124"><h1>{title}</h1><p>{escape(plan_name)} · {_date(start)} — {_date(end)}</p>{warning}<table border="1" cellpadding="8" cellspacing="0"><tr><th>Дата</th><th>SKU</th><th>Продукция</th><th>Кг</th><th>Короба</th></tr>{body}</table></body></html>'
+            quantity, boxes, units, mercury = grouped.get(key, (0.0, 0.0, 0.0, "—"))
+            grouped[key] = (quantity + float(item.get("quantity_kg") or 0), boxes + float(item.get("box_count") or 0), units + float(item.get("quantity_units") or 0), item.get("mercury") or mercury)
+        if audience == "warehouse":
+            body = "".join(f"<tr><td>{escape(day)}</td><td>{escape(sku)}</td><td>{escape(name)}</td><td>{quantity:,.3f}</td><td>{boxes:,.0f}</td><td>{escape(str(mercury))}</td></tr>" for (day, sku, name), (quantity, boxes, units, mercury) in sorted(grouped.items()))
+            columns = "<th>Дата</th><th>SKU</th><th>Продукция</th><th>Кг</th><th>Короба</th><th>Меркурий</th>"
+        else:
+            body = "".join(f"<tr><td>{escape(day)}</td><td>{escape(sku)}</td><td>{escape(name)}</td><td>{units:,.0f}</td><td>{quantity:,.3f}</td><td>{boxes:,.0f}</td></tr>" for (day, sku, name), (quantity, boxes, units, mercury) in sorted(grouped.items()))
+            columns = "<th>Дата</th><th>SKU</th><th>Продукция</th><th>Штуки</th><th>Кг</th><th>Короба</th>"
+        return f'<!doctype html><html><body style="font:14px Arial;color:#202124"><h1>{title}</h1><p>{escape(plan_name)} · {_date(start)} — {_date(end)}</p>{warning}<table border="1" cellpadding="8" cellspacing="0"><tr>{columns}</tr>{body}</table></body></html>'
     accent = str(configuration.get("accent_color") or "#c8102e")
     grouped: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for item in items:
@@ -118,6 +155,7 @@ def send_notification(
     extra_recipients: list[str] | None = None,
     html: str | None = None,
     exact_recipients: bool = False,
+    attachments: list[tuple[str, bytes, str]] | None = None,
 ) -> NotificationLog:
     configuration = get_mail_configuration(db)
     recipients = _recipients({} if exact_recipients else configuration, extra_recipients)
@@ -138,6 +176,9 @@ def send_notification(
     message["Message-ID"] = message_id
     message.set_content(text)
     if html: message.add_alternative(html, subtype="html")
+    for filename, content, mime_type in attachments or []:
+        maintype, subtype = mime_type.split("/", 1)
+        message.add_attachment(content, maintype=maintype, subtype=subtype, filename=filename)
     try:
         timeout = max(1, settings.smtp_timeout_ms / 1000)
         context = ssl.create_default_context(cafile=settings.smtp_ca_file or None)

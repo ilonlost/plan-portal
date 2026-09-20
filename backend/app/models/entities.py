@@ -422,3 +422,16 @@ class PortalSetting(Base):
     value: Mapped[dict] = mapped_column(JSON, default=dict)
     updated_by: Mapped[str | None] = mapped_column(String(120))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class LineComment(Base):
+    __tablename__ = "line_comments"
+    __table_args__ = (UniqueConstraint("line_id", "comment_date", name="uq_line_comments_line_date"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    line_id: Mapped[int] = mapped_column(ForeignKey("production_lines.id", ondelete="CASCADE"), index=True)
+    comment_date: Mapped[date] = mapped_column(Date, index=True)
+    text: Mapped[str] = mapped_column(Text)
+    author_username: Mapped[str] = mapped_column(String(120))
+    author_name: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

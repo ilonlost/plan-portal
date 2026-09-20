@@ -64,6 +64,10 @@ class ProductStatusUpdate(BaseModel):
     status: str
 
 
+class ShelfLifeRequest(BaseModel):
+    skus: list[str] = Field(default_factory=list, max_length=1000)
+
+
 def _capability_dict(item: LineCapability) -> dict:
     return {
         "capability_id": item.id, "line_id": item.line.id, "line_name": item.line.name,
@@ -348,6 +352,41 @@ def product_bom(product_id: int, db: Session = Depends(get_db), user: UserContex
         raise HTTPException(502, "Не удалось получить спецификацию из BOM. Проверьте подключение к корпоративной сети.") from exc
     columns, rows = _bom_table(payload)
     return {"sku": product.sku, "product_name": product.name, "basis_units": settings.bom_basis_units, "source_url": url, "columns": columns, "rows": rows}
+
+
+def _shelf_life_value(payload: object) -> str | None:
+    keys = {"shelf_life", "shelfLife", "expiration_days", "expirationDays", "srok_godnosti", "Срок годности"}
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key in keys and value not in (None, ""):
+                return str(value)
+        for value in payload.values():
+            found = _shelf_life_value(value)
+            if found:
+                return found
+    if isinstance(payload, list):
+        for value in payload:
+            found = _shelf_life_value(value)
+            if found:
+                return found
+    return None
+
+
+@router.post("/shelf-life")
+def shelf_life(payload: ShelfLifeRequest, user: UserContext = Depends(current_user)) -> dict:
+    skus = list(dict.fromkeys(value.strip() for value in payload.skus if value.strip()))[:1000]
+    if not settings.shelf_life_api_base_url.strip():
+        return {"configured": False, "values": {sku: None for sku in skus}}
+    values: dict[str, str | None] = {}
+    with httpx.Client(timeout=settings.shelf_life_timeout_seconds, follow_redirects=True) as client:
+        for sku in skus:
+            url = f"{settings.shelf_life_api_base_url.rstrip('/')}/{quote(sku, safe='')}"
+            try:
+                response = client.get(url, headers={"Accept": "application/json"}); response.raise_for_status()
+                values[sku] = _shelf_life_value(response.json())
+            except (httpx.HTTPError, ValueError):
+                values[sku] = None
+    return {"configured": True, "values": values}
 
 
 @router.get("/export.xlsx")

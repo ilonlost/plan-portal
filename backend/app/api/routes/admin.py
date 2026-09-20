@@ -17,9 +17,9 @@ from app.models.entities import (
     AuditEvent, DemandItem, ExportFile, ImportedOrder, ImportFile, IntegrationRun,
     NotificationLog, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, User,
 )
-from app.services.notification_service import build_plan_email_html, send_notification
+from app.services.notification_service import build_plan_email_html, resolve_recipients, send_notification
 from app.services.plan_service import schedule_item_dict
-from app.services.settings_service import get_mail_configuration, save_mail_configuration
+from app.services.settings_service import get_mail_configuration, get_portal_configuration, save_mail_configuration, save_portal_configuration
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -43,6 +43,10 @@ class UserAccessCreate(UserAccessUpdate):
 
 
 class MailConfigurationUpdate(BaseModel):
+    configuration: dict
+
+
+class PortalConfigurationUpdate(BaseModel):
     configuration: dict
 
 
@@ -118,6 +122,8 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
             "host": mail_configuration.get("smtp_host"),
         },
         "mail_configuration": mail_configuration,
+        "portal_configuration": get_portal_configuration(db),
+        "downtime": {"configured": bool(settings.downtime_database_url)},
         "smtp_password_configured": bool(settings.smtp_password),
         "csb": {"test_mode": settings.csb_test_mode, "configured": bool(settings.csb_endpoint)},
         "users": [{
@@ -164,6 +170,33 @@ def update_mail_configuration(
     return {"ok": True, "configuration": configuration}
 
 
+@router.put("/portal-configuration")
+def update_portal_configuration(
+    payload: PortalConfigurationUpdate,
+    db: Session = Depends(get_db),
+    user: UserContext = Depends(require_admin),
+) -> dict:
+    values = payload.configuration
+    visibility = values.get("section_visibility", {})
+    allowed_sections = {"plan", "catalog", "import", "az", "sources", "feedback", "fact"}
+    clean_visibility = {key: bool(value) for key, value in visibility.items() if key in allowed_sections}
+    try:
+        partial = int(values.get("partial_downtime_percent", 50))
+        full = int(values.get("full_downtime_percent", 80))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(422, "Проценты простоя должны быть целыми числами") from exc
+    if not (0 <= partial <= 100 and 0 <= full <= 100):
+        raise HTTPException(422, "Проценты простоя должны быть от 0 до 100")
+    configuration = save_portal_configuration(db, {
+        "section_visibility": clean_visibility,
+        "partial_downtime_percent": partial,
+        "full_downtime_percent": full,
+    }, user.username)
+    db.add(AuditEvent(username=user.username, action="portal_configuration_updated", entity_type="portal_setting", entity_id="portal_configuration", details=configuration))
+    db.commit()
+    return {"ok": True, "configuration": configuration}
+
+
 @router.get("/mail-preview")
 def mail_preview(
     audience: Literal["production", "warehouse", "materials"] = "production",
@@ -192,10 +225,11 @@ def mail_preview(
     )))
     if line_ids:
         items = [item for item in items if item.line_id in set(line_ids)]
-    if audience != "production":
-        items = [item for item in items if item.schedule_kind == "production" and item.status.value not in {"conflict", "unscheduled"}]
+    items = [item for item in items if item.schedule_kind == "production" and item.status.value not in {"conflict", "unscheduled"}]
     html = build_plan_email_html(get_mail_configuration(db), plan.name, start, end, [schedule_item_dict(item) for item in items], audience)
-    return {"html": html, "item_count": len(items), "start": start, "end": end}
+    line_recipients = [value.strip() for item in items if item.line and item.line.mail_recipients for value in item.line.mail_recipients.replace(";", ",").replace("\n", ",").split(",") if value.strip()]
+    return {"html": html, "item_count": len(items), "start": start, "end": end,
+            "recipients": resolve_recipients(get_mail_configuration(db), line_recipients)}
 
 
 @router.patch("/users/{user_id}")

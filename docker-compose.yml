@@ -81,6 +81,10 @@ services:
       CSB_ENDPOINT: ${CSB_ENDPOINT:-}
       CSB_TOKEN: ${CSB_TOKEN:-}
       PLAN_EXPORT_TEMPLATE: ${PLAN_EXPORT_TEMPLATE:-/app/templates/План производства 12.08.2026.xlsm}
+      SHELF_LIFE_API_BASE_URL: ${SHELF_LIFE_API_BASE_URL:-}
+      SHELF_LIFE_TIMEOUT_SECONDS: ${SHELF_LIFE_TIMEOUT_SECONDS:-10}
+      DOWNTIME_DATABASE_URL: ${DOWNTIME_DATABASE_URL:-}
+      DOWNTIME_QUERY: ${DOWNTIME_QUERY:-}
     volumes:
       - ppp-files:/app/data
       - ./certs:/app/certs:ro

@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends
@@ -8,9 +8,11 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
 from app.core.security import UserContext, current_user, require_planner
-from app.models.entities import AuditEvent, DemandItem, LineCapacity, LineCapability, LineScheduleTemplate, ProductionLine, ProductionPlan, ProductionScheduleItem
+from app.models.entities import AuditEvent, DemandItem, LineCapacity, LineCapability, LineComment, LineScheduleTemplate, ProductionLine, ProductionPlan, ProductionScheduleItem
 from app.services.line_schedule_service import DEFAULT_ANCHOR, SCHEDULE_LABELS, ensure_line_capacities, shift_hours
 from app.services.plan_service import PlanService
+from app.services.downtime_service import load_downtimes
+from app.services.settings_service import get_portal_configuration
 
 router = APIRouter(prefix="/lines", tags=["lines"])
 
@@ -20,6 +22,95 @@ class CapacityDayUpdate(BaseModel):
     day_hours: Decimal = Field(ge=0, le=11)
     night_hours: Decimal = Field(ge=0, le=11)
     note: str | None = Field(default=None, max_length=300)
+
+
+class LineCommentUpdate(BaseModel):
+    text: str = Field(default="", max_length=2000)
+
+
+@router.get("/insights")
+def line_insights(
+    start: date, end: date,
+    db: Session = Depends(get_db), user: UserContext = Depends(current_user),
+) -> dict:
+    if end < start or (end - start).days > 31:
+        from fastapi import HTTPException
+        raise HTTPException(422, "Период должен быть от 1 до 31 дня")
+    lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
+    line_by_code = {str(line.code).casefold(): line for line in lines}
+    line_by_code.update({str(line.csb_line_code).casefold(): line for line in lines if line.csb_line_code})
+    comments = list(db.scalars(select(LineComment).where(LineComment.comment_date >= start, LineComment.comment_date <= end)))
+    source_status, external = load_downtimes(start, end)
+    configuration = get_portal_configuration(db)
+    partial_percent = int(configuration["partial_downtime_percent"])
+    full_percent = int(configuration["full_downtime_percent"])
+    active_plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
+    production_rows = []
+    if active_plan:
+        production_rows = list(db.scalars(select(ProductionScheduleItem).where(
+            ProductionScheduleItem.plan_id == active_plan.id,
+            ProductionScheduleItem.production_date >= start,
+            ProductionScheduleItem.production_date <= end,
+            ProductionScheduleItem.line_id.is_not(None),
+            ProductionScheduleItem.schedule_kind == "production",
+            ProductionScheduleItem.excluded.is_(False),
+        )))
+    rates: dict[tuple[int, date], list[float]] = {}
+    for item in production_rows:
+        hours = float(item.required_hours or 0)
+        if hours > 0:
+            rates.setdefault((item.line_id, item.production_date), []).append(float(item.quantity_kg or 0) / hours)
+    downtimes = []
+    for row in external:
+        line = line_by_code.get(row["line_code"].casefold())
+        if not line:
+            continue
+        event_date = row["start_at"].date()
+        values = rates.get((line.id, event_date), [])
+        average_rate = sum(values) / len(values) if values else 0.0
+        hours = max(0.0, (row["end_at"] - row["start_at"]).total_seconds() / 3600)
+        percent = full_percent if row["downtime_type"] == "full" else partial_percent
+        downtimes.append({**row, "line_id": line.id, "date": event_date, "hours": round(hours, 2),
+                          "loss_percent": percent, "average_rate_kg_hour": round(average_rate, 2),
+                          "estimated_loss_kg": round(hours * average_rate * percent / 100, 2)})
+    return {
+        "source_status": source_status,
+        "partial_downtime_percent": partial_percent,
+        "full_downtime_percent": full_percent,
+        "comments": [{"id": row.id, "line_id": row.line_id, "date": row.comment_date, "text": row.text,
+                      "author_name": row.author_name, "updated_at": row.updated_at} for row in comments],
+        "downtimes": downtimes,
+    }
+
+
+@router.put("/{line_id}/comments/{comment_date}")
+def save_line_comment(
+    line_id: int, comment_date: date, payload: LineCommentUpdate,
+    db: Session = Depends(get_db), user: UserContext = Depends(current_user),
+) -> dict:
+    from fastapi import HTTPException
+    line = db.get(ProductionLine, line_id)
+    if not line:
+        raise HTTPException(404, "Линия не найдена")
+    if user.role not in {"admin", "planner", "master"}:
+        raise HTTPException(403, "Недостаточно прав для комментария")
+    if user.role == "master" and (user.line_name != line.name or (user.workshop_code and user.workshop_code != line.workshop_code)):
+        raise HTTPException(403, "Мастер может комментировать только свою линию")
+    row = db.scalar(select(LineComment).where(LineComment.line_id == line_id, LineComment.comment_date == comment_date))
+    clean = payload.text.strip()
+    if not clean:
+        if row:
+            db.delete(row)
+        db.commit()
+        return {"ok": True, "comment": None}
+    if not row:
+        row = LineComment(line_id=line_id, comment_date=comment_date, text=clean, author_username=user.username, author_name=user.display_name)
+        db.add(row)
+    else:
+        row.text, row.author_username, row.author_name, row.updated_at = clean, user.username, user.display_name, datetime.now(timezone.utc)
+    db.add(AuditEvent(username=user.username, action="line_comment_updated", entity_type="production_line", entity_id=str(line_id), details={"date": comment_date.isoformat()}))
+    db.commit(); db.refresh(row)
+    return {"ok": True, "comment": {"id": row.id, "line_id": row.line_id, "date": row.comment_date, "text": row.text, "author_name": row.author_name, "updated_at": row.updated_at}}
 
 
 class LineScheduleUpdate(BaseModel):

@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     bom_api_base_url: str = "http://bom.fkportal.agrohold.ru/api/bom-procedure"
     bom_timeout_seconds: int = 20
     bom_basis_units: int = 1000
+    shelf_life_api_base_url: str = ""
+    shelf_life_timeout_seconds: int = 10
+    downtime_database_url: str = ""
+    downtime_query: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

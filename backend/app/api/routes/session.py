@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.security import LOCAL_USER_MARKER, UserContext, configured_local_users, create_session_token, current_user
 from app.db.session import get_db
 from app.models.entities import AuthAuditEvent, User
+from app.services.settings_service import get_portal_configuration
 
 
 router = APIRouter(prefix="/session", tags=["session"])
@@ -21,12 +22,15 @@ class LoginRequest(BaseModel):
     password: str
 
 
-def _user_dict(user: UserContext) -> dict:
-    return {
+def _user_dict(user: UserContext, db: Session | None = None) -> dict:
+    result = {
         "username": user.username, "display_name": user.display_name, "role": user.role, "email": user.email,
         "workshop_code": user.workshop_code, "line_name": user.line_name,
         "access_label": {"admin": "Администратор", "planner": "Планирование", "master": "Мастер линии", "viewer": "Просмотр"}.get(user.role, user.role),
     }
+    if db is not None:
+        result["section_visibility"] = get_portal_configuration(db)["section_visibility"]
+    return result
 
 
 @router.post("/login")
@@ -79,7 +83,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
             settings.session_cookie_name, create_session_token(resolved), max_age=settings.session_max_age_seconds,
             httponly=True, secure=settings.session_cookie_secure, samesite=settings.session_cookie_samesite.lower(), path="/",
         )
-        return {"user": _user_dict(resolved), "auth_mode": settings.auth_mode.lower()}
+        return {"user": _user_dict(resolved, db), "auth_mode": settings.auth_mode.lower()}
     except ValueError as exc:
         db.add(AuthAuditEvent(
             username=login_name, success=False, ip_address=request.client.host if request.client else None,
@@ -96,8 +100,8 @@ def logout(response: Response) -> dict:
 
 
 @router.get("/me")
-def me(user: UserContext = Depends(current_user)) -> dict:
-    return {**_user_dict(user), "auth_mode": settings.auth_mode.lower()}
+def me(user: UserContext = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    return {**_user_dict(user, db), "auth_mode": settings.auth_mode.lower()}
 
 
 @router.get("/mode")

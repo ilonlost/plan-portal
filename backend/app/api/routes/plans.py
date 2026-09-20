@@ -17,8 +17,7 @@ from app.models.entities import AuditEvent, LineCapacity, ProductionLine, Produc
 from app.schemas.common import ExecutionStatusUpdate, PlanApprovalRequest, ScheduleEventCreate, ScheduleItemUpdate
 from app.services.export_service import ExcelExportService
 from app.services.plan_service import PlanService, plan_dict, schedule_item_dict
-from app.services.notification_service import send_notification
-from app.services.notification_service import build_plan_email_html
+from app.services.notification_service import build_plan_email_html, build_plan_xlsx, send_notification
 from app.services.settings_service import get_mail_configuration
 
 router = APIRouter(prefix="/plans", tags=["plans"])
@@ -266,8 +265,7 @@ def email_plan(
     if payload.line_ids:
         selected_ids = set(payload.line_ids)
         items = [item for item in items if item.line_id in selected_ids]
-    if payload.audience != "production":
-        items = [item for item in items if item.schedule_kind == "production" and item.status.value not in {"conflict", "unscheduled"}]
+    items = [item for item in items if item.schedule_kind == "production" and item.status.value not in {"conflict", "unscheduled"}]
     configuration = get_mail_configuration(db)
     try:
         subject = str(configuration.get("plan_subject") or "План производства ФК · {start} — {end}").format(
@@ -276,14 +274,13 @@ def email_plan(
     except (KeyError, ValueError) as exc:
         raise HTTPException(422, "В шаблоне темы разрешены только {start}, {end} и {plan}") from exc
     html = build_plan_email_html(configuration, plan.name, start, end, [schedule_item_dict(item) for item in items], payload.audience)
-    if payload.audience != "production" and not payload.recipients:
-        raise HTTPException(422, "Укажите адресатов выбранного варианта письма")
     subject = {"production": "Производство", "warehouse": "Склад", "materials": "Сырьевой отдел"}[payload.audience] + " · " + subject
     line_recipients = [value.strip() for item in items if item.line and item.line.mail_recipients for value in item.line.mail_recipients.replace(";", ",").replace("\n", ",").split(",") if value.strip()]
     log = send_notification(
         db, "production_plan_email", subject,
         f"План «{plan.name}» за период {start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}. Позиций: {len(items)}.",
-        payload.recipients or line_recipients, html, exact_recipients=bool(payload.recipients),
+        [*line_recipients, *payload.recipients], html, exact_recipients=False,
+        attachments=[(f"plan_{start.isoformat()}_{end.isoformat()}.xlsx", build_plan_xlsx([schedule_item_dict(item) for item in items], payload.audience), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")],
     )
     db.add(AuditEvent(username=user.username, action="production_plan_emailed", entity_type="production_plan", entity_id=str(plan.id), details={"start": start.isoformat(), "end": end.isoformat(), "line_ids": payload.line_ids, "item_count": len(items), "status": log.status, "recipients": log.recipients}))
     db.commit()

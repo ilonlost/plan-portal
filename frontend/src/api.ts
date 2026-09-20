@@ -83,6 +83,16 @@ export const api = {
     body: JSON.stringify({ preview, create_plan: true, merge_into_active: true }),
   }),
   adminOverview: () => request<AdminOverview>("/admin/overview"),
+  updatePortalConfiguration: (configuration: import("./types").PortalConfiguration) => request<{ ok: boolean; configuration: import("./types").PortalConfiguration }>("/admin/portal-configuration", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),
+  }),
+  lineInsights: (start: string, end: string) => request<import("./types").LineInsights>(`/lines/insights?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
+  saveLineComment: (lineId: number, date: string, text: string) => request<{ ok: boolean }>(`/lines/${lineId}/comments/${date}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+  }),
+  shelfLife: (skus: string[]) => request<{ configured: boolean; values: Record<string, string | null> }>("/catalog/shelf-life", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ skus }),
+  }),
   productionFact: (start: string, end: string) => request<ProductionFactData>(`/production-fact?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
   productionFactDetail: (code: string, start: string, end: string) => request<ProductionFactDetail>(`/production-fact/cost-centers/${encodeURIComponent(code)}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
   productionFactExportUrl: (start: string, end: string) => `${API}/production-fact/export.xlsx?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
@@ -117,7 +127,7 @@ export const api = {
   updateMailConfiguration: (configuration: MailConfiguration) => request<{ ok: boolean; configuration: MailConfiguration }>("/admin/mail-configuration", {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),
   }),
-  mailPreview: (start: string, end: string, lineIds: number[] = [], audience = "production") => request<{ html: string; item_count: number; start: string; end: string }>(`/admin/mail-preview?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&audience=${audience}${lineIds.map(value => `&line_ids=${value}`).join("")}`),
+  mailPreview: (start: string, end: string, lineIds: number[] = [], audience = "production") => request<{ html: string; item_count: number; start: string; end: string; recipients: string[] }>(`/admin/mail-preview?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&audience=${audience}${lineIds.map(value => `&line_ids=${value}`).join("")}`),
   emailPlan: (planId: number, recipients: string[], start: string, end: string, lineIds: number[] = [], audience = "production") => request<{ ok: boolean; status: string; recipients: string[]; item_count: number; error: string | null }>(`/plans/${planId}/email`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients, start, end, line_ids: lineIds, audience }),
   }),
