@@ -140,6 +140,26 @@ def test_matrix_keeps_requested_weeks_outside_plan_horizon(client, db):
         assert all(len(line["cells"]) == days for shop in body["workshops"] for line in shop["lines"])
 
 
+def test_seed_preserves_existing_plan_tasks_and_line_configuration(db, monkeypatch):
+    from app import seed as bootstrap
+    from sqlalchemy.orm import sessionmaker
+    plan, _ = make_plan(db)
+    line = db.scalar(select(ProductionLine).where(ProductionLine.name == "Сэндвичи"))
+    line.csb_line_code = "CUSTOM-CSB"
+    db.commit()
+    def snapshot():
+        db.expire_all()
+        return ([tuple(getattr(row, column.name) for column in ProductionScheduleItem.__table__.columns) for row in db.scalars(select(ProductionScheduleItem).order_by(ProductionScheduleItem.id))], db.get(ProductionPlan, plan.id).revision, db.get(ProductionLine, line.id).csb_line_code)
+    before = snapshot()
+    monkeypatch.setattr(bootstrap, "engine", db.get_bind())
+    monkeypatch.setattr(bootstrap, "SessionLocal", sessionmaker(bind=db.get_bind()))
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "auth_mode", "ldap")
+    bootstrap.seed()
+    bootstrap.seed()
+    assert snapshot() == before
+
+
 def test_user_access_api_is_individual_and_applies_to_existing_session(client, db):
     target = User(username="limited.viewer", display_name="Limited", role="viewer", active=True)
     other = User(username="other.viewer", display_name="Other", role="viewer", active=True)
