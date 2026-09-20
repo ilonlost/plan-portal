@@ -11,7 +11,7 @@ from app.core.security import UserContext, current_user, require_planner
 from app.models.entities import AuditEvent, DemandItem, LineCapacity, LineCapability, LineComment, LineScheduleTemplate, ProductionLine, ProductionPlan, ProductionScheduleItem
 from app.services.line_schedule_service import DEFAULT_ANCHOR, SCHEDULE_LABELS, ensure_line_capacities, shift_hours
 from app.services.plan_service import PlanService
-from app.services.downtime_service import load_downtimes
+from app.services.downtime_service import load_downtimes, resolve_downtime_line
 from app.services.settings_service import get_portal_configuration
 
 router = APIRouter(prefix="/lines", tags=["lines"])
@@ -37,8 +37,6 @@ def line_insights(
         from fastapi import HTTPException
         raise HTTPException(422, "Период должен быть от 1 до 31 дня")
     lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
-    line_by_code = {str(line.code).casefold(): line for line in lines}
-    line_by_code.update({str(line.csb_line_code).casefold(): line for line in lines if line.csb_line_code})
     comments = list(db.scalars(select(LineComment).where(LineComment.comment_date >= start, LineComment.comment_date <= end)))
     source_status, external = load_downtimes(start, end)
     configuration = get_portal_configuration(db)
@@ -62,18 +60,26 @@ def line_insights(
         if hours > 0:
             rates.setdefault((item.line_id, item.production_date), []).append(float(item.quantity_kg or 0) / hours)
     downtimes = []
+    issues = []
     for row in external:
-        line = line_by_code.get(row["line_code"].casefold())
+        line = resolve_downtime_line(row, lines)
+        if row.get("data_error"):
+            issues.append({"id": row["id"], "line_id": line.id if line else None,
+                           "line_name": row.get("line_name") or row.get("line_code"), "message": row["data_error"],
+                           "start_at": row.get("start_at"), "end_at": row.get("end_at")})
+            continue
         if not line:
+            issues.append({"id": row["id"], "line_id": None, "line_name": row.get("line_name") or row.get("line_code"),
+                           "message": "Линия не найдена или название неоднозначно"})
             continue
         event_date = row["start_at"].date()
         values = rates.get((line.id, event_date), [])
         average_rate = sum(values) / len(values) if values else 0.0
         hours = max(0.0, (row["end_at"] - row["start_at"]).total_seconds() / 3600)
-        percent = full_percent if row["downtime_type"] == "full" else partial_percent
+        percent = full_percent if row["downtime_type"] == "full" else partial_percent if row["downtime_type"] == "partial" else None
         downtimes.append({**row, "line_id": line.id, "date": event_date, "hours": round(hours, 2),
                           "loss_percent": percent, "average_rate_kg_hour": round(average_rate, 2),
-                          "estimated_loss_kg": round(hours * average_rate * percent / 100, 2)})
+                          "estimated_loss_kg": round(hours * average_rate * percent / 100, 2) if percent is not None and values else None})
     return {
         "source_status": source_status,
         "partial_downtime_percent": partial_percent,
@@ -81,6 +87,7 @@ def line_insights(
         "comments": [{"id": row.id, "line_id": row.line_id, "date": row.comment_date, "text": row.text,
                       "author_name": row.author_name, "updated_at": row.updated_at} for row in comments],
         "downtimes": downtimes,
+        "issues": issues,
     }
 
 

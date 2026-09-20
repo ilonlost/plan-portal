@@ -200,10 +200,11 @@ export interface PortalConfiguration {
 }
 
 export interface LineInsights {
+  issues?: { id: string; line_id: number | null; line_name: string; message: string; start_at?: string; end_at?: string }[];
   source_status: "connected" | "not_configured" | "unavailable";
   partial_downtime_percent: number; full_downtime_percent: number;
   comments: { id: number; line_id: number; date: string; text: string; author_name: string; updated_at: string }[];
-  downtimes: { id: string; line_id: number; date: string; start_at: string; end_at: string; downtime_type: "partial" | "full"; reason: string; hours: number; loss_percent: number; average_rate_kg_hour: number; estimated_loss_kg: number }[];
+  downtimes: { id: string; line_id: number; date: string; start_at: string; end_at: string; downtime_type: "partial" | "full" | "unknown"; reason: string; hours: number; loss_percent: number | null; average_rate_kg_hour: number; estimated_loss_kg: number | null }[];
 }
 
 export type ProductionFactKind = "production" | "pause" | "changeover" | "maintenance";

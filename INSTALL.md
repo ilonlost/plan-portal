@@ -7,7 +7,7 @@ git clone https://github.com/ilonlost/plan-portal.git
 cd plan-portal
 cp .env.example .env
 nano .env
-docker compose config
+docker compose config --quiet
 docker compose up -d --build
 docker compose ps
 curl -f http://127.0.0.1:15500/api/health
@@ -41,7 +41,7 @@ git clone https://github.com/ilonlost/plan-portal.git
 Set-Location plan-portal
 Copy-Item .env.example .env
 notepad .env
-docker compose config
+docker compose config --quiet
 docker compose up -d --build
 docker compose ps
 Invoke-WebRequest http://127.0.0.1:15500/api/health
@@ -59,7 +59,7 @@ Invoke-WebRequest http://127.0.0.1:15500/api/health
 `demo.admin` и `demo.planner`, сохраняет остальные учётные записи и историю.
 Старые сессии без признака LDAP потребуется открыть заново через обычную форму входа.
 Не переключайте production в development ради обхода проверки конфигурации.
-После обновления загрузите файл мощностей, затем ОХЛ и ЗАМ. Новый файл каждого типа
+Только при первой установке загрузите файл мощностей, затем ОХЛ и ЗАМ. При обновлении существующего портала повторно импортировать их не нужно. Новый файл каждого типа
 заменяет предыдущий источник этого типа, даже если его имя изменилось.
 
 ```bash

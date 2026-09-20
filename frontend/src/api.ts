@@ -17,8 +17,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
   const response = await fetch(`${API}${path}`, { ...options, credentials: "include" });
   if (!response.ok) {
+    if (response.status === 401 && path !== "/session/login") window.dispatchEvent(new Event("portal-session-expired"));
     const body = await response.json().catch(() => ({ detail: "Ошибка сервера" }));
-    throw new ApiError(body.detail || "Ошибка сервера", response.status);
+    const detail = body.detail;
+    const errorText = typeof detail === "string" ? detail : Array.isArray(detail)
+      ? detail.map((item: { loc?: (string | number)[]; msg?: string }) => `${item.loc?.filter(part => part !== "body").join(" / ") || "Поле"}: ${item.msg || "некорректное значение"}`).join("; ")
+      : "Ошибка сервера";
+    throw new ApiError(errorText, response.status);
   }
   if (response.status === 204) return undefined as T;
   const body = await response.json();

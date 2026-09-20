@@ -464,3 +464,9 @@ body { min-width: 820px; }
 .cell-downtimes .downtime-box { margin-bottom:6px; overflow-wrap:anywhere; }
 @media(max-width:1000px) { .daily-line { grid-template-columns:200px minmax(0,1fr); } .top-actions { justify-content:flex-start; } .access-columns { grid-template-columns:190px minmax(0,1fr); } }
 @media(max-width:700px) { .daily-line,.access-columns { grid-template-columns:minmax(0,1fr); } .access-users { border-right:0; border-bottom:1px solid var(--line); } .date-toolbar { gap:8px; } .access-editor .section-visibility-grid { grid-template-columns:1fr; } }
+/* Source data problems stay visible without creating a nested scrolling panel. */
+.downtime-data-issues { padding: 16px 20px; overflow-wrap: anywhere; }
+.downtime-data-issues summary { cursor: pointer; color: var(--text); font-weight: 600; }
+.downtime-data-issues p { margin: 8px 0; }
+.downtime-box.unknown { border-left: 3px solid #d9a441; }
+html:has(.modal-backdrop, .drawer-backdrop), body:has(.modal-backdrop, .drawer-backdrop) { overflow: hidden; }

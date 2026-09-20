@@ -35,7 +35,7 @@ def test_individual_sections_do_not_affect_other_users():
 
 def test_denied_plan_covers_downloads_insights_and_comments():
     user = User(username="u", role="planner", section_permissions={"plan": False})
-    for path in ("/api/plans/1/export.xlsx", "/api/lines/insights", "/api/lines/1/comments/2026-09-20", "/api/admin/mail-preview"):
+    for path in ("/api/dashboard", "/api/plans/1/export.xlsx", "/api/lines/insights", "/api/lines/1/comments/2026-09-20", "/api/admin/mail-preview"):
         with pytest.raises(HTTPException):
             check_section_access(request(path), user)
 

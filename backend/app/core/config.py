@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     app_name: str = "Production Planning Portal"
     database_url: str = "sqlite:///./planning.sqlite3"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
-    app_url: str = "http://127.0.0.1:18095"
+    app_url: str = "http://127.0.0.1:15500"
     app_env: str = "production"
     auth_mode: str = "ldap"
     session_secret: str = "local-development-secret-change-in-production"

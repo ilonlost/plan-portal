@@ -57,7 +57,7 @@ def check_section_access(request: Request, stored: User) -> None:
                 raise HTTPException(403, "Доступ к справочнику закрыт администратором")
         else:
             required = "catalog"
-    if path == "/api/lines/insights" or "/comments/" in path:
+    if path in {"/api/dashboard", "/api/lines/insights"} or "/comments/" in path:
         required = "plan"
     elif path.startswith("/api/lines/") and request.method != "GET":
         required = "catalog"
