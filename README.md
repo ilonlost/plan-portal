@@ -193,7 +193,7 @@ docker-compose.yml           Три сервиса и постоянные то�
 | products | Единый артикул, упаковка, статусы, данные спецификации |
 | production_lines | Цех, линия, CSB, режим суток и настройки |
 | line_capabilities | Связи SKU–линия: скорость, квант, ограничения |
-| line_schedule_templates, line_capacities, production_calendar | Шаблоны, часы и календарь |
+| line_schedule_templates, line_capacities, production_calendar, planning_rules | Шаблоны, часы и календарь |
 | imported_orders, demand_items, import_files | Источники и нормализованная потребность |
 | production_plans | Активный план, горизонт, статус и ревизия |
 | production_plan_versions | Снимки/история версий |
