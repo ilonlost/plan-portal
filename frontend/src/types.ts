@@ -189,3 +189,34 @@ export interface CsbRun {
   run_id: number; target_date: string; item_count: number; status: string;
   response: { accepted: boolean; mode: string; message: string };
 }
+
+export type ProductionFactKind = "production" | "pause" | "changeover" | "maintenance";
+export interface ProductionFactEvent {
+  id: string; date: string; workshop_code: "PC" | "KC"; cost_center_code: string; cost_center_name: string; line_name: string;
+  kind: ProductionFactKind; kind_label: string; start_at: string; end_at: string; duration_minutes: number;
+  sku: string | null; product_name: string | null; quantity_kg: number | null; status: "completed" | "in_progress"; source: "erp_stub";
+}
+export interface ProductionFactDay { date: string; worked_hours: number; pause_hours: number; quantity_kg: number; }
+export interface ProductionCostCenter {
+  code: string; name: string; workshop_code: "PC" | "KC"; line_name: string; worked_hours: number; pause_hours: number;
+  utilization_percent: number; daily: ProductionFactDay[]; timeline_events: ProductionFactEvent[];
+}
+export interface ProductionFactArticleDay { date: string; hours: number; quantity_kg: number; }
+export interface ProductionFactArticle {
+  sku: string; product_name: string; workshop_code: "PC" | "KC"; total_hours: number; total_quantity_kg: number;
+  days: ProductionFactArticleDay[];
+}
+export interface ProductionFactStage { id: string; name: string; status: "completed" | "active" | "pending"; progress_percent: number; }
+export interface ProductionFactProcessMap {
+  workshop_code: "PC" | "KC"; line_name: string; cost_center_code: string; sku: string; product_name: string;
+  progress_percent: number; current_stage: string; stages: ProductionFactStage[];
+}
+export interface ProductionFactData {
+  source: "erp_stub"; generated_at: string; range: { start: string; end: string; days: number; max_days: number };
+  summary: { production_hours: number; pause_hours: number; quantity_kg: number; cost_centers: number; operations: number };
+  workshops: { code: "PC" | "KC"; name: string; total_hours: number; pause_hours: number; cost_centers: ProductionCostCenter[] }[];
+  articles: ProductionFactArticle[]; process_maps: ProductionFactProcessMap[];
+}
+export interface ProductionFactDetail {
+  source: "erp_stub"; range: { start: string; end: string; days: number }; cost_center: ProductionCostCenter; events: ProductionFactEvent[];
+}

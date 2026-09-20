@@ -18,7 +18,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.core.config import settings
 from app.core.security import UserContext, create_session_token, parse_session_token
-from app.api.routes import session, plans, imports, catalog, admin, advance_confirmations
+from app.api.routes import session, plans, imports, catalog, admin, advance_confirmations, production_fact
 from app.models.entities import User, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, LineCapability, LineCapacity, DemandItem, ImportedOrder
 from app.schemas.common import ImportConfirmRequest
 from app.services.import_service import ExcelImportService
@@ -54,10 +54,38 @@ def client(db, monkeypatch):
     app.include_router(advance_confirmations.router)
     app.include_router(catalog.router)
     app.include_router(admin.router)
+    app.include_router(production_fact.router)
     app.dependency_overrides[get_db] = lambda: db
     client = TestClient(app)
     client.cookies.set(settings.session_cookie_name, create_session_token(UserContext("regular.admin", "Administrator", "admin")))
     return client
+
+
+def test_production_fact_is_admin_only_and_exports_detail(client, db):
+    response = client.get("/production-fact?start=2026-09-01&end=2026-09-02")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "erp_stub"
+    assert {item["code"] for item in body["workshops"]} == {"PC", "KC"}
+    assert body["summary"]["production_hours"] > 0
+    assert body["summary"]["pause_hours"] > 0
+    assert body["articles"] and body["process_maps"]
+    detail = client.get("/production-fact/cost-centers/5810?start=2026-09-01&end=2026-09-02")
+    assert detail.status_code == 200
+    assert {item["kind"] for item in detail.json()["events"]} >= {"production", "pause"}
+    exported = client.get("/production-fact/export.xlsx?start=2026-09-01&end=2026-09-02")
+    assert exported.status_code == 200
+    workbook = load_workbook(BytesIO(exported.content))
+    assert workbook.sheetnames == ["События", "Артикулы ГП"]
+    assert workbook["События"].max_row > 2
+
+    stored = db.scalar(select(User).where(User.username == "regular.admin"))
+    stored.role = "viewer"
+    db.commit()
+    assert client.get("/production-fact").status_code == 403
+    stored.role = "admin"
+    db.commit()
+    assert client.get("/production-fact?start=2026-01-01&end=2026-09-01").status_code == 422
 
 
 def test_production_rejects_demo_and_header_bypass(client, db, monkeypatch):

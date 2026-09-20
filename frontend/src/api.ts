@@ -1,6 +1,6 @@
 import type {
   AdminOverview, AdvanceConfirmationBatch, AdvanceConfirmationPreview, BomData, CatalogData, CsbRun, DirectoryUser, FeedbackData, FeedbackEntry, ImportPreview, LineData, MatrixData,
-  LineScheduleData, MailConfiguration, PlanData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
+  LineScheduleData, MailConfiguration, PlanData, ProductionFactData, ProductionFactDetail, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 
 const API = import.meta.env.VITE_API_URL || "/api";
@@ -83,6 +83,9 @@ export const api = {
     body: JSON.stringify({ preview, create_plan: true, merge_into_active: true }),
   }),
   adminOverview: () => request<AdminOverview>("/admin/overview"),
+  productionFact: (start: string, end: string) => request<ProductionFactData>(`/production-fact?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
+  productionFactDetail: (code: string, start: string, end: string) => request<ProductionFactDetail>(`/production-fact/cost-centers/${encodeURIComponent(code)}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
+  productionFactExportUrl: (start: string, end: string) => `${API}/production-fact/export.xlsx?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
   directoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/admin/directory-users?query=${encodeURIComponent(query)}`),
   updateUserAccess: (userId: number, role: string, active = true) => request<{ ok: boolean }>(`/admin/users/${userId}`, {
     method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, active }),
