@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from app.core.security import UserContext, require_admin
+from app.core.security import UserContext, current_user
 
 
 router = APIRouter(prefix="/production-fact", tags=["production-fact"])
@@ -205,13 +205,13 @@ def _payload(start: date, end: date, days: int) -> dict:
 
 
 @router.get("")
-def production_fact(start: date | None = None, end: date | None = None, _: UserContext = Depends(require_admin)) -> dict:
+def production_fact(start: date | None = None, end: date | None = None, _: UserContext = Depends(current_user)) -> dict:
     range_start, range_end, days = _range(start, end)
     return _payload(range_start, range_end, days)
 
 
 @router.get("/cost-centers/{code}")
-def production_fact_detail(code: str, start: date | None = None, end: date | None = None, _: UserContext = Depends(require_admin)) -> dict:
+def production_fact_detail(code: str, start: date | None = None, end: date | None = None, _: UserContext = Depends(current_user)) -> dict:
     range_start, range_end, days = _range(start, end)
     center = next((item for item in CENTERS if item["code"] == code), None)
     if not center:
@@ -221,7 +221,7 @@ def production_fact_detail(code: str, start: date | None = None, end: date | Non
 
 
 @router.get("/export.xlsx")
-def export_production_fact(start: date | None = None, end: date | None = None, _: UserContext = Depends(require_admin)) -> Response:
+def export_production_fact(start: date | None = None, end: date | None = None, _: UserContext = Depends(current_user)) -> Response:
     range_start, range_end, days = _range(start, end)
     payload = _payload(range_start, range_end, days)
     workbook = Workbook()

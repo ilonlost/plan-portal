@@ -11,18 +11,23 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.auth_service import ldap_health, search_ldap_users
 from app.core.config import settings
-from app.core.security import UserContext, require_admin, require_planner
+from app.core.security import SECTION_KEYS, UserContext, require_admin, require_planner, user_sections
 from app.db.session import get_db
 from app.models.entities import (
     AuditEvent, DemandItem, ExportFile, ImportedOrder, ImportFile, IntegrationRun,
     NotificationLog, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, User,
 )
-from app.services.notification_service import build_plan_email_html, resolve_recipients, send_notification
+from app.services.notification_service import build_plan_email_html, resolve_recipients, send_notification, smtp_diagnostics
 from app.services.plan_service import schedule_item_dict
 from app.services.settings_service import get_mail_configuration, get_portal_configuration, save_mail_configuration, save_portal_configuration
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@router.get("/mail-diagnostics")
+def mail_diagnostics(db: Session = Depends(get_db), user: UserContext = Depends(require_admin)) -> dict:
+    return smtp_diagnostics(get_mail_configuration(db))
 
 PORTAL_ROLES = frozenset({"admin", "planner", "viewer"})
 
@@ -34,6 +39,7 @@ class DeletePlanRequest(BaseModel):
 class UserAccessUpdate(BaseModel):
     role: str
     active: bool = True
+    section_permissions: dict[str, bool] | None = None
 
 
 class UserAccessCreate(UserAccessUpdate):
@@ -130,6 +136,7 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
             "id": row.id, "username": row.username, "display_name": row.display_name,
             "email": row.email, "role": row.role, "workshop_code": row.workshop_code,
             "line_name": row.line_name, "active": row.active, "last_login_at": row.last_login_at,
+            "section_permissions": user_sections(row),
         } for row in db.scalars(select(User).order_by(User.display_name))],
         "lines": [{
             "id": row.id, "workshop_code": row.workshop_code,
@@ -242,12 +249,21 @@ def update_user_access(
     target = db.get(User, user_id)
     if not target:
         raise HTTPException(404, "Пользователь не найден")
-    role = _validate_portal_role(payload.role)
+    role = "master" if payload.role == target.role == "master" else _validate_portal_role(payload.role)
+    if target.username.lower() == user.username.lower() and (not payload.active or role != "admin"):
+        raise HTTPException(409, "Нельзя отключить себя или снять собственные права администратора")
+    if target.role == "admin" and target.active and (not payload.active or role != "admin"):
+        count = db.scalar(select(func.count(User.id)).where(User.role == "admin", User.active.is_(True))) or 0
+        if count <= 1:
+            raise HTTPException(409, "Нельзя отключить последнего администратора")
     target.role = role
     target.active = payload.active
-    target.workshop_code = None
-    target.line_name = None
-    details = {"target": target.username, "role": role, "line": None, "active": target.active}
+    if payload.section_permissions is not None:
+        target.section_permissions = {key: value for key, value in payload.section_permissions.items() if key in SECTION_KEYS}
+    if role != "master":
+        target.workshop_code = None
+        target.line_name = None
+    details = {"target": target.username, "role": role, "line": None, "active": target.active, "section_permissions": target.section_permissions}
     db.add(AuditEvent(username=user.username, action="user_access_updated", entity_type="user", entity_id=str(target.id), details=details))
     db.commit()
     return {"ok": True, **details}
@@ -272,6 +288,7 @@ def create_user_access(
         email=payload.email.strip() or None,
         role=role,
         active=payload.active,
+        section_permissions={key: value for key, value in (payload.section_permissions or {}).items() if key in SECTION_KEYS},
         workshop_code=None,
         line_name=None,
         ldap_groups=[],

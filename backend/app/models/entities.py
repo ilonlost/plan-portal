@@ -38,6 +38,7 @@ class User(Base):
     ldap_groups: Mapped[list] = mapped_column(JSON, default=list)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    section_permissions: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

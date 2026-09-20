@@ -160,7 +160,7 @@ export interface AdminOverview {
   downtime: { configured: boolean };
   smtp_password_configured: boolean;
   csb: { test_mode: boolean; configured: boolean };
-  users: { id: number; username: string; display_name: string; email: string | null; role: string; workshop_code: string | null; line_name: string | null; active: boolean; last_login_at: string | null }[];
+  users: { section_permissions: Record<string, boolean>; id: number; username: string; display_name: string; email: string | null; role: string; workshop_code: string | null; line_name: string | null; active: boolean; last_login_at: string | null }[];
   lines: { id: number; workshop_code: string; workshop_name: string; name: string }[];
   recent_audit: AuditRow[]; recent_notifications: NotificationRow[]; recent_integrations: IntegrationRow[];
 }

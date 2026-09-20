@@ -3,6 +3,8 @@ from __future__ import annotations
 import smtplib
 import ssl
 from io import BytesIO
+from pathlib import Path
+from contextlib import contextmanager
 from collections import defaultdict
 from datetime import date
 from email.message import EmailMessage
@@ -147,6 +149,45 @@ def build_plan_email_html(
     )
 
 
+@contextmanager
+def smtp_connection(configuration: dict):
+    timeout = max(1, settings.smtp_timeout_ms / 1000)
+    host = str(configuration.get("smtp_host") or settings.smtp_host)
+    port = int(configuration.get("smtp_port") or settings.smtp_port)
+    secure = bool(configuration.get("smtp_secure"))
+    tls = secure or bool(configuration.get("smtp_require_tls"))
+    context = None
+    if tls:
+        # Like ART Portal, an optional missing CA falls back to system trust.
+        ca = settings.smtp_ca_file
+        context = ssl.create_default_context(cafile=ca if ca and Path(ca).is_file() else None)
+        if not settings.smtp_tls_validate:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+    client = smtplib.SMTP_SSL(host, port, timeout=timeout, context=context) if secure else smtplib.SMTP(host, port, timeout=timeout)
+    with client:
+        code, reply = client.ehlo()
+        if code != 250:
+            raise smtplib.SMTPHeloError(code, reply)
+        if tls and not secure:
+            client.starttls(context=context)
+            client.ehlo()
+        if settings.smtp_username:
+            client.login(settings.smtp_username, settings.smtp_password)
+        yield client
+
+
+def smtp_diagnostics(configuration: dict) -> dict:
+    try:
+        with smtp_connection(configuration) as client:
+            code, _ = client.noop()
+            if code != 250:
+                raise smtplib.SMTPException(f"SMTP NOOP: {code}")
+        return {"ok": True, "message": "SMTP-соединение проверено. Письмо не отправлялось."}
+    except (OSError, smtplib.SMTPException) as exc:
+        return {"ok": False, "message": str(exc)[:2000]}
+
+
 def send_notification(
     db: Session,
     event_type: str,
@@ -180,18 +221,11 @@ def send_notification(
         maintype, subtype = mime_type.split("/", 1)
         message.add_attachment(content, maintype=maintype, subtype=subtype, filename=filename)
     try:
-        timeout = max(1, settings.smtp_timeout_ms / 1000)
-        context = ssl.create_default_context(cafile=settings.smtp_ca_file or None)
-        if not settings.smtp_tls_validate: context.check_hostname = False; context.verify_mode = ssl.CERT_NONE
-        host, port = str(configuration.get("smtp_host") or settings.smtp_host), int(configuration.get("smtp_port") or settings.smtp_port)
-        secure = bool(configuration.get("smtp_secure"))
-        client = smtplib.SMTP_SSL(host, port, timeout=timeout, context=context) if secure else smtplib.SMTP(host, port, timeout=timeout)
-        with client:
-            client.ehlo()
-            if configuration.get("smtp_require_tls") and not secure: client.starttls(context=context); client.ehlo()
-            if settings.smtp_username: client.login(settings.smtp_username, settings.smtp_password)
-            client.send_message(message)
-        log.status = "sent"; log.message_id = message_id
+        with smtp_connection(configuration) as client:
+            refused = client.send_message(message)
+        log.status = "partial" if refused else "sent"
+        log.error = f"SMTP отклонил получателей: {', '.join(refused)}" if refused else None
+        log.message_id = message_id
     except (OSError, smtplib.SMTPException) as exc:
         log.status = "failed"; log.error = str(exc)[:2000]
     db.commit()

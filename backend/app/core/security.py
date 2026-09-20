@@ -28,6 +28,44 @@ class UserContext:
 
 LOCAL_USER_MARKER = "__local_development__"
 
+SECTION_KEYS = ("plan", "catalog", "import", "az", "sources", "feedback", "fact")
+
+def user_sections(user: User) -> dict[str, bool]:
+    if user.role == "admin":
+        return dict.fromkeys(SECTION_KEYS, True)
+    defaults = {key: key != "fact" for key in SECTION_KEYS}
+    return {**defaults, **(user.section_permissions or {})}
+
+def check_section_access(request: Request, stored: User) -> None:
+    """Enforce individual access on the server, including existing sessions."""
+    path = request.url.path
+    if not path.startswith("/api/"):
+        path = "/api" + path
+    sections = user_sections(stored)
+    required = None
+    for prefix, section in (("/api/plans", "plan"), ("/api/imports", "import"),
+                            ("/api/advance-confirmations", "az"), ("/api/feedback", "feedback"),
+                            ("/api/production-fact", "fact"), ("/api/integrations", "plan")):
+        if path == prefix or path.startswith(prefix + "/"):
+            required = section
+            break
+    if path.startswith("/api/catalog"):
+        if path.endswith("/manual-products"):
+            required = "plan"
+        elif request.method == "GET" and (path == "/api/catalog" or path.endswith("/bom")):
+            if not (sections["catalog"] or sections["sources"]):
+                raise HTTPException(403, "Доступ к справочнику закрыт администратором")
+        else:
+            required = "catalog"
+    if path == "/api/lines/insights" or "/comments/" in path:
+        required = "plan"
+    elif path.startswith("/api/lines/") and request.method != "GET":
+        required = "catalog"
+    if path == "/api/admin/mail-preview":
+        required = "plan"
+    if required and not sections[required]:
+        raise HTTPException(403, "Доступ к разделу закрыт администратором")
+
 
 def configured_local_users() -> dict[str, tuple[UserContext, str]]:
     """Read development-only accounts from the ignored local environment."""
@@ -108,6 +146,7 @@ def current_user(
     if stored:
         if not stored.active:
             raise HTTPException(403, "Учётная запись отключена администратором")
+        check_section_access(request, stored)
         return UserContext(
             stored.username, stored.display_name, stored.role, stored.email or user.email,
             stored.workshop_code or user.workshop_code, stored.line_name or user.line_name,

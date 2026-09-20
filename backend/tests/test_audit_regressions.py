@@ -128,6 +128,31 @@ def make_plan(db, quantity=100):
     return plan, demand
 
 
+def test_matrix_keeps_requested_weeks_outside_plan_horizon(client, db):
+    plan, _ = make_plan(db)
+    db.commit()
+    for days in (1, 7, 21):
+        response = client.get(f"/plans/active/matrix?start=2026-10-01&days={days}")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["dates"]) == days
+        assert body["dates"][0] == "2026-10-01"
+        assert all(len(line["cells"]) == days for shop in body["workshops"] for line in shop["lines"])
+
+
+def test_user_access_api_is_individual_and_applies_to_existing_session(client, db):
+    target = User(username="limited.viewer", display_name="Limited", role="viewer", active=True)
+    other = User(username="other.viewer", display_name="Other", role="viewer", active=True)
+    db.add_all([target, other]); db.commit()
+    response = client.patch(f"/admin/users/{target.id}", json={"role": "viewer", "active": True, "section_permissions": {"catalog": False, "sources": False, "fact": True}})
+    assert response.status_code == 200
+    assert other.section_permissions == {}
+    client.cookies.set(settings.session_cookie_name, create_session_token(UserContext(target.username, target.display_name, "viewer")))
+    assert client.get("/catalog").status_code == 403
+    assert client.get("/production-fact").status_code == 200
+    assert client.get("/session/me").json()["section_visibility"]["catalog"] is False
+
+
 def test_advance_confirmation_preview_apply_and_fact_export(client, db):
     plan, demand = make_plan(db, quantity=100)
     demand.product.advance_status = "АЗ"

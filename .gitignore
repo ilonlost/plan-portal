@@ -20,3 +20,5 @@ frontend/public/*.pptx.inspect.ndjson
 tools/create_plan_portal_presentation.mjs
 !examples/*.xlsx
 .DS_Store
+*-local.log
+*-local.err.log

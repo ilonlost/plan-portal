@@ -97,8 +97,9 @@ export const api = {
   productionFactDetail: (code: string, start: string, end: string) => request<ProductionFactDetail>(`/production-fact/cost-centers/${encodeURIComponent(code)}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
   productionFactExportUrl: (start: string, end: string) => `${API}/production-fact/export.xlsx?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
   directoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/admin/directory-users?query=${encodeURIComponent(query)}`),
-  updateUserAccess: (userId: number, role: string, active = true) => request<{ ok: boolean }>(`/admin/users/${userId}`, {
-    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, active }),
+  mailDiagnostics: () => request<{ ok: boolean; message: string }>("/admin/mail-diagnostics"),
+  updateUserAccess: (userId: number, role: string, active = true, section_permissions?: Record<string, boolean>) => request<{ ok: boolean }>(`/admin/users/${userId}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, active, section_permissions }),
   }),
   createUserAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean }) => request<{ ok: boolean; id: number }>("/admin/users", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),

@@ -8,10 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.core.auth_service import authenticate_ldap
 from app.core.config import settings
-from app.core.security import LOCAL_USER_MARKER, UserContext, configured_local_users, create_session_token, current_user
+from app.core.security import LOCAL_USER_MARKER, UserContext, configured_local_users, create_session_token, current_user, user_sections
 from app.db.session import get_db
 from app.models.entities import AuthAuditEvent, User
-from app.services.settings_service import get_portal_configuration
 
 
 router = APIRouter(prefix="/session", tags=["session"])
@@ -29,7 +28,8 @@ def _user_dict(user: UserContext, db: Session | None = None) -> dict:
         "access_label": {"admin": "Администратор", "planner": "Планирование", "master": "Мастер линии", "viewer": "Просмотр"}.get(user.role, user.role),
     }
     if db is not None:
-        result["section_visibility"] = get_portal_configuration(db)["section_visibility"]
+        stored = db.scalar(select(User).where(User.username == user.username))
+        result["section_visibility"] = user_sections(stored) if stored else {}
     return result
 
 

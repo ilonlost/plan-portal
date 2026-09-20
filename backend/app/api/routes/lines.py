@@ -54,6 +54,7 @@ def line_insights(
             ProductionScheduleItem.line_id.is_not(None),
             ProductionScheduleItem.schedule_kind == "production",
             ProductionScheduleItem.excluded.is_(False),
+            ProductionScheduleItem.status.notin_(["conflict", "unscheduled"]),
         )))
     rates: dict[tuple[int, date], list[float]] = {}
     for item in production_rows:

@@ -19,6 +19,7 @@ from app.services.export_service import ExcelExportService
 from app.services.plan_service import PlanService, plan_dict, schedule_item_dict
 from app.services.notification_service import build_plan_email_html, build_plan_xlsx, send_notification
 from app.services.settings_service import get_mail_configuration
+from app.services.line_schedule_service import shift_hours
 
 router = APIRouter(prefix="/plans", tags=["plans"])
 
@@ -69,7 +70,7 @@ def active_plan_matrix(
     if not plan:
         raise HTTPException(404, "Активный план не найден")
     start = start or plan.horizon_start
-    end = min(plan.horizon_end, start + timedelta(days=max(1, min(days, 92)) - 1))
+    end = start + timedelta(days=max(1, min(days, 92)) - 1)
     lines_query = select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name)
     if workshop_code:
         lines_query = lines_query.where(ProductionLine.workshop_code == workshop_code)
@@ -101,7 +102,7 @@ def active_plan_matrix(
         for day in dates:
             day_items = [item for item in line_items if item.production_date == day]
             hours = sum((Decimal(item.required_hours) for item in day_items), Decimal("0"))
-            capacity = capacity_map.get((line.id, day), Decimal(line.working_hours))
+            capacity = capacity_map.get((line.id, day), sum(shift_hours(line, day), Decimal("0")))
             load = float(hours / capacity * 100) if capacity else (999.0 if hours else 0.0)
             cells.append({
                 "date": day, "planned_hours": hours, "capacity_hours": capacity, "load_percent": round(load, 1),
