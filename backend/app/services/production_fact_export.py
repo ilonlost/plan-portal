@@ -17,6 +17,9 @@ HEADERS = ["Дата и время проводки (МСК)", "Цех", "МЗ",
            "Дата создания SSCC", "Буфер назначения", "Название буфера", "SSCC",
            "Первое движение в выбранных месяцах (МСК)", "Буфер карточки SSCC", "Номер проводки", "Месяц источника", "Проверка"]
 WIDTHS = [25, 9, 12, 24, 18, 56, 22, 19, 35, 26, 30, 22, 22, 19, 60]
+CELL_ALIGNMENT = Alignment(vertical="top", wrap_text=True)
+HEADER_FILL = PatternFill("solid", fgColor="C8102E")
+HEADER_FONT = Font(color="FFFFFF", bold=True)
 
 
 def append_row(sheet, values, header=False):
@@ -35,10 +38,10 @@ def append_row(sheet, values, header=False):
             cell.number_format = "dd.mm.yyyy"
         elif isinstance(value, int):
             cell.number_format = "#,##0"
-        cell.alignment = Alignment(vertical="top", wrap_text=True)
+        cell.alignment = CELL_ALIGNMENT
         if header:
-            cell.fill = PatternFill("solid", fgColor="C8102E")
-            cell.font = Font(color="FFFFFF", bold=True)
+            cell.fill = HEADER_FILL
+            cell.font = HEADER_FONT
         cells.append(cell)
     sheet.append(cells)
 
