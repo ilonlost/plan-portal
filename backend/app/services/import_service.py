@@ -181,13 +181,8 @@ class ExcelImportService:
     def _parse_quarter_weekly(self, workbook, file_name: str) -> ImportPreview:
         sheet = next(workbook[name] for name in workbook.sheetnames if self._normalize(name) in {"план зам+напитки", "план зам", "зам"})
         reference = self._fk_reference(workbook)
-        week_columns: list[tuple[int, int]] = []
         header_row, mapping, headers = self._find_headers(sheet)
-        for column, raw_value in enumerate(headers):
-            value = str(raw_value or "")
-            match = re.fullmatch(r"\s*(\d{1,2})\s*(?:w|нед(?:еля)?)\s*", value, re.IGNORECASE)
-            if match:
-                week_columns.append((column, int(match.group(1))))
+        week_columns = self._find_week_columns(sheet, header_row, mapping)
         if not week_columns:
             raise ValueError("На листе «План ЗАМ+Напитки» не найдены недельные колонки")
         if len({week for _, week in week_columns}) != len(week_columns):
@@ -229,7 +224,8 @@ class ExcelImportService:
                 ))
         return self._preview(
             file_name, "quarter_weekly_v1", "quarter_weekly", sheet.title, rows,
-            ["Объёмы источника трактуются как кг.",
+            [f"Год плана: {year}. Загружены недели: {', '.join(str(week) for _, week in week_columns)}. Месячные итоги не загружаются.",
+             "Объёмы источника трактуются как кг.",
              "Каждая потребность распределяется только внутри своей ISO-недели.",
              "При расчёте применяется квант замеса из актуального справочника ПЦ/КЦ."],
         )
@@ -485,12 +481,64 @@ class ExcelImportService:
                 return row_number, mapping, values
         raise ValueError(f"Лист {sheet.title}: не найдены заголовки артикула и наименования")
 
+    @classmethod
+    def _find_week_columns(cls, sheet, header_row: int, mapping: dict[str, int]) -> list[tuple[int, int]]:
+        """Find ZAM week headers, including plain numbers in a row above table headings."""
+        header_rows = list(sheet.iter_rows(min_row=1, max_row=header_row, values_only=True))
+        # Choose one header row, nearest to the article headings first. Do not
+        # mix numbers from totals above it with the actual weekly columns.
+        for values in reversed(header_rows):
+            columns = [
+                (column, week)
+                for column, value in enumerate(values)
+                if column not in mapping.values() and (week := cls._week_number(value)) is not None
+                and (column >= len(header_rows[-1]) or not header_rows[-1][column]
+                     or cls._week_number(header_rows[-1][column]) is not None)
+            ]
+            if columns:
+                return columns
+        return []
+
+    @staticmethod
+    def _week_number(value) -> int | None:
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float)):
+            if float(value).is_integer() and 1 <= int(value) <= 53:
+                return int(value)
+            return None
+        match = re.fullmatch(
+            r"\s*(?:нед(?:еля|ели)?\s*)?(\d{1,2})(?:\s*(?:w|нед(?:еля|ели)?))?\s*",
+            str(value),
+            re.IGNORECASE,
+        )
+        if not match:
+            return None
+        week = int(match.group(1))
+        return week if 1 <= week <= 53 else None
+
     @staticmethod
     def _year_from_workbook(sheet, file_name: str) -> int:
-        for value in [file_name, *(cell for row in sheet.iter_rows(max_row=2, values_only=True) for cell in row)]:
-            match = re.search(r"20\d{2}", str(value or ""))
-            if match:
-                return int(match.group(0))
+        # Numeric cells in the upper rows are often volume totals (e.g. 2000
+        # kg), not years. A correction date in the filename may use two digits.
+        match = re.search(r"(?<!\d)20\d{2}(?!\d)", file_name)
+        if match:
+            return int(match.group(0))
+        match = re.search(r"(?<!\d)\d{1,2}[.\-/]\d{1,2}[.\-/](\d{2})(?!\d)", file_name)
+        if match:
+            return 2000 + int(match.group(1))
+        for row in sheet.iter_rows(max_row=15, values_only=True):
+            populated = [value for value in row if value not in (None, "")]
+            for value in populated:
+                if isinstance(value, date):
+                    return value.year
+                if not isinstance(value, str):
+                    continue
+                if not re.search(r"[а-яa-z]", value, re.IGNORECASE) and len(populated) != 1:
+                    continue
+                match = re.search(r"(?<!\d)20\d{2}(?!\d)", value)
+                if match:
+                    return int(match.group(0))
         return date.today().year
 
     @staticmethod
