@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     shelf_life_timeout_seconds: int = 10
     downtime_database_url: str = ""
     downtime_query: str = ""
+    production_fact_database_url: str = ""
+    production_fact_db_schema: str = "dbo"
+    production_fact_buffer_kc: str = "5498"
+    production_fact_buffer_pc: str = "5898"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

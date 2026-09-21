@@ -237,3 +237,16 @@ export interface ProductionFactData {
 export interface ProductionFactDetail {
   source: "erp_stub"; range: { start: string; end: string; days: number }; cost_center: ProductionCostCenter; events: ProductionFactEvent[];
 }
+
+export interface TailBufferData {
+  source: "csb_dwh";
+  status: "connected" | "partial" | "not_configured" | "unavailable" | "invalid_configuration";
+  range: { start: string; end: string };
+  buffers: { KC: string; PC: string };
+  centers: { workshop_code: "KC" | "PC"; code: string; name: string }[];
+  issues: string[]; total_count: number; truncated: boolean; first_movement_scope: string;
+  rows: { id: string; record_id: string | number; source_month: string; sscc: string | null;
+    source_center: string; target_buffer: string; workshop_code: "KC" | "PC"; line_name: string;
+    moved_at: string; first_moved_at: string | null; sku: string | null; product_name: string | null;
+    created_date: string | null; buffer_name: string | null; card_buffer: number | null; warning: string }[];
+}

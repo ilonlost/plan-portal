@@ -11,6 +11,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from app.core.security import UserContext, current_user
+from app.services.tail_buffer_service import load_tail_buffers
 
 
 router = APIRouter(prefix="/production-fact", tags=["production-fact"])
@@ -218,6 +219,12 @@ def production_fact_detail(code: str, start: date | None = None, end: date | Non
         raise HTTPException(404, "Место затрат не найдено")
     events = _events_for_center(center, range_start, range_end)
     return {"source": "erp_stub", "range": {"start": range_start.isoformat(), "end": range_end.isoformat(), "days": days}, "cost_center": _center_summary(center, range_start, range_end, False), "events": events}
+
+
+@router.get("/tail-buffers")
+def tail_buffers(start: date | None = None, end: date | None = None, _: UserContext = Depends(current_user)) -> dict:
+    range_start, range_end, _ = _range(start, end)
+    return load_tail_buffers(range_start, range_end)
 
 
 @router.get("/export.xlsx")

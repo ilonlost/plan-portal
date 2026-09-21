@@ -38,6 +38,7 @@ async function optional<T>(path: string): Promise<T | null> {
 }
 
 export const api = {
+  tailBuffers: (start: string, end: string) => request<import("./types").TailBufferData>(`/production-fact/tail-buffers?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
   sessionMode: () => request<SessionMode>("/session/mode"),
   login: (username: string, password: string) => request<{ user: UserProfile; auth_mode: string }>("/session/login", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }),

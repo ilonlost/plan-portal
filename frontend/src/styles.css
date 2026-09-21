@@ -470,3 +470,27 @@ body { min-width: 820px; }
 .downtime-data-issues p { margin: 8px 0; }
 .downtime-box.unknown { border-left: 3px solid #d9a441; }
 html:has(.modal-backdrop, .drawer-backdrop), body:has(.modal-backdrop, .drawer-backdrop) { overflow: hidden; }
+.tail-buffers { min-width: 0; }
+.tail-buffers > header { display:flex; justify-content:space-between; gap:16px; align-items:center; padding:20px; border-bottom:1px solid var(--line); }
+.tail-buffers h2 { margin:6px 0; font-size:20px; }
+.tail-buffers p { line-height:1.5; }
+.tail-buffer-body { padding:20px; min-width:0; }
+.tail-buffer-workshops { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; margin:20px 0; }
+.tail-buffer-workshops h3 { font-size:15px; margin:0 0 12px; }
+.tail-buffer-workshops h3 small { display:block; color:var(--muted); font-size:12px; margin-top:6px; font-weight:400; }
+.tail-center-list { display:grid; gap:6px; }
+.tail-center-list button { text-align:left; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:12px; border:1px solid var(--line); border-radius:6px; color:var(--text); background:var(--surface); }
+.tail-center-list button.active { border-color:var(--red); }
+.tail-center-list small,.tail-buffer-note,.fact-source-note { color:var(--muted); font-size:12px; }
+.tail-buffer-notice { border-left:3px solid #d9a441; padding:8px 14px; background:var(--surface-alt); }
+.tail-buffer-controls { display:flex; align-items:end; flex-wrap:wrap; gap:16px; margin:20px 0; }
+.tail-buffer-controls label { display:grid; gap:6px; min-width:210px; flex:1; }
+.tail-buffer-table { overflow-x:auto; }
+.tail-buffer-table table { width:100%; min-width:920px; }
+.tail-buffer-table td { vertical-align:top; max-width:300px; padding:12px; }
+.tail-buffer-table th { text-align:left; padding:12px; }
+.tail-buffer-table td small { display:block; margin-top:5px; color:var(--muted); overflow-wrap:anywhere; }
+.tail-buffer-table .tail-row-warning { color:#c8892e; }
+.tail-sscc { font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.tail-buffers footer { display:flex; justify-content:center; gap:16px; align-items:center; margin-top:16px; }
+@media(max-width:1000px) { .tail-buffer-workshops { grid-template-columns:1fr; } }
