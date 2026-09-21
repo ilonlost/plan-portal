@@ -528,3 +528,30 @@ html:has(.modal-backdrop, .drawer-backdrop), body:has(.modal-backdrop, .drawer-b
 .real-fact .tail-buffers { scroll-margin-top:100px; }
 .real-fact .tail-buffer-controls { margin-top:0; }
 @media(max-width:1100px) { .real-fact .fact-split { grid-template-columns:1fr; } }
+
+/* Hourly CSB output: one calendar hour per bar, in Moscow time. */
+.fact-hourly-anchor { scroll-margin-top:100px; }
+.fact-hourly { padding:22px; min-width:0; }
+.fact-hourly > header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:18px; margin-bottom:24px; }
+.fact-hourly h2 { margin:6px 0; }
+.fact-hourly header small,.fact-hourly header p { color:var(--muted); }
+.fact-hourly-date { display:flex; gap:10px; align-items:end; }
+.fact-hourly-date label { display:grid; gap:6px; }
+.fact-hourly-scale { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; font-size:12px; color:var(--muted); margin-bottom:12px; }
+.fact-hourly-scroll { overflow-x:auto; padding:4px 0; }
+.fact-hourly-bars { display:grid; grid-template-columns:repeat(24,minmax(32px,1fr)); min-width:800px; gap:6px; }
+.fact-hour { background:none; border:0; border-radius:4px; padding:4px 2px; color:var(--text); display:grid; grid-template-rows:30px 160px 24px; gap:6px; min-width:0; cursor:pointer; }
+.fact-hour:hover,.fact-hour.selected { background:var(--surface-alt); outline:1px solid var(--line); }
+.fact-hour-value { font-size:11px; align-self:end; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+.fact-hour-column { display:flex; align-items:end; justify-content:center; background:repeating-linear-gradient(to top,var(--line) 0,var(--line) 1px,transparent 1px,transparent 40px); border-bottom:1px solid var(--line); }
+.fact-hour-column i { display:block; width:80%; background:#328362; border-radius:3px 3px 0 0; min-height:0; }
+.fact-hour.negative .fact-hour-column i { background:var(--red); }
+.fact-hour-label { font-size:12px; color:var(--muted); }
+.fact-hourly-readout { display:flex; flex-wrap:wrap; gap:12px 24px; min-height:48px; margin-top:12px; padding:14px; border-radius:6px; background:var(--surface-alt); font-size:13px; }
+
+.fact-hourly-date { flex-wrap:wrap; }
+.fact-hourly-date select { max-width:240px; }
+.fact-hourly-bars { grid-template-columns:repeat(24,minmax(34px,1fr)); min-width:900px; }
+.fact-hour { grid-template-rows:34px 200px 26px; }
+.fact-hour-value { font-size:12px; font-weight:600; }
+.fact-hour-label { font-size:11px; }

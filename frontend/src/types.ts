@@ -209,8 +209,8 @@ export interface LineInsights {
 
 export interface TailBufferCenter {
   workshop_code: "KC" | "PC"; code: string; name: string;
-  postings: number; sscc_count: number; first_at: string | null; last_at: string | null;
-  buckets: { at: string; postings: number }[];
+  postings: number; sscc_count: number; weight_kg: number | null; missing_weight_count: number; first_at: string | null; last_at: string | null;
+  buckets: { at: string; postings: number; weight_kg: number | null; missing_weight_count: number }[];
 }
 export interface TailBufferData {
   source: "csb_dwh";
@@ -223,8 +223,8 @@ export interface TailBufferData {
   rows: { id: string; record_id: string | number; source_month: string; sscc: string | null;
     source_center: string; target_buffer: string; workshop_code: "KC" | "PC"; line_name: string;
     moved_at: string; first_moved_at: string | null; sku: string | null; product_name: string | null;
-    created_date: string | null; buffer_name: string | null; card_buffer: number | null; warning: string }[];
+    weight_kg: number | null; created_date: string | null; buffer_name: string | null; card_buffer: number | null; warning: string }[];
 }
 export interface ProductionFactData extends TailBufferData {
-  bucket_minutes: number; sscc_count: number; active_centers: number;
+  bucket_minutes: number; sscc_count: number; active_centers: number; weight_kg: number | null; missing_weight_count: number;
 }

@@ -1,6 +1,7 @@
 """Read-only CSB tail-buffer postings, using the owner's movement direction."""
 from datetime import date, datetime, timedelta, timezone
 from contextlib import contextmanager
+from decimal import Decimal
 import re
 
 from sqlalchemy import create_engine, text
@@ -36,13 +37,13 @@ def movement_cte(schema: str, tables: list[str]) -> str:
     if not tables or any(not re.fullmatch(r"cp_DWH_LA0052_\d{6}", table) for table in tables):
         raise ValueError("invalid monthly table")
     movement = " UNION ALL ".join(
-        f"SELECT L52_REC_NR, L52_NVE, L52_DATE_MOVE, L52_BW_TYP, L52_KST_NR_1, L52_KST_NR_2, '{table[-6:]}' AS source_month FROM [{schema}].[{table}]"
+        f"SELECT L52_REC_NR, L52_NVE, L52_DATE_MOVE, L52_BW_TYP, L52_KST_NR_1, L52_KST_NR_2, L52_MENGE_LE, '{table[-6:]}' AS source_month FROM [{schema}].[{table}]"
         for table in tables
     )
     return f"""
 WITH Movements AS ({movement}),
 Normalized AS (
- SELECT *, TRY_CONVERT(datetime2, CONVERT(varchar(40), L52_DATE_MOVE, 126), 112) AS moved_at,
+ SELECT *, TRY_CONVERT(decimal(28,6), L52_MENGE_LE) AS weight_kg, TRY_CONVERT(datetime2, CONVERT(varchar(40), L52_DATE_MOVE, 126), 112) AS moved_at,
  IIF(L52_BW_TYP IN (2,4), L52_KST_NR_1, L52_KST_NR_2) AS source_center,
  IIF(L52_BW_TYP IN (1,3), L52_KST_NR_1, L52_KST_NR_2) AS target_buffer
  FROM Movements
@@ -85,7 +86,7 @@ def build_query(schema: str, tables: list[str], *, export: bool = False, searchi
  GROUP BY s.SY8581_NVE
 )
 SELECT p.source_month, p.L52_REC_NR AS record_id, CONVERT(varchar(80),p.L52_NVE) AS sscc,
- p.source_center, p.target_buffer, p.moved_at, p.total_count,
+ p.source_center, p.target_buffer, p.moved_at, p.weight_kg, p.total_count,
  s.sku, s.article_count, s.created_date, s.card_buffer, f.moved_at AS first_moved_at,
  (SELECT MAX(CONVERT(nvarchar(500), a.SY0012_BEZ)) FROM [{schema}].[cp_DWH_SY0012_SY8212_SY9014_SY9118] a
   WHERE a.SY0012_NR = s.sku) AS product_name,
@@ -104,6 +105,7 @@ def summary_query(schema: str, tables: list[str]) -> str:
 )
 SELECT source_center, bucket, GROUPING(source_center) AS all_centers, GROUPING(bucket) AS is_total,
  COUNT_BIG(*) AS postings, COUNT(DISTINCT L52_NVE) AS sscc_count,
+ SUM(weight_kg) AS weight_kg, SUM(CASE WHEN weight_kg IS NULL THEN 1 ELSE 0 END) AS missing_weight_count,
  MIN(moved_at) AS first_at, MAX(moved_at) AS last_at
 FROM Buckets GROUP BY GROUPING SETS ((source_center, bucket), (source_center), ())
 """
@@ -173,10 +175,13 @@ def normalize_row(raw) -> dict:
     for field in ("sku", "sscc", "product_name", "buffer_name"):
         if row.get(field) is not None:
             row[field] = str(row[field]).strip()
+    row["weight_kg"] = row.get("weight_kg")
     warning = "" if row.get("sku") else "Карточка SSCC не найдена или артикул вне заданных префиксов"
     if (row.get("article_count") or 0) > 1:
         row["sku"] = row["product_name"] = None
         warning = "У SSCC несколько артикулов: требуется проверка"
+    if row["weight_kg"] is None:
+        warning = "; ".join(filter(None, [warning, "Вес L52_MENGE_LE не заполнен или некорректен"]))
     return {**row, "id": f"{row['source_month']}-{row['record_id']}", "source_center": code,
             "workshop_code": workshop, "line_name": name, "target_buffer": str(row["target_buffer"]), "warning": warning}
 
@@ -203,23 +208,23 @@ def load_tail_buffers(start: date, end: date, *, offset: int = 0, limit: int = P
 
 def load_summary(start: date, end: date) -> dict:
     result = base_result(start, end)
-    minutes = 15 if start == end else (60 if (end - start).days < 7 else 1440)
-    result.update(bucket_minutes=minutes, sscc_count=0, active_centers=0)
+    minutes = 60 if (end - start).days < 7 else 1440
+    result.update(bucket_minutes=minutes, sscc_count=0, active_centers=0, weight_kg=0, missing_weight_count=0)
     for center in result["centers"]:
-        center.update(postings=0, sscc_count=0, first_at=None, last_at=None, buckets=[])
+        center.update(postings=0, sscc_count=0, weight_kg=0, missing_weight_count=0, first_at=None, last_at=None, buckets=[])
     try:
         with source_connection(start, end) as (connection, schema, tables, params, issues):
             rows = connection.execute(text(summary_query(schema, tables)), {**params, "bucket_minutes": minutes}).mappings().all()
         for row in rows:
             if row["all_centers"]:
-                result.update(total_count=int(row["postings"]), sscc_count=int(row["sscc_count"]))
+                result.update(total_count=int(row["postings"]), sscc_count=int(row["sscc_count"]), weight_kg=row.get("weight_kg") if row["postings"] else 0, missing_weight_count=int(row.get("missing_weight_count", 0)))
                 continue
             center = next(item for item in result["centers"] if item["code"] == str(int(row["source_center"])))
             aware = lambda value: value.replace(tzinfo=MOSCOW) if value else None
             if row["is_total"]:
-                center.update(postings=int(row["postings"]), sscc_count=int(row["sscc_count"]), first_at=aware(row["first_at"]), last_at=aware(row["last_at"]))
+                center.update(postings=int(row["postings"]), sscc_count=int(row["sscc_count"]), weight_kg=row.get("weight_kg"), missing_weight_count=int(row.get("missing_weight_count", 0)), first_at=aware(row["first_at"]), last_at=aware(row["last_at"]))
             else:
-                center["buckets"].append({"at": aware(row["bucket"]), "postings": int(row["postings"])})
+                center["buckets"].append({"at": aware(row["bucket"]), "postings": int(row["postings"]), "weight_kg": row.get("weight_kg"), "missing_weight_count": int(row.get("missing_weight_count", 0))})
         result.update(status="partial" if issues else "connected", issues=issues,
                       active_centers=sum(center["postings"] > 0 for center in result["centers"]))
     except SourceError as error:
@@ -236,3 +241,45 @@ def iter_export_rows(start: date, end: date, center: str = "", search: str = "")
                                     {**params, **filter_params(center, search)}).mappings()
         for row in cursor:
             yield normalize_row(row)
+
+
+def group_cycles(rows):
+    """Rows ordered by center/time. A gap of exactly five minutes starts a new cycle.
+
+    Cycles describe posting activity inside the selected interval, not confirmed
+    machine uptime. Negative movements retain their sign; unknown weight is counted.
+    """
+    current = None
+    last = None
+    for raw in rows:
+        code, at, weight = str(int(raw["source_center"])), raw["moved_at"], raw["weight_kg"]
+        gap = (at - last).total_seconds() if current and current["source_center"] == code else None
+        if current is None or current["source_center"] != code or gap >= 300:
+            if current is not None:
+                yield current
+            current = dict(source_center=code, start_at=at, end_at=at, postings=0,
+                           weight_kg=None, missing_weight_count=0,
+                           gap_before_minutes=Decimal(str(gap)) / 60 if gap is not None else None)
+        current["end_at"] = at
+        current["postings"] += 1
+        if weight is None:
+            current["missing_weight_count"] += 1
+        else:
+            current["weight_kg"] = (current["weight_kg"] or Decimal(0)) + Decimal(str(weight))
+        last = at
+    if current is not None:
+        yield current
+
+
+def iter_cycle_rows(start: date, end: date, center: str = ""):
+    # All articles participate in boundaries, even when the detail table has a SKU search.
+    with source_connection(start, end, timeout=120) as (connection, schema, tables, params, issues):
+        if issues:
+            raise SourceError("partial", issues)
+        sql = movement_cte(schema, tables) + """
+SELECT source_center, moved_at, weight_kg FROM Filtered
+WHERE (:center = '' OR source_center = TRY_CONVERT(int, :center))
+ORDER BY source_center, moved_at, source_month, L52_REC_NR
+"""
+        rows = connection.execute(text(sql), {**params, "center": center}).mappings()
+        yield from group_cycles(rows)
