@@ -1,6 +1,6 @@
 import type {
   AdminOverview, AdvanceConfirmationBatch, AdvanceConfirmationPreview, BomData, CatalogData, CsbRun, DirectoryUser, FeedbackData, FeedbackEntry, ImportPreview, LineData, MatrixData,
-  LineScheduleData, MailConfiguration, PlanData, ProductionFactData, ProductionFactDetail, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
+  LineScheduleData, MailConfiguration, PlanData, ProductionFactData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 
 const API = import.meta.env.VITE_API_URL || "/api";
@@ -38,7 +38,7 @@ async function optional<T>(path: string): Promise<T | null> {
 }
 
 export const api = {
-  tailBuffers: (start: string, end: string) => request<import("./types").TailBufferData>(`/production-fact/tail-buffers?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
+  tailBuffers: (start: string, end: string, center: string, search: string, offset: number) => request<import("./types").TailBufferData>(`/production-fact/tail-buffers?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&center=${encodeURIComponent(center)}&search=${encodeURIComponent(search)}&offset=${offset}`),
   sessionMode: () => request<SessionMode>("/session/mode"),
   login: (username: string, password: string) => request<{ user: UserProfile; auth_mode: string }>("/session/login", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }),
@@ -100,8 +100,7 @@ export const api = {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ skus }),
   }),
   productionFact: (start: string, end: string) => request<ProductionFactData>(`/production-fact?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
-  productionFactDetail: (code: string, start: string, end: string) => request<ProductionFactDetail>(`/production-fact/cost-centers/${encodeURIComponent(code)}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
-  productionFactExportUrl: (start: string, end: string) => `${API}/production-fact/export.xlsx?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+  productionFactExportUrl: (start: string, end: string, center = "", search = "") => `${API}/production-fact/export.xlsx?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&center=${encodeURIComponent(center)}&search=${encodeURIComponent(search)}`,
   directoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/admin/directory-users?query=${encodeURIComponent(query)}`),
   mailDiagnostics: () => request<{ ok: boolean; message: string }>("/admin/mail-diagnostics"),
   updateUserAccess: (userId: number, role: string, active = true, section_permissions?: Record<string, boolean>) => request<{ ok: boolean }>(`/admin/users/${userId}`, {

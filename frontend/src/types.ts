@@ -207,46 +207,24 @@ export interface LineInsights {
   downtimes: { id: string; line_id: number; date: string; start_at: string; end_at: string; downtime_type: "partial" | "full" | "unknown"; reason: string; hours: number; loss_percent: number | null; average_rate_kg_hour: number; estimated_loss_kg: number | null }[];
 }
 
-export type ProductionFactKind = "production" | "pause" | "changeover" | "maintenance";
-export interface ProductionFactEvent {
-  id: string; date: string; workshop_code: "PC" | "KC"; cost_center_code: string; cost_center_name: string; line_name: string;
-  kind: ProductionFactKind; kind_label: string; start_at: string; end_at: string; duration_minutes: number;
-  sku: string | null; product_name: string | null; quantity_kg: number | null; status: "completed" | "in_progress"; source: "erp_stub";
+export interface TailBufferCenter {
+  workshop_code: "KC" | "PC"; code: string; name: string;
+  postings: number; sscc_count: number; first_at: string | null; last_at: string | null;
+  buckets: { at: string; postings: number }[];
 }
-export interface ProductionFactDay { date: string; worked_hours: number; pause_hours: number; quantity_kg: number; }
-export interface ProductionCostCenter {
-  code: string; name: string; workshop_code: "PC" | "KC"; line_name: string; worked_hours: number; pause_hours: number;
-  utilization_percent: number; daily: ProductionFactDay[]; timeline_events: ProductionFactEvent[];
-}
-export interface ProductionFactArticleDay { date: string; hours: number; quantity_kg: number; }
-export interface ProductionFactArticle {
-  sku: string; product_name: string; workshop_code: "PC" | "KC"; total_hours: number; total_quantity_kg: number;
-  days: ProductionFactArticleDay[];
-}
-export interface ProductionFactStage { id: string; name: string; status: "completed" | "active" | "pending"; progress_percent: number; }
-export interface ProductionFactProcessMap {
-  workshop_code: "PC" | "KC"; line_name: string; cost_center_code: string; sku: string; product_name: string;
-  progress_percent: number; current_stage: string; stages: ProductionFactStage[];
-}
-export interface ProductionFactData {
-  source: "erp_stub"; generated_at: string; range: { start: string; end: string; days: number; max_days: number };
-  summary: { production_hours: number; pause_hours: number; quantity_kg: number; cost_centers: number; operations: number };
-  workshops: { code: "PC" | "KC"; name: string; total_hours: number; pause_hours: number; cost_centers: ProductionCostCenter[] }[];
-  articles: ProductionFactArticle[]; process_maps: ProductionFactProcessMap[];
-}
-export interface ProductionFactDetail {
-  source: "erp_stub"; range: { start: string; end: string; days: number }; cost_center: ProductionCostCenter; events: ProductionFactEvent[];
-}
-
 export interface TailBufferData {
   source: "csb_dwh";
   status: "connected" | "partial" | "not_configured" | "unavailable" | "invalid_configuration";
-  range: { start: string; end: string };
+  range: { start: string; end: string; days: number }; generated_at: string;
   buffers: { KC: string; PC: string };
-  centers: { workshop_code: "KC" | "PC"; code: string; name: string }[];
-  issues: string[]; total_count: number; truncated: boolean; first_movement_scope: string;
+  centers: TailBufferCenter[];
+  issues: string[]; total_count: number; first_movement_scope: string;
+  offset: number; limit: number;
   rows: { id: string; record_id: string | number; source_month: string; sscc: string | null;
     source_center: string; target_buffer: string; workshop_code: "KC" | "PC"; line_name: string;
     moved_at: string; first_moved_at: string | null; sku: string | null; product_name: string | null;
     created_date: string | null; buffer_name: string | null; card_buffer: number | null; warning: string }[];
+}
+export interface ProductionFactData extends TailBufferData {
+  bucket_minutes: number; sscc_count: number; active_centers: number;
 }

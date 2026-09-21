@@ -52,7 +52,7 @@ def test_partial_months_ambiguous_sscc_and_limit_are_explicit(monkeypatch):
     monkeypatch.setattr(service, "create_engine", MagicMock(return_value=engine))
     result = service.load_tail_buffers(date(2026, 8, 31), date(2026, 9, 20))
     assert result["status"] == "partial"
-    assert result["truncated"] and result["total_count"] == 5001
+    assert result["total_count"] == 5001 and result["limit"] == 100
     assert "202608" in result["issues"][0]
     row = result["rows"][0]
     assert row["workshop_code"] == "KC" and row["line_name"] == "Жареные блюда"

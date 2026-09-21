@@ -61,23 +61,18 @@ def client(db, monkeypatch):
     return client
 
 
-def test_production_fact_is_admin_only_and_exports_detail(client, db):
+def test_production_fact_is_admin_only_and_exports_detail(client, db, monkeypatch):
+    monkeypatch.setattr(settings, "production_fact_database_url", "")
     response = client.get("/production-fact?start=2026-09-01&end=2026-09-02")
     assert response.status_code == 200
     body = response.json()
-    assert body["source"] == "erp_stub"
-    assert {item["code"] for item in body["workshops"]} == {"PC", "KC"}
-    assert body["summary"]["production_hours"] > 0
-    assert body["summary"]["pause_hours"] > 0
-    assert body["articles"] and body["process_maps"]
+    assert body["source"] == "csb_dwh" and body["status"] == "not_configured"
+    assert len(body["centers"]) == 12
+    assert body["total_count"] == 0 and not body["rows"]
+    assert "production_hours" not in body and "articles" not in body
     detail = client.get("/production-fact/cost-centers/5810?start=2026-09-01&end=2026-09-02")
-    assert detail.status_code == 200
-    assert {item["kind"] for item in detail.json()["events"]} >= {"production", "pause"}
-    exported = client.get("/production-fact/export.xlsx?start=2026-09-01&end=2026-09-02")
-    assert exported.status_code == 200
-    workbook = load_workbook(BytesIO(exported.content))
-    assert workbook.sheetnames == ["События", "Артикулы ГП"]
-    assert workbook["События"].max_row > 2
+    assert detail.status_code == 200 and not detail.json()["rows"]
+    assert client.get("/production-fact/export.xlsx?start=2026-09-01&end=2026-09-02").status_code == 503
 
     stored = db.scalar(select(User).where(User.username == "regular.admin"))
     stored.role = "viewer"
