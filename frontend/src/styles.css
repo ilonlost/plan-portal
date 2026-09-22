@@ -555,3 +555,4 @@ html:has(.modal-backdrop, .drawer-backdrop), body:has(.modal-backdrop, .drawer-b
 .fact-hour { grid-template-rows:34px 200px 26px; }
 .fact-hour-value { font-size:12px; font-weight:600; }
 .fact-hour-label { font-size:11px; }
+.sku-card-head em.exported, .execution-badge.exported { color: #3185bd; }

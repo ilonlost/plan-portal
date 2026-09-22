@@ -149,5 +149,24 @@ export const api = {
     if (endDate) params.set("end_date", endDate);
     return `${API}/integrations/csb/download${params.size ? `?${params.toString()}` : ""}`;
   },
+  downloadCsb: async (startDate: string, endDate: string) => {
+    const params = new URLSearchParams({ start_date: startDate, end_date: endDate });
+    const response = await fetch(`${API}/integrations/csb/download?${params}`, { method: "POST", credentials: "include" });
+    if (!response.ok) {
+      if (response.status === 401) window.dispatchEvent(new Event("portal-session-expired"));
+      const body = await response.json().catch(() => ({ detail: "Не удалось сформировать файл CSB" }));
+      throw new ApiError(typeof body.detail === "string" ? body.detail : "Не удалось сформировать файл CSB", response.status);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const filename = response.headers.get("Content-Disposition")?.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+    link.href = url;
+    link.download = filename ? decodeURIComponent(filename) : `Задание CSB ${startDate}-${endDate}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+  },
   exportUrl: (planId: number) => `${API}/plans/${planId}/export.xlsx`,
 };

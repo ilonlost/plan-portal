@@ -582,7 +582,7 @@ class PlanService:
         return plan
 
     def update_execution_status(self, item: ProductionScheduleItem, status: str, note: str | None, username: str) -> ProductionPlan:
-        allowed = {"not_started", "in_progress", "completed", "partially_shipped", "not_shipped"}
+        allowed = {"not_started", "exported", "in_progress", "completed", "partially_shipped", "not_shipped"}
         if status not in allowed:
             raise ValueError("Неизвестный статус исполнения")
         if status in {"not_shipped", "partially_shipped"} and not (note or "").strip():

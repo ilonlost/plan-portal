@@ -55,7 +55,7 @@ def build_csb_text(items: list, destination: str = "ДМД") -> tuple[str, list[
             f"T5+{item.line.csb_t5 or '4'}",
             f"T34+{destination_code}",
             f"T3+{shift_prefix}{sequence}",
-            f"T55+{item.line.csb_t55 or ''}",
+            f"T55+{(item.line.csb_t55 or '').strip() or _number(item.required_hours)}",
             f"L8+{production_date.strftime('%Y%m%d')}",
         ]
         lines.append("DT0133+PROD-ORDER:" + ":".join(fields))

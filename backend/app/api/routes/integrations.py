@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,7 +14,7 @@ from app.core.security import UserContext, require_planner
 from app.db.session import get_db
 from app.models.entities import AuditEvent, IntegrationRun, ProductionPlan, ProductionScheduleItem
 from app.services.notification_service import send_notification
-from app.services.plan_service import schedule_item_dict
+from app.services.plan_service import PlanService, schedule_item_dict
 from app.services.csb_export_service import build_csb_text
 
 
@@ -40,6 +40,7 @@ def _production_items(db: Session, plan: ProductionPlan, start: date, end: date 
 
 
 @router.get("/csb/download")
+@router.post("/csb/download")
 def download_csb_file(
     target_date: date | None = None, start_date: date | None = None, end_date: date | None = None, destination: str = "ДМД",
     db: Session = Depends(get_db), user: UserContext = Depends(require_planner),
@@ -48,13 +49,25 @@ def download_csb_file(
     end = end_date or start
     if end < start:
         raise HTTPException(422, "Конечная дата выгрузки CSB не может быть раньше начальной")
-    plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
+    plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()).with_for_update())
     if not plan:
         raise HTTPException(404, "Активный план не найден")
-    text, exported_ids = build_csb_text(_production_items(db, plan, start, end), destination)
+    items = _production_items(db, plan, start, end)
+    text, exported_ids = build_csb_text(items, destination)
     if not exported_ids:
         period = start.strftime('%d.%m.%Y') if start == end else f"{start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}"
         raise HTTPException(422, f"За {period} нет заданий с заполненным кодом линии CSB")
+    content = text.encode("utf-8-sig")
+    exported_set = set(exported_ids)
+    changed_ids = []
+    for item in items:
+        if item.id in exported_set and item.execution_status == "not_started":
+            item.execution_status = "exported"
+            item.reported_by = user.username
+            item.reported_at = datetime.now(timezone.utc)
+            changed_ids.append(item.id)
+    if changed_ids:
+        PlanService(db).create_version(plan, "csb_export", f"Выгружено в файл CSB: {len(changed_ids)} заданий")
     run = IntegrationRun(
         integration="csb", operation="download_txt", target_date=start,
         status="prepared", test_mode=settings.csb_test_mode, item_count=len(exported_ids),
@@ -62,11 +75,11 @@ def download_csb_file(
         response={"accepted": True, "mode": "file", "message": "TXT-файл подготовлен"}, created_by=user.username,
     )
     db.add(run)
-    db.add(AuditEvent(username=user.username, action="csb_txt_downloaded", entity_type="production_plan", entity_id=str(plan.id), details={"start_date": start.isoformat(), "end_date": end.isoformat(), "item_count": len(exported_ids), "destination": destination}))
+    db.add(AuditEvent(username=user.username, action="csb_txt_downloaded", entity_type="production_plan", entity_id=str(plan.id), details={"start_date": start.isoformat(), "end_date": end.isoformat(), "item_count": len(exported_ids), "destination": destination, "item_ids": exported_ids, "status_changed_ids": changed_ids}))
     db.commit()
     suffix = start.strftime('%d.%m.%Y') if start == end else f"{start.strftime('%d.%m.%Y')}-{end.strftime('%d.%m.%Y')}"
     filename = f"Задание CSB {suffix}.txt"
-    return Response(text.encode("utf-8-sig"), media_type="text/plain; charset=utf-8", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
+    return Response(content, media_type="text/plain; charset=utf-8", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}", "Cache-Control": "no-store"})
 
 
 @router.post("/csb/next-day")

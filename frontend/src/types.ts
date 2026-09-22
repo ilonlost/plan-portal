@@ -21,7 +21,7 @@ export interface ScheduleItem {
   mono_group: string | null;
   reason: string | null; actual_quantity_kg: number | null; status: Status; source_kind: "ohl" | "zam" | "generic";
   source: string; locked: boolean; excluded: boolean; due_date: string | null; warnings: string[];
-  execution_status: "not_started" | "in_progress" | "completed" | "partially_shipped" | "not_shipped";
+  execution_status: "not_started" | "exported" | "in_progress" | "completed" | "partially_shipped" | "not_shipped";
   execution_note: string | null; reported_by: string | null; reported_at: string | null;
 }
 
