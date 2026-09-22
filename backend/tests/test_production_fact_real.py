@@ -19,7 +19,7 @@ def row(index=0):
                 moved_at=datetime(2026, 9, 16, 13, 45, tzinfo=service.MOSCOW),
                 first_moved_at=datetime(2026, 9, 16, 12, tzinfo=service.MOSCOW),
                 sku="001010017483", product_name="=SUM(A1:A3)", created_date=date(2026, 9, 15),
-                buffer_name="Буфер", card_buffer=5498, warning="", weight_kg=Decimal("23.75"))
+                buffer_name="Буфер", card_buffer=5498, warning="", weight_kg=Decimal("23.75"), shelf_life_days=Decimal("14"))
 
 
 @pytest.fixture(autouse=True)
@@ -38,12 +38,14 @@ def test_export_all_rows_identifiers_dates_text_and_summary(client, monkeypatch)
     book = load_workbook(BytesIO(response.content))
     assert book.sheetnames == ["Сводка", "Проводки", "Почасовой выпуск", "Циклы"]
     sheet = book["Проводки"]
-    assert sheet.max_row == 5102 and sheet.auto_filter.ref == "A1:P5102"
+    assert sheet.max_row == 5102 and sheet.auto_filter.ref == "A1:Q5102"
     assert sheet.freeze_panes == "A2"
     assert sheet["J2"].value == "00123456789000000000" and sheet["J2"].data_type == "s"
     assert sheet["E2"].value == "001010017483" and sheet["F2"].data_type == "s"
     assert sheet["A2"].value == datetime(2026, 9, 16, 13, 45)
     assert sheet["P2"].value == 23.75 and sheet["P2"].data_type == "n"
+    assert sheet["Q1"].value == "Срок годности, суток"
+    assert sheet["Q2"].value == 14 and sheet["Q2"].data_type == "n"
     assert book["Почасовой выпуск"]["E15"].value == 5101 * 23.75
     assert sheet["G2"].value == datetime(2026, 9, 15)
     assert book["Сводка"]["B7"].value == 5101

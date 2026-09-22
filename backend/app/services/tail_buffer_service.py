@@ -90,6 +90,10 @@ SELECT p.source_month, p.L52_REC_NR AS record_id, CONVERT(varchar(80),p.L52_NVE)
  s.sku, s.article_count, s.created_date, s.card_buffer, f.moved_at AS first_moved_at,
  (SELECT MAX(CONVERT(nvarchar(500), a.SY0012_BEZ)) FROM [{schema}].[cp_DWH_SY0012_SY8212_SY9014_SY9118] a
   WHERE a.SY0012_NR = s.sku) AS product_name,
+ (SELECT CASE WHEN COUNT(DISTINCT TRY_CONVERT(decimal(12,3), ART_CARD.SY0012_HBK_ZEIT)) = 1
+              THEN MAX(TRY_CONVERT(decimal(12,3), ART_CARD.SY0012_HBK_ZEIT)) END
+  FROM [{schema}].[cp_DWH_SY0012_SY8212_SY9014_SY9118] ART_CARD
+  WHERE ART_CARD.SY0012_NR = s.sku) AS shelf_life_days,
  (SELECT MAX(CONVERT(nvarchar(500), w.SY0315_KST_BEZ1)) FROM [{schema}].[cp_DWH_SY0315] w
   WHERE w.SY0315_NR = p.target_buffer) AS buffer_name
 FROM Selected p LEFT JOIN Cards s ON s.SY8581_NVE = p.L52_NVE
@@ -176,9 +180,12 @@ def normalize_row(raw) -> dict:
         if row.get(field) is not None:
             row[field] = str(row[field]).strip()
     row["weight_kg"] = row.get("weight_kg")
+    row["shelf_life_days"] = row.get("shelf_life_days")
+    if row["shelf_life_days"] is not None and row["shelf_life_days"] < 0:
+        row["shelf_life_days"] = None
     warning = "" if row.get("sku") else "Карточка SSCC не найдена или артикул вне заданных префиксов"
     if (row.get("article_count") or 0) > 1:
-        row["sku"] = row["product_name"] = None
+        row["sku"] = row["product_name"] = row["shelf_life_days"] = None
         warning = "У SSCC несколько артикулов: требуется проверка"
     if row["weight_kg"] is None:
         warning = "; ".join(filter(None, [warning, "Вес L52_MENGE_LE не заполнен или некорректен"]))

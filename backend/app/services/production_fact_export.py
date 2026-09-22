@@ -16,8 +16,8 @@ from app.services.tail_buffer_service import CENTERS, FIRST_MOVEMENT_SCOPE, MOSC
 MAX_DATA_ROWS = 1_048_575
 HEADERS = ["Дата и время проводки (МСК)", "Цех", "МЗ", "Линия", "Артикул", "Продукция",
            "Дата создания SSCC", "Буфер назначения", "Название буфера", "SSCC",
-           "Первое движение в выбранных месяцах (МСК)", "Буфер карточки SSCC", "Номер проводки", "Месяц источника", "Проверка", "Вес, кг (L52_MENGE_LE)"]
-WIDTHS = [25, 9, 12, 24, 18, 56, 22, 19, 35, 26, 30, 22, 22, 19, 60, 22]
+           "Первое движение в выбранных месяцах (МСК)", "Буфер карточки SSCC", "Номер проводки", "Месяц источника", "Проверка", "Вес, кг (L52_MENGE_LE)", "Срок годности, суток"]
+WIDTHS = [25, 9, 12, 24, 18, 56, 22, 19, 35, 26, 30, 22, 22, 19, 60, 22, 22]
 CELL_ALIGNMENT = Alignment(vertical="top", wrap_text=True)
 HEADER_FILL = PatternFill("solid", fgColor="C8102E")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
@@ -76,7 +76,7 @@ def export_workbook(start: date, end: date, center: str = "", search: str = "") 
         for row in iter_export_rows(start, end, center, search):
             if sheet is None or row_count >= MAX_DATA_ROWS:
                 if sheet is not None:
-                    sheet.auto_filter.ref = f"A1:P{row_count + 1}"
+                    sheet.auto_filter.ref = f"A1:{get_column_letter(len(HEADERS))}{row_count + 1}"
                 sheet_count += 1
                 sheet = workbook.create_sheet("Проводки" if sheet_count == 1 else f"Проводки {sheet_count}")
                 sheet.freeze_panes = "A2"
@@ -90,7 +90,7 @@ def export_workbook(start: date, end: date, center: str = "", search: str = "") 
                 row["source_center"], row["line_name"], row["sku"], row["product_name"], row["created_date"],
                 row["target_buffer"], row["buffer_name"], row["sscc"], row["first_moved_at"],
                 str(row["card_buffer"]) if row["card_buffer"] is not None else None,
-                str(row["record_id"]), row["source_month"], row["warning"], row.get("weight_kg")])
+                str(row["record_id"]), row["source_month"], row["warning"], row.get("weight_kg"), row.get("shelf_life_days")])
             counts[row["source_center"]] += 1
             weight = row.get("weight_kg")
             if weight is not None:
@@ -114,7 +114,7 @@ def export_workbook(start: date, end: date, center: str = "", search: str = "") 
             sheet.freeze_panes = "A2"
             sheet.row_dimensions[1].height = 58
             append_row(sheet, HEADERS, header=True)
-        sheet.auto_filter.ref = f"A1:P{row_count + 1}"
+        sheet.auto_filter.ref = f"A1:{get_column_letter(len(HEADERS))}{row_count + 1}"
         append_row(summary, ["Факт хвостовых буферов", "CSB DWH"], header=True)
         for values in (["Начало периода", start], ["Конец периода включительно", end],
                        ["Место затрат", center or "Все МЗ"], ["Поиск", search or "Не задан"],

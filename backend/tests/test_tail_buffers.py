@@ -20,6 +20,8 @@ def test_query_preserves_direction_and_first_record_order_without_join_multiplic
     assert "ORDER BY m.L52_REC_NR ASC" in query
     assert "GROUP BY s.SY8581_NVE" in query
     assert "COUNT(DISTINCT s.SY8581_ART_NR)" in query
+    assert "ART_CARD.SY0012_HBK_ZEIT" in query
+    assert "WHERE ART_CARD.SY0012_NR = s.sku) AS shelf_life_days" in query
     assert "moved_at < :end_at" in query
     with pytest.raises(ValueError):
         service.build_query("dbo; DROP TABLE users", ["cp_DWH_LA0052_202609"])
@@ -63,6 +65,13 @@ def test_partial_months_ambiguous_sscc_and_limit_are_explicit(monkeypatch):
     assert args["buffer_kc"] == 5498 and args["buffer_pc"] == 5898
     assert args["end_at"] == datetime(2026, 9, 21)
     engine.dispose.assert_called_once()
+
+
+@pytest.mark.parametrize('value,articles,expected', [(14, 1, 14), (0, 1, 0), (None, 1, None), (-1, 1, None), (14, 2, None)])
+def test_shelf_life_belongs_to_unambiguous_article(value, articles, expected):
+    row = service.normalize_row(dict(source_center=5410, target_buffer=5498, source_month='202609',
+        record_id=1, sku='101001', article_count=articles, shelf_life_days=value, weight_kg=1))
+    assert row['shelf_life_days'] == expected
 
 
 def test_connection_errors_do_not_expose_credentials(monkeypatch):

@@ -223,7 +223,7 @@ export interface TailBufferData {
   rows: { id: string; record_id: string | number; source_month: string; sscc: string | null;
     source_center: string; target_buffer: string; workshop_code: "KC" | "PC"; line_name: string;
     moved_at: string; first_moved_at: string | null; sku: string | null; product_name: string | null;
-    weight_kg: number | null; created_date: string | null; buffer_name: string | null; card_buffer: number | null; warning: string }[];
+    weight_kg: number | null; shelf_life_days: number | null; created_date: string | null; buffer_name: string | null; card_buffer: number | null; warning: string }[];
 }
 export interface ProductionFactData extends TailBufferData {
   bucket_minutes: number; sscc_count: number; active_centers: number; weight_kg: number | null; missing_weight_count: number;
