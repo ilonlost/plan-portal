@@ -48,14 +48,14 @@ def csb_context():
 def test_csb_duration_and_explicit_line_override(csb_context):
     db, client, rows, plan = csb_context
     content, ids = build_csb_text(rows)
-    assert ':T55+1.5:L8+20260922' in content
+    assert ':T55+2:L8+20260922' in content
     assert 'PROD-ORDER:L1+40:T1+5410:' in content
     assert rows[3].id not in ids and rows[4].id not in ids and rows[5].id not in ids
     rows[0].line.csb_t55 = ' 2.25 '
-    assert ':T55+2.25:' in build_csb_text([rows[0]])[0]
+    assert ':T55+3:' in build_csb_text([rows[0]])[0]
     rows[0].line.csb_t55 = ' '
     rows[0].required_hours = Decimal('0.02')
-    assert ':T55+0.02:' in build_csb_text([rows[0]])[0]
+    assert ':T55+1:' in build_csb_text([rows[0]])[0]
 
 
 def test_download_marks_only_exported_not_started_tasks_and_is_repeatable(csb_context):
@@ -65,7 +65,7 @@ def test_download_marks_only_exported_not_started_tasks_and_is_repeatable(csb_co
     assert response.status_code == 200
     assert response.content.startswith(b'\xef\xbb\xbf')
     assert len(response.content.decode('utf-8-sig').splitlines()) == 3
-    assert ':T55+1.5:' in response.content.decode('utf-8-sig')
+    assert ':T55+2:' in response.content.decode('utf-8-sig')
     assert response.headers['cache-control'] == 'no-store'
     db.expire_all()
     assert [row.execution_status for row in rows] == ['exported', 'in_progress', 'completed', 'not_started', 'not_started', 'not_started', 'not_started']
@@ -90,3 +90,31 @@ def test_failed_download_does_not_change_status_or_history(csb_context):
     assert rows[0].execution_status == 'not_started'
     assert db.scalar(select(func.count()).select_from(IntegrationRun)) == 0
     assert db.scalar(select(func.count()).select_from(ProductionPlanVersion)) == 0
+
+
+@pytest.mark.parametrize('value,expected', [('3.6', '4'), ('3.0', '3'), ('0.01', '1'), ('3,6', '4')])
+def test_csb_whole_numbers_do_not_change_source_values(csb_context, value, expected):
+    db, client, rows, plan = csb_context
+    item = rows[0]
+    item.source_unit = 'шт'
+    item.source_quantity = Decimal(value.replace(',', '.'))
+    item.line.csb_t55 = value
+    content, ids = build_csb_text([item])
+    assert f'PROD-ORDER:L1+{expected}:' in content
+    assert f':T55+{expected}:' in content
+    assert item.source_quantity == Decimal(value.replace(',', '.'))
+    assert item.required_hours == Decimal('1.5')
+    item.source_unit = 'кг'
+    item.quantity_kg = Decimal('0.9')  # 0.9 kg / 0.25 kg per piece = 3.6 pieces
+    assert 'PROD-ORDER:L1+4:' in build_csb_text([item])[0]
+
+
+@pytest.mark.parametrize('value', ['bad', 'NaN', 'Infinity', '-1'])
+def test_invalid_duration_does_not_mark_tasks_exported(csb_context, value):
+    db, client, rows, plan = csb_context
+    rows[0].line.csb_t55 = value
+    db.commit()
+    response = client.post('/integrations/csb/download?target_date=2026-09-22')
+    assert response.status_code == 422
+    assert rows[0].execution_status == 'not_started'
+    assert db.scalar(select(func.count()).select_from(IntegrationRun)) == 0

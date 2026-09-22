@@ -53,7 +53,10 @@ def download_csb_file(
     if not plan:
         raise HTTPException(404, "Активный план не найден")
     items = _production_items(db, plan, start, end)
-    text, exported_ids = build_csb_text(items, destination)
+    try:
+        text, exported_ids = build_csb_text(items, destination)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     if not exported_ids:
         period = start.strftime('%d.%m.%Y') if start == end else f"{start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}"
         raise HTTPException(422, f"За {period} нет заданий с заполненным кодом линии CSB")

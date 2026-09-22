@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 
 
 DESTINATION_CODES = {
@@ -17,11 +16,14 @@ DESTINATION_CODES = {
 }
 
 
-def _number(value: Decimal | None) -> str:
-    if value is None:
-        return ""
-    text = format(Decimal(value).normalize(), "f")
-    return text.rstrip("0").rstrip(".") if "." in text else text
+def _integer(value) -> str:
+    try:
+        number = Decimal(str(value).strip().replace(",", "."))
+    except (InvalidOperation, ValueError):
+        raise ValueError("Количество и время в файле CSB должны быть числами") from None
+    if not number.is_finite() or number < 0:
+        raise ValueError("Количество и время в файле CSB должны быть неотрицательными числами")
+    return format(number.to_integral_value(rounding=ROUND_CEILING), "f")
 
 
 def build_csb_text(items: list, destination: str = "ДМД") -> tuple[str, list[int]]:
@@ -48,14 +50,14 @@ def build_csb_text(items: list, destination: str = "ДМД") -> tuple[str, list[
         shift_prefix = "2" if item.shift == "night" else "1"
         sequence = f"{int(item.sequence or 0):03d}"
         fields = [
-            f"L1+{_number(Decimal(quantity))}",
+            f"L1+{_integer(quantity)}",
             f"T1+{item.line.csb_line_code}",
             f"T2+{marking_date.strftime('%Y%m%d')}",
             f"T4+{item.product.sku}",
             f"T5+{item.line.csb_t5 or '4'}",
             f"T34+{destination_code}",
             f"T3+{shift_prefix}{sequence}",
-            f"T55+{(item.line.csb_t55 or '').strip() or _number(item.required_hours)}",
+            f"T55+{_integer((item.line.csb_t55 or '').strip() or item.required_hours)}",
             f"L8+{production_date.strftime('%Y%m%d')}",
         ]
         lines.append("DT0133+PROD-ORDER:" + ":".join(fields))
