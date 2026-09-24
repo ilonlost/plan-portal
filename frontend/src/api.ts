@@ -32,8 +32,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return body;
 }
 
-async function optional<T>(path: string): Promise<T | null> {
-  try { return await request<T>(path); }
+async function optional<T>(path: string, options: RequestInit = {}): Promise<T | null> {
+  try { return await request<T>(path, options); }
   catch (reason) { if (reason instanceof ApiError && reason.status === 404) return null; throw reason; }
 }
 
@@ -44,9 +44,10 @@ export const api = {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }),
   }),
   logout: () => request<{ ok: boolean }>("/session/logout", { method: "POST" }),
-  me: () => request<UserProfile>("/session/me"),
+  me: (signal?: AbortSignal) => request<UserProfile>("/session/me", { signal }),
   activePlan: () => optional<PlanData>("/plans/active"),
-  matrix: (params = "") => optional<MatrixData>(`/plans/active/matrix${params ? `?${params}` : ""}`),
+  matrix: (params = "", signal?: AbortSignal) => optional<MatrixData>(`/plans/active/matrix${params ? `?${params}` : ""}`, { signal }),
+  planRevision: (signal?: AbortSignal) => optional<{ id: number; version: number }>("/plans/active/revision", { signal }),
   lines: () => request<LineData[]>("/lines"),
   lineSchedule: (lineId: number, start: string, days = 14) => request<LineScheduleData>(`/lines/${lineId}/schedule?start=${encodeURIComponent(start)}&days=${days}`),
   updateLineSchedule: (lineId: number, data: { schedule_code: string; anchor_date: string; template_id?: number | null; mail_recipients?: string; csb_line_code?: string; csb_t5?: string; csb_t55?: string; planning_settings: object; slots: { capacity_date: string; day_hours: number; night_hours: number; note?: string | null }[] }) => request<{ ok: boolean; plan_recalculated: boolean }>(`/lines/${lineId}/schedule`, {
@@ -55,7 +56,7 @@ export const api = {
   scheduleTemplates: () => request<ScheduleTemplate[]>("/lines/schedule-templates"),
   createScheduleTemplate: (data: { name: string; description?: string; pattern: { day_hours: number; night_hours: number }[] }) => request<ScheduleTemplate>("/lines/schedule-templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   workshops: () => request<WorkshopData[]>("/lines/workshops"),
-  catalog: (params = "") => request<CatalogData>(`/catalog${params ? `?${params}` : ""}`),
+  catalog: (params = "", signal?: AbortSignal) => request<CatalogData>(`/catalog${params ? `?${params}` : ""}`, { signal }),
   assignProduct: (productId: number, lineId: number, speed: number) => request(`/catalog/products/${productId}/capabilities`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ line_id: lineId, units_per_hour: speed }) }),
   updateCapability: (id: number, data: object) => request<{ ok: boolean }>(`/catalog/capabilities/${id}`, {
     method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
@@ -92,7 +93,7 @@ export const api = {
   updatePortalConfiguration: (configuration: import("./types").PortalConfiguration) => request<{ ok: boolean; configuration: import("./types").PortalConfiguration }>("/admin/portal-configuration", {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),
   }),
-  lineInsights: (start: string, end: string) => request<import("./types").LineInsights>(`/lines/insights?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
+  lineInsights: (start: string, end: string, signal?: AbortSignal) => request<import("./types").LineInsights>(`/lines/insights?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, { signal }),
   saveLineComment: (lineId: number, date: string, text: string) => request<{ ok: boolean }>(`/lines/${lineId}/comments/${date}`, {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
   }),

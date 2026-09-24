@@ -61,6 +61,16 @@ def active_plan(db: Session = Depends(get_db), user: UserContext = Depends(curre
     return plan_dict(db, plan, user.line_name if user.role == "master" else None)
 
 
+@router.get("/active/revision")
+def active_plan_revision(db: Session = Depends(get_db), user: UserContext = Depends(current_user)) -> dict:
+    row = db.execute(select(ProductionPlan.id, ProductionPlan.revision).where(
+        ProductionPlan.active.is_(True),
+    ).order_by(ProductionPlan.updated_at.desc()).limit(1)).first()
+    if not row:
+        raise HTTPException(404, "Активный план не найден")
+    return {"id": row.id, "version": row.revision}
+
+
 @router.get("/active/matrix")
 def active_plan_matrix(
     start: date | None = None, days: int = 21, workshop_code: str | None = None, line_id: int | None = None,

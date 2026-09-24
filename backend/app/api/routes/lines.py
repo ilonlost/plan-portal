@@ -215,13 +215,14 @@ def create_schedule_template(
 def list_lines(db: Session = Depends(get_db), user: UserContext = Depends(current_user)) -> list[dict]:
     lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.priority, ProductionLine.code)))
     templates = {row.id: row for row in db.scalars(select(LineScheduleTemplate))}
+    product_counts = dict(db.execute(select(LineCapability.line_id, func.count(LineCapability.id)).group_by(LineCapability.line_id)).all())
+    today_loads = dict(db.execute(select(ProductionScheduleItem.line_id, func.max(ProductionScheduleItem.load_percent)).where(
+        ProductionScheduleItem.production_date >= date.today(),
+    ).group_by(ProductionScheduleItem.line_id)).all())
     result = []
     for line in lines:
-        product_count = db.scalar(select(func.count(LineCapability.id)).where(LineCapability.line_id == line.id)) or 0
-        today_load = db.scalar(select(func.max(ProductionScheduleItem.load_percent)).where(
-            ProductionScheduleItem.line_id == line.id,
-            ProductionScheduleItem.production_date >= date.today(),
-        )) or 0
+        product_count = product_counts.get(line.id, 0)
+        today_load = today_loads.get(line.id) or 0
         result.append({
             "id": line.id, "code": line.code, "name": line.name, "status": line.status,
             "workshop_code": line.workshop_code, "workshop_name": line.workshop_name,
@@ -255,13 +256,15 @@ def list_capacities(start: date | None = None, days: int = 7, db: Session = Depe
         LineCapacity.capacity_date >= start, LineCapacity.capacity_date < end,
     ).order_by(LineCapacity.capacity_date, LineCapacity.line_id)))
     line_names = {line.id: line.name for line in db.scalars(select(ProductionLine))}
+    loads = {(line_id, day, shift): load for line_id, day, shift, load in db.execute(
+        select(ProductionScheduleItem.line_id, ProductionScheduleItem.production_date,
+               ProductionScheduleItem.shift, func.max(ProductionScheduleItem.load_percent))
+        .where(ProductionScheduleItem.production_date >= start, ProductionScheduleItem.production_date < end)
+        .group_by(ProductionScheduleItem.line_id, ProductionScheduleItem.production_date, ProductionScheduleItem.shift)
+    )}
     result = []
     for row in rows:
-        load = db.scalar(select(func.max(ProductionScheduleItem.load_percent)).where(
-            ProductionScheduleItem.line_id == row.line_id,
-            ProductionScheduleItem.production_date == row.capacity_date,
-            ProductionScheduleItem.shift == row.shift,
-        )) or Decimal("0")
+        load = loads.get((row.line_id, row.capacity_date, row.shift)) or Decimal("0")
         result.append({
             "id": row.id, "line_id": row.line_id, "line_name": line_names[row.line_id],
             "capacity_date": row.capacity_date, "shift": row.shift,

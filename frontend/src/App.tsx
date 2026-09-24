@@ -89,13 +89,18 @@ export default function App() {
     return params.toString();
   };
 
+  const requestScope = `${user?.username || ""}|${page}|${matrixParams()}`;
+  const scopeRef = useRef(requestScope); scopeRef.current = requestScope;
+  const matrixRef = useRef(matrix); matrixRef.current = matrix;
+  const updateCatalog = (value: CatalogData | null) => setCatalog(current => JSON.stringify(current) === JSON.stringify(value) ? current : value);
+
   const loadBase = async (me = user) => {
     setLoading(true); setError(null);
     try {
       const [workshopRows, lineRows, planMatrix, catalogData] = await Promise.all([
-        api.workshops(), api.lines(), me && sectionVisible(me, "plan") ? api.matrix(matrixParams()) : Promise.resolve(null), me && (sectionVisible(me, "catalog") || sectionVisible(me, "sources")) ? api.catalog() : Promise.resolve(null),
+        api.workshops(), api.lines(), me && page === "plan" && sectionVisible(me, "plan") ? api.matrix(matrixParams()) : Promise.resolve(matrix), me && ["catalog", "sources"].includes(page) && (sectionVisible(me, "catalog") || sectionVisible(me, "sources")) ? api.catalog() : Promise.resolve(catalog),
       ]);
-      setWorkshops(workshopRows); setLines(lineRows); setMatrix(planMatrix); setCatalog(catalogData);
+      setWorkshops(workshopRows); setLines(lineRows); setMatrix(planMatrix); updateCatalog(catalogData);
       if (me?.role === "master") {
         const own = lineRows.find(line => line.name === me.line_name);
         setSelectedWorkshop(me.workshop_code); setSelectedLine(own?.id || null);
@@ -105,34 +110,68 @@ export default function App() {
   };
 
   const refreshPlan = async () => {
-    const [nextMatrix, nextCatalog] = await Promise.all([user && sectionVisible(user, "plan") ? api.matrix(matrixParams()) : Promise.resolve(null), user && (sectionVisible(user, "catalog") || sectionVisible(user, "sources")) ? api.catalog() : Promise.resolve(null)]);
-    setMatrix(nextMatrix); setCatalog(nextCatalog);
+    const scope = requestScope;
+    const [nextMatrix, nextCatalog] = await Promise.all([
+      user && page === "plan" && sectionVisible(user, "plan") ? api.matrix(matrixParams()) : Promise.resolve(matrix),
+      user && ["catalog", "sources"].includes(page) && (sectionVisible(user, "catalog") || sectionVisible(user, "sources")) ? api.catalog() : Promise.resolve(catalog),
+    ]);
+    if (scopeRef.current !== scope) return;
+    setMatrix(nextMatrix); updateCatalog(nextCatalog);
   };
 
   useEffect(() => {
-    if (!user || loading || !sectionVisible(user, "plan")) return;
-    let cancelled = false;
-    api.matrix(matrixParams()).then(value => { if (!cancelled) setMatrix(value); }).catch(reason => { if (!cancelled) setError(message(reason)); });
-    return () => { cancelled = true; };
-  }, [viewDate, viewDays, selectedWorkshop, selectedLine]);
+    if (!user || loading || page !== "plan" || !sectionVisible(user, "plan")) return;
+    const controller = new AbortController();
+    const scope = requestScope;
+    const timer = window.setTimeout(() => {
+      api.matrix(matrixParams(), controller.signal).then(value => {
+        if (!controller.signal.aborted && scopeRef.current === scope) setMatrix(value);
+      }).catch(reason => { if (!controller.signal.aborted) setError(message(reason)); });
+    }, 100);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [viewDate, viewDays, selectedWorkshop, selectedLine, page]);
+
+  useEffect(() => {
+    if (!user || !["catalog", "sources"].includes(page) || !sectionVisible(user, page)) return;
+    const controller = new AbortController();
+    api.catalog("", controller.signal).then(value => { if (!controller.signal.aborted) updateCatalog(value); })
+      .catch(reason => { if (!controller.signal.aborted) setError(message(reason)); });
+    return () => controller.abort();
+  }, [page, user]);
 
   useEffect(() => {
     if (!user) return;
-    let disposed = false;
+    const controller = new AbortController();
+    const scope = requestScope;
+    let timer: number;
     const synchronize = async () => {
       try {
-        const me = await api.me();
-        if (!disposed && JSON.stringify(me) !== JSON.stringify(user)) { setUser(me); await loadBase(me); return; }
-        const [next, nextCatalog] = await Promise.all([user && sectionVisible(user, "plan") ? api.matrix(matrixParams()) : Promise.resolve(null), user && (sectionVisible(user, "catalog") || sectionVisible(user, "sources")) ? api.catalog() : Promise.resolve(null)]);
-        if (!disposed) {
-          if (next && next.plan.version !== matrix?.plan.version) setNotice("План обновлён: изменения синхронизированы");
-          setMatrix(next); setCatalog(nextCatalog);
+        if (document.hidden || controller.signal.aborted) return;
+        const me = await api.me(controller.signal);
+        if (controller.signal.aborted || scopeRef.current !== scope) return;
+        if (JSON.stringify(me) !== JSON.stringify(user)) { setUser(me); await loadBase(me); return; }
+        if (page === "plan" && sectionVisible(user, "plan")) {
+          const revision = await api.planRevision(controller.signal);
+          if (controller.signal.aborted || scopeRef.current !== scope) return;
+          const current = matrixRef.current;
+          if (!revision) { if (current) setMatrix(null); }
+          else if (!current || revision.id !== current.plan.id || revision.version !== current.plan.version) {
+            const next = await api.matrix(matrixParams(), controller.signal);
+            if (!controller.signal.aborted && scopeRef.current === scope) {
+              setMatrix(next);
+              if (next && current) setNotice("План обновлён: изменения синхронизированы");
+            }
+          }
+        } else if (["catalog", "sources"].includes(page) && sectionVisible(user, page)) {
+          const next = await api.catalog("", controller.signal);
+          if (!controller.signal.aborted && scopeRef.current === scope) updateCatalog(next);
         }
-      } catch { /* background synchronization must not hide the current plan */ }
+      } catch { /* Keep the current page available during background errors. */ }
+      finally { if (!controller.signal.aborted) timer = window.setTimeout(() => void synchronize(), 10000); }
     };
-    const timer = window.setInterval(() => void synchronize(), 10000);
-    return () => { disposed = true; window.clearInterval(timer); };
-  }, [user, viewDate, viewDays, selectedWorkshop, selectedLine, matrix?.plan.version]);
+    timer = window.setTimeout(() => void synchronize(), 10000);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [user, page, viewDate, viewDays, selectedWorkshop, selectedLine]);
 
   useEffect(() => {
     if (!user) return;
@@ -197,10 +236,10 @@ export default function App() {
           onCreate={() => setManualTaskOpen(true)}
           onMoved={async (item, targetDate, beforeItem) => { try { await api.updateItem(matrix!.plan.id, item.id, { production_date: targetDate, line_id: item.line_id, shift: beforeItem?.shift || item.shift, before_item_id: beforeItem?.id ?? null, locked: true, comment: beforeItem ? "Изменение приоритета внутри дня" : "Перенос карточки в недельном плане" }, matrix!.plan.version); setNotice(beforeItem ? `Приоритет задания №${item.sequence} изменён` : `Задание №${item.sequence} перенесено на ${formatDate(targetDate)}`); await refreshPlan(); } catch (reason) { setError(message(reason)); } }}
           onItem={setSelectedItem} onUpload={() => setPage("import")} onRefresh={refreshPlan} /></div>}
-        {page === "catalog" && catalog && <CatalogView data={catalog} lines={lines} user={user} focusProductId={catalogFocusProductId} onFocusHandled={() => setCatalogFocusProductId(null)} onSaved={async text => { setNotice(text); await loadBase(user); }} />}
+        {page === "catalog" && !catalog && <Loading />}{page === "catalog" && catalog && <CatalogView data={catalog} lines={lines} user={user} focusProductId={catalogFocusProductId} onFocusHandled={() => setCatalogFocusProductId(null)} onSaved={async text => { setNotice(text); await loadBase(user); }} />}
         {page === "import" && <ImportView user={user} onImported={async text => { setNotice(text); await refreshPlan(); setPage("plan"); }} />}
         {page === "az" && <AdvanceConfirmationView user={user} lines={lines} onApplied={async text => { setNotice(text); await refreshPlan(); }} onError={setError} />}
-        {page === "sources" && catalog && <SourcesView data={catalog} />}
+        {page === "sources" && !catalog && <Loading />}{page === "sources" && catalog && <SourcesView data={catalog} />}
         {page === "feedback" && <FeedbackView user={user} onNotice={setNotice} onError={setError} />}
         {page === "fact" && sectionVisible(user, "fact") && <ProductionFactView onError={setError} />}
         {page === "admin" && user.role === "admin" && <AdminView onDeleted={async text => { setNotice(text); setMatrix(null); setPage("import"); await loadBase(user); }} onError={setError} />}
@@ -250,8 +289,25 @@ function PlanView({ matrix, workshops, lines, user, selectedWorkshop, selectedLi
   const [toolbarHeight, setToolbarHeight] = useState(64);
   useEffect(() => { const element = toolbarRef.current; if (!element) return; const observer = new ResizeObserver(() => setToolbarHeight(element.offsetHeight)); observer.observe(element); return () => observer.disconnect(); }, [!!matrix]);
   const [insights, setInsights] = useState<LineInsights | null>(null);
-  const loadInsights = async () => { if (!matrix?.dates.length) return; try { setInsights(await api.lineInsights(matrix.dates[0], matrix.dates.at(-1)!)); } catch { setInsights(null); } };
-  useEffect(() => { void loadInsights(); const timer = window.setInterval(() => void loadInsights(), 30000); return () => window.clearInterval(timer); }, [matrix?.dates.join("|"), matrix?.plan.version]);
+  const insightsScope = `${matrix?.dates.join("|")}|${matrix?.plan.id}|${matrix?.plan.version}`;
+  const insightsScopeRef = useRef(insightsScope); insightsScopeRef.current = insightsScope;
+  const loadInsights = async (signal?: AbortSignal) => {
+    if (!matrix?.dates.length) return;
+    try {
+      const next = await api.lineInsights(matrix.dates[0], matrix.dates.at(-1)!, signal);
+      if (!signal?.aborted && insightsScopeRef.current === insightsScope) setInsights(current => JSON.stringify(current) === JSON.stringify(next) ? current : next);
+    } catch { if (!signal?.aborted && insightsScopeRef.current === insightsScope) setInsights(null); }
+  };
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: number;
+    const synchronize = async () => {
+      if (!document.hidden) await loadInsights(controller.signal);
+      if (!controller.signal.aborted) timer = window.setTimeout(() => void synchronize(), 30000);
+    };
+    void synchronize();
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [insightsScope]);
   if (!matrix) return <Empty title="Производственный план не загружен" text="Справочник сохранён. Загрузите недельный ОХЛ или квартальный ЗАМ, чтобы сформировать новый план." action={canPlan(user) ? <button className="button primary" onClick={onUpload}>Загрузить Excel</button> : undefined} />;
   const cells = matrix.workshops.flatMap(w => w.lines.flatMap(l => l.cells));
   const items = cells.flatMap(c => c.items);
@@ -426,7 +482,8 @@ function CatalogView({ data, lines, user, focusProductId, onFocusHandled, onSave
   const uploadRef = useRef<HTMLInputElement>(null);
   useEffect(() => { localStorage.setItem("catalog-column-filters", JSON.stringify(columnFilters)); }, [columnFilters]);
   useEffect(() => { if (!focusProductId) return; const product = data.products.find(row => row.product_id === focusProductId); if (product) { setSection("products"); setEditingProduct(product); } onFocusHandled(); }, [focusProductId, data.products]);
-  useEffect(() => { if (section !== "parameters") return; api.shelfLife([...new Set(data.rows.map(row => row.sku))]).then(result => { setShelfLives(result.values); setShelfLifeConfigured(result.configured); }).catch(() => undefined); }, [section, data.rows]);
+  const shelfSkuKey = [...new Set(data.rows.map(row => row.sku))].sort().join("|");
+  useEffect(() => { if (section !== "parameters") return; api.shelfLife(shelfSkuKey.split("|").filter(Boolean)).then(result => { setShelfLives(result.values); setShelfLifeConfigured(result.configured); }).catch(() => undefined); }, [section, shelfSkuKey]);
   const matches = (value: unknown, key: string) => !columnFilters[key] || String(value ?? "—").toLocaleLowerCase().includes(columnFilters[key].toLocaleLowerCase());
   const rows = useMemo(() => data.rows.filter(row => (!workshop || row.workshop_code === workshop) && (!query || `${row.sku} ${row.product_name} ${row.line_name}`.toLowerCase().includes(query.toLowerCase())) && matches(`${row.sku} ${row.product_name}`, "s_product") && matches(`${row.workshop_name} ${row.line_name}`, "s_line") && matches(row.speed_kg_hour, "s_speed") && matches(row.batch_quantum_kg, "s_quantum") && matches(row.units_per_box, "s_box") && matches(shelfLives[row.sku] || "Ожидает API", "s_shelf") && matches(row.recipe_component_count ? "Есть" : "Не загружена", "s_recipe")), [data.rows, query, workshop, columnFilters, shelfLives]);
   const products = useMemo(() => data.products.filter(product => (!query || `${product.sku} ${product.product_name} ${product.line_names.join(" ")}`.toLowerCase().includes(query.toLowerCase())) && matches(`${product.sku} ${product.product_name} ${articleStatus(product)}`, "p_product") && matches(product.line_names.join(", ") || "Линия не назначена", "p_line") && matches(productType(product.state), "p_type") && matches(product.advance_status, "p_date") && matches(product.units_per_box, "p_pack")), [data.products, query, columnFilters]);

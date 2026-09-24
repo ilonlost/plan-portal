@@ -220,7 +220,7 @@ class PlanService:
                 seen.add(key)
         if not latest_ids:
             return []
-        return list(self.db.scalars(select(DemandItem).where(DemandItem.order_id.in_(latest_ids))))
+        return list(self.db.scalars(select(DemandItem).where(DemandItem.order_id.in_(latest_ids)).options(joinedload(DemandItem.product))))
 
     def recalculate_after_catalog_change(self, change_type: str = "catalog_updated") -> ProductionPlan | None:
         """Immediately rebuild the active plan after any catalog mutation."""
@@ -265,7 +265,10 @@ class PlanService:
                 ProductionLine.status == "active", Product.active.is_(True), Product.catalog_status == "active",
             ).options(joinedload(LineCapability.line))
         ))
-        capacities = list(self.db.scalars(select(LineCapacity)))
+        capacities = list(self.db.scalars(select(LineCapacity).where(
+            LineCapacity.capacity_date >= plan.horizon_start,
+            LineCapacity.capacity_date <= plan.horizon_end,
+        )))
         # Preserve manually handled splits, including deleted quantities, across reimports.
         handled = defaultdict(lambda: Decimal("0"))
         for item in plan.schedule_items:
@@ -353,10 +356,15 @@ class PlanService:
 
     def recalculate_load(self, plan: ProductionPlan) -> None:
         lines = {line.id: line for line in self.db.scalars(select(ProductionLine))}
+        dated_items = [item for item in plan.schedule_items if item.line_id and item.production_date and not item.excluded]
         capacity_rows = {
             (item.line_id, item.capacity_date, item.shift): Decimal(item.available_hours) if item.available else Decimal("0")
-            for item in self.db.scalars(select(LineCapacity))
-        }
+            for item in self.db.scalars(select(LineCapacity).where(
+                LineCapacity.line_id.in_({item.line_id for item in dated_items}),
+                LineCapacity.capacity_date >= min(item.production_date for item in dated_items),
+                LineCapacity.capacity_date <= max(item.production_date for item in dated_items),
+            ))
+        } if dated_items else {}
         groups: dict[tuple[int, date, str], list[ProductionScheduleItem]] = defaultdict(list)
         for item in plan.schedule_items:
             if item.line_id and item.production_date and not item.excluded:
