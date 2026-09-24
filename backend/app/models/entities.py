@@ -4,7 +4,7 @@ import enum
 from datetime import date, datetime, time
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, Time, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Integer, LargeBinary, Numeric, String, Text, Time, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -199,6 +199,7 @@ class AdvanceConfirmationBatch(Base):
     total_rows: Mapped[int] = mapped_column(Integer, default=0)
     total_quantity_kg: Mapped[Decimal] = mapped_column(Numeric(18, 3), default=0)
     total_actual_kg: Mapped[Decimal] = mapped_column(Numeric(18, 3), default=0)
+    source_workbook: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     created_by: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     items: Mapped[list[AdvanceConfirmationItem]] = relationship(back_populates="batch", cascade="all, delete-orphan")

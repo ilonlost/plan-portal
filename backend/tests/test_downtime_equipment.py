@@ -48,7 +48,7 @@ def test_equipment_query_reports_bad_intervals_without_losing_valid_rows(monkeyp
     assert rows[6]["downtime_type"] == "unknown"
     assert len(rows) == 7
     sql = str(connection.execute.call_args.args[0])
-    assert "EQUIP_START_DATE AS start_at, STOP_DATE AS end_at" in sql
+    assert "STOP_DATE AS start_at, EQUIP_START_DATE AS end_at" in sql
     assert "FIX_STOP_DATE" not in sql
     assert factory.call_args.kwargs["connect_args"]["timeout"] == 15
     engine.dispose.assert_called_once()

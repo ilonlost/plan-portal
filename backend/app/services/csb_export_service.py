@@ -26,6 +26,16 @@ def _integer(value) -> str:
     return format(number.to_integral_value(rounding=ROUND_CEILING), "f")
 
 
+def _decimal(value) -> str:
+    try:
+        number = Decimal(str(value).strip().replace(",", "."))
+    except (InvalidOperation, ValueError):
+        raise ValueError("Количество в килограммах должно быть числом") from None
+    if not number.is_finite() or number < 0:
+        raise ValueError("Количество в килограммах должно быть неотрицательным числом")
+    return format(number.normalize(), "f") if number else "0"
+
+
 def build_csb_text(items: list, destination: str = "ДМД") -> tuple[str, list[int]]:
     """Build the DT0133 records produced by the legacy Excel ExportCSB macro."""
     destination_code = DESTINATION_CODES.get(destination.strip().upper(), destination.strip())
@@ -34,13 +44,8 @@ def build_csb_text(items: list, destination: str = "ДМД") -> tuple[str, list[
     for item in items:
         if item.schedule_kind != "production" or item.excluded or not item.product or not item.line:
             continue
-        quantity = item.source_quantity if item.source_unit == "шт" and item.source_quantity else None
-        if quantity is None:
-            weight = Decimal(item.product.unit_weight_kg or 0)
-            if weight > 0:
-                quantity = Decimal(item.quantity_kg or item.quantity or 0) / weight
-            else:
-                quantity = Decimal(item.quantity_kg or item.quantity or 0)
+        # CSB L1 is the planned weight in kg; keep the exact web-plan amount.
+        quantity = Decimal(item.quantity_kg or item.quantity or 0)
         if not quantity or Decimal(quantity) <= 0 or not item.line.csb_line_code:
             continue
         marking_date = item.marking_date or item.production_date
@@ -50,7 +55,7 @@ def build_csb_text(items: list, destination: str = "ДМД") -> tuple[str, list[
         shift_prefix = "2" if item.shift == "night" else "1"
         sequence = f"{int(item.sequence or 0):03d}"
         fields = [
-            f"L1+{_integer(quantity)}",
+            f"L1+{_decimal(quantity)}",
             f"T1+{item.line.csb_line_code}",
             f"T2+{marking_date.strftime('%Y%m%d')}",
             f"T4+{item.product.sku}",

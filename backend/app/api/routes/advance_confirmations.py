@@ -4,8 +4,9 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 import re
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -185,6 +186,30 @@ def _latest_ohl_order(db: Session) -> ImportedOrder | None:
 def apply_confirmation(
     payload: ApplyRequest, db: Session = Depends(get_db), user: UserContext = Depends(require_planner),
 ) -> dict:
+    return _apply_confirmation(payload, db, user)
+
+
+@router.post("/apply-workbook")
+async def apply_confirmation_workbook(
+    file: UploadFile = File(...), payload: str = Form(...),
+    db: Session = Depends(get_db), user: UserContext = Depends(require_planner),
+) -> dict:
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(422, "Загрузите исходную книгу XLSX или XLSM")
+    content = await file.read(MAX_FILE_SIZE + 1)
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(413, "Размер файла превышает 30 МБ")
+    try:
+        load_workbook(BytesIO(content), read_only=True, data_only=True).close()
+        parsed = ApplyRequest.model_validate_json(payload)
+    except Exception as exc:
+        raise HTTPException(422, "Не удалось проверить исходную книгу или данные подтверждения") from exc
+    return _apply_confirmation(parsed, db, user, content)
+
+
+def _apply_confirmation(
+    payload: ApplyRequest, db: Session, user: UserContext, source_workbook: bytes | None = None,
+) -> dict:
     if not payload.rows:
         raise HTTPException(422, "Нет строк для применения")
     order = _latest_ohl_order(db)
@@ -197,6 +222,7 @@ def apply_confirmation(
         file_name=payload.file_name, marking_date=batch_date, status="applying", total_rows=len(payload.rows),
         total_quantity_kg=sum((row.quantity_kg for row in payload.rows), Decimal("0")),
         total_actual_kg=sum((row.actual_quantity_kg for row in payload.rows), Decimal("0")), created_by=user.username,
+        source_workbook=source_workbook,
     )
     db.add(batch)
     db.flush()
@@ -316,6 +342,40 @@ def export_confirmation(
     batch = db.scalar(select(AdvanceConfirmationBatch).where(AdvanceConfirmationBatch.id == batch_id).options(joinedload(AdvanceConfirmationBatch.items)))
     if not batch:
         raise HTTPException(404, "Корректировка АЗ не найдена")
+    if batch.source_workbook:
+        keep_vba = batch.file_name.lower().endswith(".xlsm")
+        workbook = load_workbook(BytesIO(batch.source_workbook), keep_vba=keep_vba)
+        sheet = workbook.active
+        headers = {_header(cell.value): cell.column for cell in sheet[1] if cell.value is not None}
+        actual_column = headers.get("сколько произвели") or next(
+            (column for heading, column in headers.items() if "произвел" in heading or "факт" in heading), None,
+        )
+        if actual_column is None:
+            actual_column = sheet.max_column + 1
+            sheet.cell(1, actual_column, "Сколько произвели")
+        plan = PlanService(db).active_plan()
+        for item in batch.items:
+            actual = Decimal(item.actual_quantity_kg or 0)
+            if plan and item.demand_item_ids:
+                actual_values = list(db.scalars(select(ProductionScheduleItem.actual_quantity_kg).where(
+                    ProductionScheduleItem.plan_id == plan.id,
+                    ProductionScheduleItem.demand_item_id.in_(item.demand_item_ids),
+                    ProductionScheduleItem.schedule_kind == "production",
+                    ProductionScheduleItem.excluded.is_(False),
+                    ProductionScheduleItem.actual_quantity_kg.is_not(None),
+                )))
+                if actual_values:
+                    actual = sum((Decimal(value) for value in actual_values), Decimal("0"))
+            sheet.cell(item.source_row, actual_column, float(actual))
+        output = BytesIO()
+        workbook.save(output)
+        suffix = ".xlsm" if keep_vba else ".xlsx"
+        content_type = "application/vnd.ms-excel.sheet.macroEnabled.12" if keep_vba else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"Факт_{batch.file_name}"
+        if not filename.lower().endswith(suffix):
+            filename += suffix
+        return Response(output.getvalue(), media_type=content_type,
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Факт выполнения АЗ"

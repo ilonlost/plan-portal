@@ -515,10 +515,12 @@ class PlanService:
 
     def create_event(self, plan: ProductionPlan, values: dict) -> ProductionPlan:
         kind = values["schedule_kind"]
-        if kind not in {"cleaning", "downtime", "maintenance", "trial"}:
-            raise ValueError("Допустимы события: cleaning, downtime, maintenance, trial")
+        if kind not in {"cleaning", "downtime", "maintenance", "trial", "gas", "startup", "changeover"}:
+            raise ValueError("Неизвестный тип события линии")
         start_time = values.get("start_time")
         end_time = values.get("end_time")
+        if (start_time is None) != (end_time is None):
+            raise ValueError("Укажите оба времени или только длительность")
         if start_time is not None and end_time is not None:
             start_at = datetime.combine(values["production_date"], start_time)
             end_at = datetime.combine(values["production_date"], end_time)
@@ -526,7 +528,7 @@ class PlanService:
                 end_at += timedelta(days=1)
             duration_hours = Decimal(str((end_at - start_at).total_seconds() / 3600)).quantize(Decimal("0.01"))
         else:
-            duration_hours = Decimal(values["duration_hours"])
+            duration_hours = Decimal(str(values.get("duration_hours") or 0))
         if duration_hours <= 0 or duration_hours > 24:
             raise ValueError("Интервал события должен быть больше 0 и не больше 24 часов")
         event = ProductionScheduleItem(

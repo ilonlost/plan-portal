@@ -15,7 +15,7 @@ export interface ScheduleItem {
   product_id: number | null; product_name: string; sku: string; quantity: number; required_hours: number;
   load_percent: number; shift: string; source_quantity: number | null; source_unit: string;
   quantity_kg: number | null; quantity_units: number | null; box_count: number | null; batch_count: number | null;
-  schedule_kind: "production" | "cleaning" | "downtime" | "maintenance" | "trial" | "startup" | "changeover" | "restart"; duration_hours: number | null;
+  schedule_kind: "production" | "cleaning" | "downtime" | "maintenance" | "trial" | "startup" | "changeover" | "restart" | "gas"; duration_hours: number | null;
   start_time: string | null; end_time: string | null;
   sort_rank: number | null;
   mono_group: string | null;
@@ -186,6 +186,7 @@ export interface FeedbackData { entries: FeedbackEntry[]; events: FeedbackEvent[
 export interface MailConfiguration {
   enabled: boolean; smtp_host: string; smtp_port: number; smtp_from: string; smtp_from_name: string;
   smtp_reply_to: string; smtp_secure: boolean; smtp_require_tls: boolean; notification_emails: string;
+  event_recipients: Record<string, string>;
   plan_subject: string; plan_intro: string; plan_footer: string; accent_color: string; button_label: string;
 }
 export interface CsbRun {

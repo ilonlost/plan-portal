@@ -53,6 +53,11 @@ class ManualTaskCreate(BaseModel):
     source_kind: str = "generic"
 
 
+class BulkDeleteRequest(BaseModel):
+    start_date: date
+    end_date: date
+
+
 @router.get("/active")
 def active_plan(db: Session = Depends(get_db), user: UserContext = Depends(current_user)) -> dict:
     plan = PlanService(db).active_plan()
@@ -143,6 +148,7 @@ def update_item(plan_id: int, item_id: int, payload: ScheduleItemUpdate, db: Ses
         raise HTTPException(422, str(exc)) from exc
     db.add(AuditEvent(username=user.username, action="schedule_item_updated", entity_type="schedule_item", entity_id=str(item.id), details=payload.model_dump(mode="json", exclude_unset=True)))
     db.commit()
+    send_notification(db, "schedule_item_updated", f"PLAN Portal: задание изменено · {item.product.name if item.product else item.schedule_kind}", f"Пользователь {user.display_name} изменил задание {item.id} в плане «{plan.name}».\nЛиния: {item.line.name if item.line else '—'}; дата: {item.production_date or 'не назначена'}.")
     return plan_dict(db, plan)
 
 
@@ -161,6 +167,7 @@ def create_manual_task(plan_id: int, payload: ManualTaskCreate, db: Session = De
         raise HTTPException(422, str(exc)) from exc
     db.add(AuditEvent(username=user.username, action="manual_task_created", entity_type="production_plan", entity_id=str(plan.id), details=payload.model_dump(mode="json")))
     db.commit()
+    send_notification(db, "manual_task_created", "PLAN Portal: добавлено ручное задание", f"Пользователь {user.display_name} добавил ручное задание в план «{plan.name}». SKU: {payload.product_id}; линия: {payload.line_id}; дата: {payload.production_date}; объём: {payload.quantity} кг.")
     return plan_dict(db, plan)
 
 
@@ -175,6 +182,7 @@ def create_event(plan_id: int, payload: ScheduleEventCreate, db: Session = Depen
         raise HTTPException(422, str(exc)) from exc
     db.add(AuditEvent(username=user.username, action="schedule_event_created", entity_type="production_plan", entity_id=str(plan.id), details=payload.model_dump(mode="json")))
     db.commit()
+    send_notification(db, "schedule_event_created", f"PLAN Portal: событие линии · {payload.schedule_kind}", f"Пользователь {user.display_name} добавил событие «{payload.schedule_kind}» в план «{plan.name}». Линия: {payload.line_id}; дата: {payload.production_date}; время: {payload.start_time or 'по длительности'}–{payload.end_time or ''}; длительность: {payload.duration_hours or '—'} ч; причина: {payload.reason or '—'}.")
     return plan_dict(db, plan)
 
 
@@ -189,7 +197,36 @@ def delete_item(plan_id: int, item_id: int, db: Session = Depends(get_db), user:
     plan = PlanService(db).delete_item(item)
     db.add(AuditEvent(username=user.username, action="schedule_item_deleted", entity_type="schedule_item", entity_id=str(deleted_id), details={"plan_id": plan_id}))
     db.commit()
+    send_notification(db, "schedule_item_deleted", "PLAN Portal: задание исключено", f"Пользователь {user.display_name} исключил задание {deleted_id} из плана «{plan.name}».")
     return plan_dict(db, plan)
+
+
+@router.post("/{plan_id}/bulk-delete-items", dependencies=[Depends(writable_plan)])
+def bulk_delete_items(plan_id: int, payload: BulkDeleteRequest, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
+    if payload.end_date < payload.start_date or (payload.end_date - payload.start_date).days > 92:
+        raise HTTPException(422, "Выберите корректный диапазон не более 93 дней")
+    plan = db.get(ProductionPlan, plan_id)
+    rows = list(db.scalars(select(ProductionScheduleItem).where(
+        ProductionScheduleItem.plan_id == plan_id,
+        ProductionScheduleItem.production_date >= payload.start_date,
+        ProductionScheduleItem.production_date <= payload.end_date,
+        ProductionScheduleItem.schedule_kind == "production",
+        ProductionScheduleItem.excluded.is_(False),
+    )))
+    if not rows:
+        return {"ok": True, "deleted_count": 0}
+    for item in rows:
+        item.excluded = True
+        item.source = "manual"
+        item.locked = True
+    service = PlanService(db)
+    service.refresh_sequence_and_cleanings(plan)
+    service.recalculate_load(plan)
+    service.create_version(plan, "bulk_schedule_items_deleted", f"Массово исключено заданий: {len(rows)} · {payload.start_date}—{payload.end_date}")
+    db.add(AuditEvent(username=user.username, action="schedule_items_bulk_deleted", entity_type="production_plan", entity_id=str(plan_id), details={"count": len(rows), "start_date": payload.start_date.isoformat(), "end_date": payload.end_date.isoformat(), "item_ids": [item.id for item in rows]}))
+    db.commit()
+    send_notification(db, "schedule_items_bulk_deleted", "PLAN Portal: задания исключены за период", f"Пользователь {user.display_name} исключил {len(rows)} заданий из плана «{plan.name}» за период {payload.start_date} — {payload.end_date}.")
+    return {"ok": True, "deleted_count": len(rows)}
 
 
 @router.post("/{plan_id}/approve", dependencies=[Depends(writable_plan)])

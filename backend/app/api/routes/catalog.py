@@ -14,6 +14,7 @@ from app.core.security import UserContext, current_user, require_planner
 from app.db.session import get_db
 from app.models.entities import AuditEvent, ImportedOrder, LineCapability, Product, ProductionLine
 from app.services.catalog_workbook_service import export_catalog, import_catalog
+from app.services.notification_service import send_notification
 
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
@@ -246,6 +247,7 @@ def create_product(
     db.add(AuditEvent(username=user.username, action="product_created", entity_type="product", entity_id=str(product.id), details={"sku": product.sku}))
     recalculated = _recalculate_active_plan(db)
     db.commit()
+    send_notification(db, "catalog_product_created", f"PLAN Portal: создан артикул {product.sku}", f"{user.display_name} создал артикул {product.sku} · {product.name}. Пересчёт плана: {'выполнен' if recalculated else 'не требовался'}.")
     return {"ok": True, "product_id": product.id, "capability_id": capability.id if capability else None, "plan_recalculated": recalculated}
 
 
@@ -266,6 +268,7 @@ def update_product(
     db.add(AuditEvent(username=user.username, action="product_updated", entity_type="product", entity_id=str(product.id), details=payload.model_dump(mode="json", exclude_unset=True)))
     recalculated = _recalculate_active_plan(db)
     db.commit()
+    send_notification(db, "catalog_product_updated", f"PLAN Portal: изменён артикул {product.sku}", f"{user.display_name} изменил параметры артикула {product.sku} · {product.name}. Поля: {', '.join(payload.model_dump(exclude_unset=True))}. Пересчёт плана: {'выполнен' if recalculated else 'не требовался'}.")
     return {"ok": True, "product_id": product.id, "capability_id": capability.id if capability else None, "plan_recalculated": recalculated}
 
 
@@ -288,6 +291,7 @@ def update_product_status(
     db.add(AuditEvent(username=user.username, action=f"product_{status}", entity_type="product", entity_id=str(product.id), details={"sku": product.sku}))
     recalculated = _recalculate_active_plan(db)
     db.commit()
+    send_notification(db, f"catalog_product_{status}", f"PLAN Portal: артикул {product.sku} {('заблокирован' if status == 'blocked' else 'активирован')}", f"{user.display_name} изменил статус артикула {product.sku}. Пересчёт плана: {'выполнен' if recalculated else 'не требовался'}.")
     return {"ok": True, "status": status, "plan_recalculated": recalculated}
 
 
@@ -303,6 +307,7 @@ def delete_product(
     db.add(AuditEvent(username=user.username, action="product_deleted", entity_type="product", entity_id=str(product.id), details={"sku": product.sku, "mode": "soft_delete"}))
     recalculated = _recalculate_active_plan(db)
     db.commit()
+    send_notification(db, "catalog_product_deleted", f"PLAN Portal: артикул {product.sku} удалён", f"{user.display_name} исключил артикул {product.sku} из справочника. Пересчёт плана: {'выполнен' if recalculated else 'не требовался'}.")
     return {"ok": True, "deleted": True, "plan_recalculated": recalculated}
 
 
@@ -409,6 +414,7 @@ async def upload_catalog(
     db.add(AuditEvent(username=user.username, action="catalog_imported", entity_type="catalog", details={**result, "file_name": file.filename}))
     result["plan_recalculated"] = _recalculate_active_plan(db)
     db.commit()
+    send_notification(db, "catalog_imported", "PLAN Portal: справочник обновлён из Excel", f"{user.display_name} загрузил справочник {file.filename}. Обновлено строк: {result.get('updated', 0)}; добавлено: {result.get('created', 0)}.")
     return {"ok": True, **result}
 
 
@@ -452,6 +458,7 @@ def update_capability(
     db.flush()
     recalculated = _recalculate_active_plan(db)
     db.commit()
+    send_notification(db, "production_parameters_updated", f"PLAN Portal: изменены параметры SKU {capability.product.sku}", f"{user.display_name} изменил скорость, квант или другие параметры SKU {capability.product.sku} на линии {capability.line.name}. Поля: {', '.join(payload.model_dump(exclude_unset=True))}. Пересчёт плана: {'выполнен' if recalculated else 'не требовался'}.")
     return {"ok": True, "capability_id": capability.id, "plan_recalculated": recalculated}
 
 

@@ -72,6 +72,7 @@ export const api = {
     method: "PATCH", headers: { "Content-Type": "application/json", ...(version == null ? {} : { "If-Match": String(version) }) }, body: JSON.stringify(data),
   }),
   deleteItem: (planId: number, itemId: number, version: number) => request<PlanData>(`/plans/${planId}/items/${itemId}`, { method: "DELETE", headers: { "If-Match": String(version) } }),
+  bulkDeleteItems: (planId: number, start_date: string, end_date: string, version: number) => request<{ ok: boolean; deleted_count: number }>(`/plans/${planId}/bulk-delete-items`, { method: "POST", headers: { "Content-Type": "application/json", "If-Match": String(version) }, body: JSON.stringify({ start_date, end_date }) }),
   updateExecution: (planId: number, itemId: number, status: string, note?: string, version?: number) => request<PlanData>(`/plans/${planId}/items/${itemId}/execution-status`, {
     method: "PATCH", headers: { "Content-Type": "application/json", ...(version == null ? {} : { "If-Match": String(version) }) }, body: JSON.stringify({ status, note }),
   }),
@@ -114,9 +115,10 @@ export const api = {
     const data = new FormData(); data.append("file", file);
     return request<AdvanceConfirmationPreview>("/advance-confirmations/preview", { method: "POST", body: data });
   },
-  applyAdvanceConfirmation: (preview: AdvanceConfirmationPreview) => request<{ ok: boolean; batch_id: number; plan_id: number; plan_recalculated: boolean; rows: number }>("/advance-confirmations/apply", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file_name: preview.file_name, rows: preview.rows }),
-  }),
+  applyAdvanceConfirmation: (preview: AdvanceConfirmationPreview, file: File) => {
+    const data = new FormData(); data.append("file", file); data.append("payload", JSON.stringify({ file_name: preview.file_name, rows: preview.rows }));
+    return request<{ ok: boolean; batch_id: number; plan_id: number; plan_recalculated: boolean; rows: number }>("/advance-confirmations/apply-workbook", { method: "POST", body: data });
+  },
   advanceConfirmationHistory: () => request<AdvanceConfirmationBatch[]>("/advance-confirmations"),
   advanceConfirmationExportUrl: (batchId: number) => `${API}/advance-confirmations/${batchId}/export.xlsx`,
   deleteUserAccess: (userId: number) => request<{ ok: boolean }>(`/admin/users/${userId}`, { method: "DELETE" }),

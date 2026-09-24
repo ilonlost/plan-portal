@@ -13,6 +13,7 @@ from app.services.line_schedule_service import DEFAULT_ANCHOR, SCHEDULE_LABELS, 
 from app.services.plan_service import PlanService
 from app.services.downtime_service import load_downtimes, resolve_downtime_line
 from app.services.settings_service import get_portal_configuration
+from app.services.notification_service import send_notification
 
 router = APIRouter(prefix="/lines", tags=["lines"])
 
@@ -110,6 +111,7 @@ def save_line_comment(
         if row:
             db.delete(row)
         db.commit()
+        send_notification(db, "line_comment_updated", f"PLAN Portal: комментарий мастера удалён · {line.name}", f"{user.display_name} удалил комментарий по линии {line.name} за {comment_date}.")
         return {"ok": True, "comment": None}
     if not row:
         row = LineComment(line_id=line_id, comment_date=comment_date, text=clean, author_username=user.username, author_name=user.display_name)
@@ -118,6 +120,7 @@ def save_line_comment(
         row.text, row.author_username, row.author_name, row.updated_at = clean, user.username, user.display_name, datetime.now(timezone.utc)
     db.add(AuditEvent(username=user.username, action="line_comment_updated", entity_type="production_line", entity_id=str(line_id), details={"date": comment_date.isoformat()}))
     db.commit(); db.refresh(row)
+    send_notification(db, "line_comment_updated", f"PLAN Portal: комментарий мастера · {line.name}", f"{user.display_name}, линия {line.name}, {comment_date}:\n{clean}")
     return {"ok": True, "comment": {"id": row.id, "line_id": row.line_id, "date": row.comment_date, "text": row.text, "author_name": row.author_name, "updated_at": row.updated_at}}
 
 
@@ -390,4 +393,5 @@ def update_line_schedule(
         details={"schedule_code": line.schedule_code, "template_id": line.schedule_template_id, "anchor_date": payload.anchor_date.isoformat(), "manual_days": len(payload.slots), "planning_settings": next_settings, "plan_recalculated": recalculated},
     ))
     db.commit()
+    send_notification(db, "line_schedule_updated", f"PLAN Portal: изменены настройки линии {line.name}", f"{user.display_name} изменил график, мощность или параметры планирования линии {line.name}. Пересчёт плана: {'выполнен' if recalculated else 'не требовался'}.")
     return {"ok": True, "line_id": line.id, "plan_recalculated": recalculated}

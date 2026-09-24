@@ -59,6 +59,7 @@ def default_mail_configuration() -> dict:
         "smtp_secure": settings.smtp_secure,
         "smtp_require_tls": settings.smtp_require_tls,
         "notification_emails": settings.notification_emails,
+        "event_recipients": {"it": "", "planning": "", "production_management": ""},
         "plan_subject": "План производства ФК · {start} — {end}",
         "plan_intro": "Коллеги, направляем согласованный производственный план ФК.",
         "plan_footer": "Автоматическое уведомление PLAN PORTAL · agrohold.ru",

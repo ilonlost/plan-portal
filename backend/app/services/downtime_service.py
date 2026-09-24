@@ -15,19 +15,19 @@ WHERE start_at < :end_at AND COALESCE(end_at, :end_at) > :start_at
 ORDER BY start_at
 """
 
-# Field direction explicitly specified by the owner of the EQUIPMENT source.
-# Do not silently swap reversed dates or treat repair completion as restart.
+# The ERP's stop timestamp marks the start, while equipment-start marks the
+# end of the recorded interruption. Keep the mapped names explicit here.
 EQUIPMENT_QUERY = """
 SELECT RN AS id, SEQNAME AS line_name, SDEPNAME AS workshop_name,
-       EQUIP_START_DATE AS start_at, STOP_DATE AS end_at,
+       STOP_DATE AS start_at, EQUIP_START_DATE AS end_at,
        SSTOP_TYPE AS downtime_type,
        COALESCE(NULLIF(CONVERT(nvarchar(max), SSTOP_REASON), N''),
                 NULLIF(CONVERT(nvarchar(max), STOP_NOTE), N''), N'Причина не указана') AS reason
 FROM EQUIPMENT.dbo.EQUIPMENT_STOP
-WHERE (EQUIP_START_DATE < :end_at AND (STOP_DATE > :start_at OR STOP_DATE IS NULL))
-   OR (EQUIP_START_DATE >= :start_at AND EQUIP_START_DATE < :end_at)
-   OR (EQUIP_START_DATE IS NULL AND STOP_DATE >= :start_at AND STOP_DATE < :end_at)
-ORDER BY EQUIP_START_DATE, RN
+WHERE (STOP_DATE < :end_at AND (EQUIP_START_DATE > :start_at OR EQUIP_START_DATE IS NULL))
+   OR (STOP_DATE >= :start_at AND STOP_DATE < :end_at)
+   OR (STOP_DATE IS NULL AND EQUIP_START_DATE >= :start_at AND EQUIP_START_DATE < :end_at)
+ORDER BY STOP_DATE, RN
 """
 
 

@@ -157,7 +157,7 @@ def update_mail_configuration(
     allowed = {
         "enabled", "smtp_host", "smtp_port", "smtp_from", "smtp_from_name", "smtp_reply_to",
         "smtp_secure", "smtp_require_tls", "notification_emails", "plan_subject", "plan_intro",
-        "plan_footer", "accent_color", "button_label",
+        "plan_footer", "accent_color", "button_label", "event_recipients",
     }
     values = {key: value for key, value in payload.configuration.items() if key in allowed}
     if not str(values.get("smtp_host") or "").strip():
@@ -169,11 +169,20 @@ def update_mail_configuration(
     if port < 1 or port > 65535:
         raise HTTPException(422, "Порт SMTP должен быть от 1 до 65535")
     values["smtp_port"] = port
+    if "event_recipients" in values:
+        recipients = values["event_recipients"]
+        if not isinstance(recipients, dict):
+            raise HTTPException(422, "Получатели по группам должны быть объектом")
+        values["event_recipients"] = {
+            group: str(recipients.get(group) or "").strip()[:2000]
+            for group in ("it", "planning", "production_management")
+        }
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", str(values.get("accent_color") or "")):
         raise HTTPException(422, "Цвет письма должен быть в формате #c8102e")
     configuration = save_mail_configuration(db, values, user.username)
     db.add(AuditEvent(username=user.username, action="mail_configuration_updated", entity_type="portal_setting", entity_id="mail_configuration", details={"enabled": configuration["enabled"], "smtp_host": configuration["smtp_host"]}))
     db.commit()
+    send_notification(db, "mail_configuration_updated", "PLAN Portal: изменены настройки почты", f"Администратор {user.display_name} изменил настройки почтового контура.")
     return {"ok": True, "configuration": configuration}
 
 
@@ -201,6 +210,7 @@ def update_portal_configuration(
     }, user.username)
     db.add(AuditEvent(username=user.username, action="portal_configuration_updated", entity_type="portal_setting", entity_id="portal_configuration", details=configuration))
     db.commit()
+    send_notification(db, "portal_configuration_updated", "PLAN Portal: изменены настройки разделов", f"Администратор {user.display_name} изменил видимость разделов или параметры потерь от простоев.")
     return {"ok": True, "configuration": configuration}
 
 
@@ -266,6 +276,7 @@ def update_user_access(
     details = {"target": target.username, "role": role, "line": None, "active": target.active, "section_permissions": target.section_permissions}
     db.add(AuditEvent(username=user.username, action="user_access_updated", entity_type="user", entity_id=str(target.id), details=details))
     db.commit()
+    send_notification(db, "user_access_updated", f"PLAN Portal: изменён доступ пользователя {target.username}", f"Администратор {user.display_name} изменил роль, доступ или разрешения сотрудника {target.username}.")
     return {"ok": True, **details}
 
 
@@ -298,6 +309,7 @@ def create_user_access(
     details = {"target": target.username, "role": target.role, "line": target.line_name, "active": target.active}
     db.add(AuditEvent(username=user.username, action="user_access_created", entity_type="user", entity_id=str(target.id), details=details))
     db.commit()
+    send_notification(db, "user_access_created", f"PLAN Portal: добавлен пользователь {target.username}", f"Администратор {user.display_name} добавил пользователя {target.username} с ролью {target.role}.")
     return {"ok": True, "id": target.id, **details}
 
 
@@ -324,6 +336,7 @@ def delete_user_access(
     db.add(AuditEvent(username=user.username, action="user_access_deleted", entity_type="user", entity_id=str(target.id), details=details))
     db.delete(target)
     db.commit()
+    send_notification(db, "user_access_deleted", f"PLAN Portal: удалён пользователь {details['target']}", f"Администратор {user.display_name} удалил пользователя {details['target']}.")
     return {"ok": True, **details}
 
 

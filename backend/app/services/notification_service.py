@@ -199,7 +199,10 @@ def send_notification(
     attachments: list[tuple[str, bytes, str]] | None = None,
 ) -> NotificationLog:
     configuration = get_mail_configuration(db)
-    recipients = _recipients({} if exact_recipients else configuration, extra_recipients)
+    event_group = _notification_group(event_type)
+    event_addresses = (configuration.get("event_recipients") or {}).get(event_group, "") if event_group else ""
+    recipient_source = {"notification_emails": event_addresses or ("" if exact_recipients else configuration.get("notification_emails", ""))}
+    recipients = _recipients(recipient_source, extra_recipients)
     log = NotificationLog(event_type=event_type, recipients=recipients, subject=subject, status="pending")
     db.add(log)
     db.flush()
@@ -230,3 +233,13 @@ def send_notification(
         log.status = "failed"; log.error = str(exc)[:2000]
     db.commit()
     return log
+
+
+def _notification_group(event_type: str) -> str | None:
+    if event_type.startswith(("feedback_", "user_access_", "mail_configuration_", "portal_configuration_", "integration_", "notification_")) or event_type in {"plan_data_deleted", "csb_export_failed"}:
+        return "it"
+    if event_type.startswith(("schedule_item_", "schedule_items_", "manual_task_", "schedule_event_", "execution_status_", "line_comment_")) or event_type in {"plan_approved", "advance_confirmation_applied", "shipment_deviation"}:
+        return "planning"
+    if event_type.startswith(("catalog_", "line_schedule_", "reference_", "plan_imported", "csb_")) or event_type in {"capacity_updated", "production_parameters_updated"}:
+        return "production_management"
+    return None

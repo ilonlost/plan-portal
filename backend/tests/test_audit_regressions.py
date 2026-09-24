@@ -4,6 +4,7 @@ from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 import asyncio
+import json
 
 import pytest
 from fastapi import FastAPI, UploadFile
@@ -191,7 +192,9 @@ def test_advance_confirmation_preview_apply_and_fact_export(client, db):
     assert preview["rows"][0]["line_name"] == "Сэндвичи"
     assert Decimal(str(preview["rows"][0]["quantity_kg"])) == Decimal("75.5")
 
-    response = client.post("/advance-confirmations/apply", json={"file_name": preview["file_name"], "rows": preview["rows"]})
+    response = client.post("/advance-confirmations/apply-workbook", files={
+        "file": (preview["file_name"], content.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    }, data={"payload": json.dumps({"file_name": preview["file_name"], "rows": preview["rows"]})})
     assert response.status_code == 200, response.text
     assert response.json()["plan_recalculated"] is True
     db.refresh(demand)
@@ -206,7 +209,8 @@ def test_advance_confirmation_preview_apply_and_fact_export(client, db):
     assert exported.status_code == 200
     fact = load_workbook(BytesIO(exported.content), read_only=True, data_only=True)
     assert fact.active["A2"].value == "101"
-    assert fact.active["I2"].value == 72
+    assert fact.active["B2"].value == 75.5
+    assert fact.active["C2"].value == 72
 
 
 def test_pc_auto_wash_can_be_removed_without_deleting_production(db):
