@@ -218,7 +218,8 @@ export default function App() {
         {sectionVisible(user, "sources") && <Nav active={page === "sources"} icon="◫" label="Источники данных" onClick={() => setPage("sources")} />}
         {sectionVisible(user, "feedback") && <Nav active={page === "feedback"} icon="✎" label="Обратная связь" onClick={() => setPage("feedback")} />}
         {sectionVisible(user, "fact") && <Nav active={page === "fact"} icon="◷" label="Факт производства" onClick={() => setPage("fact")} />}
-        {user.role === "admin" && <a className="portal-return nav-return" href="/?view=admin&module=planning"><i>⚙</i> Администрирование</a>}
+        {user.role === "admin" && <Nav active={page === "admin"} icon="⚙" label="Администрирование планирования" onClick={() => setPage("admin")} />}
+        {user.role === "admin" && <a className="portal-return nav-return" href="/?view=admin&module=planning"><i>↗</i> Права ART PORTAL</a>}
       </nav>
       <div className="sidebar-tip"><span>?</span><b>Нужна помощь?</b><small>Инструкция, роли и выгрузки</small><button onClick={() => setHelpOpen(true)}>Открыть инструкцию</button>{sectionVisible(user, "feedback") && <button onClick={() => setPage("feedback")}>Написать в ИТ</button>}</div>
       <div className="user-card"><span>{initials(user.display_name)}</span><div><b>{user.display_name}</b><small>{user.access_label}{user.line_name ? ` · ${user.line_name}` : ""}</small></div><button title="Выйти" onClick={() => void logout()}>↪</button></div>
