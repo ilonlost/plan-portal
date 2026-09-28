@@ -219,7 +219,7 @@ export default function App() {
 
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="brand"><span>A</span><div><b>ART PORTAL</b><small>ГОТОВНОСТЬ АРТИКУЛОВ · v0.3.3</small></div></div>
+      <div className="brand"><span>A</span><div><b>ART PORTAL</b><small>ПЛАНИРОВАНИЕ ПРОИЗВОДСТВА</small></div></div>
       <nav>
         {sectionVisible(user, "plan") && <Nav active={page === "plan"} icon="▦" label="План производства" onClick={() => setPage("plan")} />}
         {sectionVisible(user, "catalog") && <Nav active={page === "catalog"} icon="≡" label="Справочник" onClick={() => setPage("catalog")} />}
