@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth_service import authenticate_ldap
 from app.core.config import settings
-from app.core.security import LOCAL_USER_MARKER, UserContext, configured_local_users, create_session_token, current_user, user_sections
+from app.core.security import LOCAL_USER_MARKER, UserContext, configured_local_users, create_session_token, current_user, parse_art_portal_handoff, user_sections
 from app.db.session import get_db
 from app.models.entities import AuthAuditEvent, User
 
@@ -20,6 +20,10 @@ router = APIRouter(prefix="/session", tags=["session"])
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class ArtPortalHandoff(BaseModel):
+    handoff_token: str
 
 
 def _integration_authorized(request: Request) -> bool:
@@ -116,28 +120,15 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
 
 
 @router.post("/art-portal")
-def exchange_art_portal_session(request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
-    """Create a PLAN cookie after ART validates its own HTTP-only cookie."""
+def exchange_art_portal_session(payload: ArtPortalHandoff, response: Response, db: Session = Depends(get_db)) -> dict:
+    """Create a PLAN cookie from ART's short-lived signed browser handoff."""
     if not settings.art_portal_sso_required:
         raise HTTPException(404, "Единый вход не включён")
     if not settings.art_portal_url or not settings.art_portal_integration_token:
         raise HTTPException(503, "Единый вход PLAN PORTAL не настроен")
-    try:
-        result = httpx.get(
-            f"{settings.art_portal_url.rstrip('/')}/api/integrations/plan/session",
-            headers={"x-portal-integration-key": settings.art_portal_integration_token, "cookie": request.headers.get("cookie", "")},
-            timeout=4.0,
-        )
-    except httpx.HTTPError as exc:
-        raise HTTPException(503, "ART PORTAL временно недоступен") from exc
-    if result.status_code in {401, 403}:
-        raise HTTPException(401, "Войдите в ART PORTAL или запросите доступ к планированию")
-    if result.status_code != 200:
-        raise HTTPException(503, "Не удалось подтвердить вход через ART PORTAL")
-    body = result.json().get("user") or {}
-    identity = UserContext(str(body.get("username") or ""), str(body.get("display_name") or ""), str(body.get("role") or "viewer"), str(body.get("email") or ""))
-    if not identity.username:
-        raise HTTPException(503, "ART PORTAL вернул неполный профиль")
+    identity = parse_art_portal_handoff(payload.handoff_token)
+    if not identity:
+        raise HTTPException(401, "Войдите в ART PORTAL и повторите переход в планирование")
     user = _upsert_art_user(identity, db)
     response.set_cookie(settings.session_cookie_name, create_session_token(user), max_age=settings.session_max_age_seconds, httponly=True, secure=settings.session_cookie_secure, samesite=settings.session_cookie_samesite.lower(), path="/")
     return {"user": _user_dict(user, db), "auth_mode": "art_portal_sso"}

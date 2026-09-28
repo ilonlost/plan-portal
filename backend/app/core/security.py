@@ -119,6 +119,45 @@ def create_session_token(user: UserContext) -> str:
 def parse_session_token(token: str | None) -> UserContext | None:
     if not token or "." not in token:
         return None
+    encoded, signature = token.rsplit(".", 1)
+    expected = _encode(hmac.new(settings.session_secret.encode(), encoded.encode(), hashlib.sha256).digest())
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        payload = json.loads(_decode(encoded))
+        if not settings.local_auth_enabled and payload.get("auth_method") != "ldap":
+            return None
+        if int(payload.get("exp", 0)) < int(time.time()):
+            return None
+        return UserContext(
+            username=payload["username"], display_name=payload["display_name"], role=payload["role"],
+            email=payload.get("email", ""), workshop_code=payload.get("workshop_code"), line_name=payload.get("line_name"),
+        )
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def parse_art_portal_handoff(token: str | None) -> UserContext | None:
+    """Validate the short-lived ART assertion used to establish a PLAN session."""
+    if not token or "." not in token or not settings.art_portal_integration_token:
+        return None
+    encoded, signature = token.rsplit(".", 1)
+    expected = _encode(hmac.new(settings.art_portal_integration_token.encode(), encoded.encode(), hashlib.sha256).digest())
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        payload = json.loads(_decode(encoded))
+        if payload.get("aud") != "plan-portal" or int(payload.get("exp", 0)) < int(time.time()):
+            return None
+        role = str(payload["role"])
+        if role not in {"admin", "planner", "viewer"}:
+            return None
+        return UserContext(
+            username=str(payload["username"]), display_name=str(payload["display_name"]),
+            role=role, email=str(payload.get("email") or ""),
+        )
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
 
 
 def art_portal_identity(request: Request) -> UserContext | None:
@@ -149,22 +188,6 @@ def art_portal_identity(request: Request) -> UserContext | None:
         return UserContext(str(body["username"]), str(body["display_name"]), str(body["role"]), str(body.get("email") or ""))
     except KeyError as exc:
         raise HTTPException(503, "ART PORTAL вернул неполный профиль единого входа") from exc
-    encoded, signature = token.rsplit(".", 1)
-    expected = _encode(hmac.new(settings.session_secret.encode(), encoded.encode(), hashlib.sha256).digest())
-    if not hmac.compare_digest(signature, expected):
-        return None
-    try:
-        payload = json.loads(_decode(encoded))
-        if not settings.local_auth_enabled and payload.get("auth_method") != "ldap":
-            return None
-        if int(payload.get("exp", 0)) < int(time.time()):
-            return None
-        return UserContext(
-            username=payload["username"], display_name=payload["display_name"], role=payload["role"],
-            email=payload.get("email", ""), workshop_code=payload.get("workshop_code"), line_name=payload.get("line_name"),
-        )
-    except (ValueError, KeyError, json.JSONDecodeError):
-        return None
 
 
 def current_user(
@@ -173,9 +196,10 @@ def current_user(
     user = parse_session_token(request.cookies.get(settings.session_cookie_name))
     if not user:
         raise HTTPException(401, "Требуется вход в систему")
-    art_identity = art_portal_identity(request)
-    if settings.art_portal_sso_required and not art_identity:
-        raise HTTPException(401, "Требуется вход через ART PORTAL")
+    # ART confirms identity once while issuing this signed PLAN session.  Do not
+    # re-forward ART's cookie on every request: a proxy may omit it for /plan/.
+    # ART logout explicitly clears the PLAN cookie on the shared host.
+    art_identity = None
     if art_identity and art_identity.username.lower() != user.username.lower():
         raise HTTPException(401, "Сессии порталов относятся к разным пользователям")
     stored = db.scalar(select(User).where(User.username == user.username))

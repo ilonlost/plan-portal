@@ -33,7 +33,17 @@ const feedbackStatusLabels: Record<string, string> = { new: "Новое", in_pro
 
 async function exchangeArtPortalSession(): Promise<UserProfile> {
   const base = import.meta.env.VITE_API_URL || "/api";
-  const response = await fetch(`${base}/session/art-portal`, { method: "POST", credentials: "include" });
+  const handoff = await fetch("/api/integrations/plan/session", { method: "POST", credentials: "include" });
+  if (!handoff.ok) {
+    const body = await handoff.json().catch(() => ({ error: "Не удалось подтвердить вход в ART PORTAL" }));
+    throw new ApiError(typeof body.error === "string" ? body.error : "Не удалось подтвердить вход в ART PORTAL", handoff.status);
+  }
+  const { handoff_token } = await handoff.json() as { handoff_token?: string };
+  if (!handoff_token) throw new ApiError("ART PORTAL не выдал билет для входа", 503);
+  const response = await fetch(`${base}/session/art-portal`, {
+    method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ handoff_token }),
+  });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: "Не удалось войти через ART PORTAL" }));
     throw new ApiError(typeof body.detail === "string" ? body.detail : "Не удалось войти через ART PORTAL", response.status);
