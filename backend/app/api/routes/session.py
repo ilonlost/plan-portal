@@ -156,4 +156,6 @@ def me(user: UserContext = Depends(current_user), db: Session = Depends(get_db))
 
 @router.get("/mode")
 def mode() -> dict:
+    if settings.art_portal_sso_required:
+        return {"auth_mode": "art_portal_sso"}
     return {"auth_mode": "local" if settings.local_auth_enabled else "ldap"}

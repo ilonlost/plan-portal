@@ -273,6 +273,12 @@ export default function App() {
 }
 
 function Login({ mode, error, onLogin }: { mode: SessionMode | null; error: string | null; onLogin: (u: string, p: string) => Promise<void> }) {
+  if (mode?.auth_mode === "art_portal_sso") return <div className="login-page"><div className="login-brand"><span>PP</span><b>PLAN PORTAL</b></div><div className="login-card">
+    <small>ЕДИНЫЙ ВХОД</small><h1>Войдите через ART PORTAL</h1><p>Планирование производства открывается по вашей корпоративной сессии ART PORTAL. Повторный ввод логина и пароля не требуется.</p>
+    {error && <div className="inline-error">{error}</div>}
+    <a className="button primary wide" href="/">Перейти в ART PORTAL</a>
+    <footer>После входа откройте раздел «Планирование производства».</footer>
+  </div></div>;
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
