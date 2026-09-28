@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     session_max_age_seconds: int = 28800
     session_cookie_secure: bool = False
     session_cookie_samesite: str = "Lax"
+    art_portal_url: str = ""
+    art_portal_integration_token: str = ""
+    art_portal_session_cookie_name: str = "art_portal_session"
+    art_portal_sso_required: bool = False
     local_auth_users_json: str = ""
     ldap_server_url: str = ""
     ldap_server: str = ""

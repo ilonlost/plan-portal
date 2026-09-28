@@ -2,7 +2,9 @@ from collections import defaultdict
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends
+import hmac
+from fastapi import APIRouter, Depends, HTTPException, Request
+from app.core.config import settings
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,6 +14,13 @@ from app.models.entities import ProductionLine, ProductionScheduleItem, Schedule
 from app.services.plan_service import PlanService
 
 router = APIRouter(tags=["dashboard"])
+
+
+def integration_access(request: Request) -> None:
+    expected = settings.art_portal_integration_token
+    received = request.headers.get("x-portal-integration-key", "")
+    if not expected or len(expected) != len(received) or not hmac.compare_digest(expected, received):
+        raise HTTPException(401, "Интеграция не авторизована")
 
 
 @router.get("/health")
@@ -53,3 +62,16 @@ def dashboard(db: Session = Depends(get_db), user: UserContext = Depends(current
         } for line in lines],
         "problem_dates": [{"date": key, "count": value} for key, value in sorted(problems.items())[:5]],
     }
+
+
+@router.get("/integration/summary")
+def integration_summary(request: Request, db: Session = Depends(get_db)) -> dict:
+    """Small, read-only contract consumed by the ART home card."""
+    integration_access(request)
+    plan = PlanService(db).active_plan()
+    if not plan:
+        return {"state": "empty", "active_plan": None, "metrics": {}}
+    items = list(db.scalars(select(ProductionScheduleItem).where(ProductionScheduleItem.plan_id == plan.id)))
+    placed = [item for item in items if item.line_id]
+    average_load = sum((Decimal(item.load_percent) for item in placed), Decimal("0")) / max(1, len(placed))
+    return {"state": "ready", "active_plan": {"name": plan.name, "status": plan.status.value, "updated_at": plan.updated_at}, "metrics": {"positions": len(items), "capacity_load": round(float(average_load), 1), "unscheduled": sum(item.status == ScheduleStatus.UNSCHEDULED for item in items), "conflicts": sum(item.status == ScheduleStatus.CONFLICT for item in items)}}

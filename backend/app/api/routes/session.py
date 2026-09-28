@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import hmac
+import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -21,6 +22,25 @@ class LoginRequest(BaseModel):
     password: str
 
 
+def _integration_authorized(request: Request) -> bool:
+    expected = settings.art_portal_integration_token
+    received = request.headers.get("x-portal-integration-key", "")
+    return bool(expected and len(expected) == len(received) and hmac.compare_digest(expected, received))
+
+
+def _upsert_art_user(identity: UserContext, db: Session) -> UserContext:
+    stored = db.scalar(select(User).where(User.username == identity.username))
+    if not stored:
+        stored = User(username=identity.username, display_name=identity.display_name, email=identity.email or None, role=identity.role, active=True, ldap_groups=[])
+        db.add(stored)
+    else:
+        stored.display_name, stored.email, stored.role, stored.active = identity.display_name, identity.email or stored.email, identity.role, True
+    stored.last_login_at = datetime.now(timezone.utc)
+    db.add(AuthAuditEvent(username=identity.username, display_name=identity.display_name, success=True, ip_address=None, user_agent="ART PORTAL SSO", auth_method="art_portal_sso"))
+    db.commit()
+    return UserContext(stored.username, stored.display_name, stored.role, stored.email or "", stored.workshop_code, stored.line_name)
+
+
 def _user_dict(user: UserContext, db: Session | None = None) -> dict:
     result = {
         "username": user.username, "display_name": user.display_name, "role": user.role, "email": user.email,
@@ -35,6 +55,8 @@ def _user_dict(user: UserContext, db: Session | None = None) -> dict:
 
 @router.post("/login")
 def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
+    if settings.art_portal_sso_required:
+        raise HTTPException(403, "Вход выполняется через ART PORTAL")
     login_name = payload.username.strip()
     try:
         if settings.auth_mode.lower() == "ldap":
@@ -91,6 +113,34 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
         ))
         db.commit()
         raise HTTPException(401, str(exc)) from exc
+
+
+@router.post("/art-portal")
+def exchange_art_portal_session(request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
+    """Create a PLAN cookie after ART validates its own HTTP-only cookie."""
+    if not settings.art_portal_sso_required:
+        raise HTTPException(404, "Единый вход не включён")
+    if not settings.art_portal_url or not settings.art_portal_integration_token:
+        raise HTTPException(503, "Единый вход PLAN PORTAL не настроен")
+    try:
+        result = httpx.get(
+            f"{settings.art_portal_url.rstrip('/')}/api/integrations/plan/session",
+            headers={"x-portal-integration-key": settings.art_portal_integration_token, "cookie": request.headers.get("cookie", "")},
+            timeout=4.0,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "ART PORTAL временно недоступен") from exc
+    if result.status_code in {401, 403}:
+        raise HTTPException(401, "Войдите в ART PORTAL или запросите доступ к планированию")
+    if result.status_code != 200:
+        raise HTTPException(503, "Не удалось подтвердить вход через ART PORTAL")
+    body = result.json().get("user") or {}
+    identity = UserContext(str(body.get("username") or ""), str(body.get("display_name") or ""), str(body.get("role") or "viewer"), str(body.get("email") or ""))
+    if not identity.username:
+        raise HTTPException(503, "ART PORTAL вернул неполный профиль")
+    user = _upsert_art_user(identity, db)
+    response.set_cookie(settings.session_cookie_name, create_session_token(user), max_age=settings.session_max_age_seconds, httponly=True, secure=settings.session_cookie_secure, samesite=settings.session_cookie_samesite.lower(), path="/")
+    return {"user": _user_dict(user, db), "auth_mode": "art_portal_sso"}
 
 
 @router.post("/logout")

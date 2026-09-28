@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import time
+import httpx
 from dataclasses import asdict, dataclass
 
 from fastapi import Depends, HTTPException, Request
@@ -118,6 +119,36 @@ def create_session_token(user: UserContext) -> str:
 def parse_session_token(token: str | None) -> UserContext | None:
     if not token or "." not in token:
         return None
+
+
+def art_portal_identity(request: Request) -> UserContext | None:
+    """Ask ART to validate the browser's original session on every PLAN request.
+
+    This keeps revocation server-side: a stale PLAN cookie by itself never grants
+    access after ART disables the module or the user signs out.
+    """
+    if not settings.art_portal_sso_required:
+        return None
+    if not settings.art_portal_url or not settings.art_portal_integration_token:
+        raise HTTPException(503, "Единый вход PLAN PORTAL не настроен")
+    cookie = request.headers.get("cookie", "")
+    try:
+        response = httpx.get(
+            f"{settings.art_portal_url.rstrip('/')}/api/integrations/plan/session",
+            headers={"x-portal-integration-key": settings.art_portal_integration_token, "cookie": cookie},
+            timeout=4.0,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "ART PORTAL временно недоступен; доступ к планированию не подтверждён") from exc
+    if response.status_code in {401, 403}:
+        raise HTTPException(401, "Сессия ART PORTAL завершена или доступ к планированию отозван")
+    if response.status_code != 200:
+        raise HTTPException(503, "Не удалось подтвердить доступ к планированию")
+    body = response.json().get("user") or {}
+    try:
+        return UserContext(str(body["username"]), str(body["display_name"]), str(body["role"]), str(body.get("email") or ""))
+    except KeyError as exc:
+        raise HTTPException(503, "ART PORTAL вернул неполный профиль единого входа") from exc
     encoded, signature = token.rsplit(".", 1)
     expected = _encode(hmac.new(settings.session_secret.encode(), encoded.encode(), hashlib.sha256).digest())
     if not hmac.compare_digest(signature, expected):
@@ -142,8 +173,19 @@ def current_user(
     user = parse_session_token(request.cookies.get(settings.session_cookie_name))
     if not user:
         raise HTTPException(401, "Требуется вход в систему")
+    art_identity = art_portal_identity(request)
+    if settings.art_portal_sso_required and not art_identity:
+        raise HTTPException(401, "Требуется вход через ART PORTAL")
+    if art_identity and art_identity.username.lower() != user.username.lower():
+        raise HTTPException(401, "Сессии порталов относятся к разным пользователям")
     stored = db.scalar(select(User).where(User.username == user.username))
     if stored:
+        if art_identity:
+            stored.display_name = art_identity.display_name
+            stored.email = art_identity.email or stored.email
+            stored.role = art_identity.role
+            stored.active = True
+            db.commit()
         if not stored.active:
             raise HTTPException(403, "Учётная запись отключена администратором")
         check_section_access(request, stored)

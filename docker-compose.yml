@@ -32,6 +32,10 @@ services:
       SESSION_MAX_AGE_SECONDS: ${SESSION_MAX_AGE_SECONDS:-28800}
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-Lax}
+      ART_PORTAL_URL: ${ART_PORTAL_URL:-}
+      ART_PORTAL_INTEGRATION_TOKEN: ${ART_PORTAL_INTEGRATION_TOKEN:-}
+      ART_PORTAL_SESSION_COOKIE_NAME: ${ART_PORTAL_SESSION_COOKIE_NAME:-art_portal_session}
+      ART_PORTAL_SSO_REQUIRED: ${ART_PORTAL_SSO_REQUIRED:-false}
       LDAP_SERVER_URL: ${LDAP_SERVER_URL:-}
       LDAP_SERVER: ${LDAP_SERVER:-}
       LDAP_PORT: ${LDAP_PORT:-389}
@@ -105,7 +109,11 @@ services:
       retries: 15
 
   ppp-frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/plan/api}
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-/plan/}
     container_name: ppp-frontend
     restart: unless-stopped
     ports:

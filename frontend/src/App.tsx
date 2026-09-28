@@ -31,6 +31,16 @@ const portalRoles = [
 const feedbackCategoryLabels: Record<string, string> = { suggestion: "Предложение", problem: "Проблема", question: "Вопрос", other: "Другое" };
 const feedbackStatusLabels: Record<string, string> = { new: "Новое", in_progress: "В работе", resolved: "Решено", closed: "Закрыто" };
 
+async function exchangeArtPortalSession(): Promise<UserProfile> {
+  const base = import.meta.env.VITE_API_URL || "/api";
+  const response = await fetch(`${base}/session/art-portal`, { method: "POST", credentials: "include" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ detail: "Не удалось войти через ART PORTAL" }));
+    throw new ApiError(typeof body.detail === "string" ? body.detail : "Не удалось войти через ART PORTAL", response.status);
+  }
+  return (await response.json() as { user: UserProfile }).user;
+}
+
 export default function App() {
   const [sessionMode, setSessionMode] = useState<SessionMode | null>(null);
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -69,7 +79,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    Promise.all([api.sessionMode(), api.me()]).then(([mode, me]) => {
+    Promise.all([api.sessionMode(), api.me().catch(async reason => {
+      if (reason instanceof ApiError && reason.status === 401) return exchangeArtPortalSession();
+      throw reason;
+    })]).then(([mode, me]) => {
       setSessionMode(mode); setUser(me); void loadBase(me);
     }).catch(reason => {
       if (!(reason instanceof ApiError && reason.status === 401)) setError(message(reason));
@@ -188,7 +201,7 @@ export default function App() {
     catch (reason) { setError(message(reason)); setLoading(false); }
   }} />;
 
-  const logout = async () => { await api.logout(); setUser(null); setMatrix(null); setCatalog(null); setPage("plan"); };
+  const logout = async () => { await api.logout(); await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => undefined); window.location.assign("/"); };
   const navigateDate = (delta: number) => setViewDate(addDays(viewDate, delta * viewDays));
   const selectDate = (value: string) => setViewDate(viewDays !== 1 ? startOfWeek(value) : value);
   const selectDays = (value: ViewDays) => { setViewDays(value); if (value !== 1) setViewDate(startOfWeek(viewDate)); };
@@ -205,14 +218,14 @@ export default function App() {
         {sectionVisible(user, "sources") && <Nav active={page === "sources"} icon="◫" label="Источники данных" onClick={() => setPage("sources")} />}
         {sectionVisible(user, "feedback") && <Nav active={page === "feedback"} icon="✎" label="Обратная связь" onClick={() => setPage("feedback")} />}
         {sectionVisible(user, "fact") && <Nav active={page === "fact"} icon="◷" label="Факт производства" onClick={() => setPage("fact")} />}
-        {user.role === "admin" && <Nav active={page === "admin"} icon="⚙" label="Администрирование" onClick={() => setPage("admin")} />}
+        {user.role === "admin" && <a className="portal-return nav-return" href="/?view=admin&module=planning"><i>⚙</i> Администрирование</a>}
       </nav>
       <div className="sidebar-tip"><span>?</span><b>Нужна помощь?</b><small>Инструкция, роли и выгрузки</small><button onClick={() => setHelpOpen(true)}>Открыть инструкцию</button>{sectionVisible(user, "feedback") && <button onClick={() => setPage("feedback")}>Написать в ИТ</button>}</div>
       <div className="user-card"><span>{initials(user.display_name)}</span><div><b>{user.display_name}</b><small>{user.access_label}{user.line_name ? ` · ${user.line_name}` : ""}</small></div><button title="Выйти" onClick={() => void logout()}>↪</button></div>
     </aside>
     <main>
       <header className="topbar">
-        <div><small>PLAN PORTAL · ФК</small><h1>{pageTitle(page)}</h1></div>
+        <div><small><a className="portal-return" href="/">ART PORTAL</a> · ПЛАНИРОВАНИЕ ПРОИЗВОДСТВА</small><h1>{pageTitle(page)}</h1></div>
         {page === "plan" && <div className="top-week-summary"><b>{weekNumber(viewDate)} неделя</b><span>{formatDate(startOfWeek(viewDate))} — {formatDate(addDays(startOfWeek(viewDate), 6))}</span></div>}
         <div className="top-actions">
           <span className="live-dot">● Система работает</span>
