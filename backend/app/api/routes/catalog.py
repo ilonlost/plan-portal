@@ -78,6 +78,36 @@ def _capability_dict(item: LineCapability) -> dict:
     }
 
 
+def _product_dict(product: Product) -> dict:
+    capabilities = [item for item in product.capabilities if item.line and item.line.status == "active"]
+    return {
+        "product_id": product.id, "sku": product.sku, "product_name": product.name,
+        "state": product.state, "category": product.category,
+        "advance_status": product.advance_status, "fk_status": product.fk_status,
+        "unit_weight_kg": product.unit_weight_kg, "units_per_box": product.units_per_box,
+        "box_weight_kg": product.box_weight_kg, "mono_group": product.mono_group,
+        "active": product.active, "catalog_status": product.catalog_status,
+        "capability_count": len(capabilities),
+        "line_names": sorted({item.line.name for item in capabilities}),
+        "capabilities": [_capability_dict(item) for item in capabilities],
+    }
+
+
+@router.get("/products/lookup")
+def lookup_product(
+    sku: str = Query(min_length=1, max_length=80), db: Session = Depends(get_db),
+    user: UserContext = Depends(current_user),
+) -> dict:
+    # Exact lookup deliberately includes deleted and unmapped articles. Their
+    # unique SKU is still reserved so planners must be able to open/restore them.
+    product = db.scalar(select(Product).where(
+        func.lower(func.trim(Product.sku)) == sku.strip().lower(),
+    ).options(joinedload(Product.capabilities).joinedload(LineCapability.line)))
+    if product is None:
+        raise HTTPException(404, "Артикул не найден")
+    return _product_dict(product)
+
+
 def _recalculate_active_plan(db: Session) -> bool:
     from app.services.plan_service import PlanService
 
@@ -126,20 +156,9 @@ def catalog(
     product_rows = []
     unmapped_products = []
     for product in products:
-        active_capabilities = [capability for capability in product.capabilities if capability.line and capability.line.status == "active"]
-        line_names = sorted({capability.line.name for capability in active_capabilities})
-        product_rows.append({
-            "product_id": product.id, "sku": product.sku, "product_name": product.name,
-            "state": product.state, "category": product.category,
-            "advance_status": product.advance_status, "fk_status": product.fk_status,
-            "unit_weight_kg": product.unit_weight_kg, "units_per_box": product.units_per_box,
-            "box_weight_kg": product.box_weight_kg,
-            "mono_group": product.mono_group,
-            "active": product.active, "catalog_status": product.catalog_status,
-            "capability_count": len(active_capabilities), "line_names": line_names,
-            "capabilities": [_capability_dict(item) for item in active_capabilities],
-        })
-        if not active_capabilities:
+        row = _product_dict(product)
+        product_rows.append(row)
+        if not row["capability_count"]:
             unmapped_products.append({"product_id": product.id, "sku": product.sku, "product_name": product.name})
     return {
         "products": product_rows,
@@ -223,12 +242,14 @@ def _save_product_capability(db: Session, product: Product, values: dict) -> Lin
         elif capability_fields.get("units_per_hour"):
             capability = LineCapability(product=product, line_id=line_id, units_per_hour=capability_fields["units_per_hour"])
             db.add(capability)
+        else:
+            raise HTTPException(422, "Для новой связи с линией задайте положительную скорость")
     if capability:
         for field, value in capability_fields.items():
             setattr(capability, field, value)
         if Decimal(capability.units_per_hour) <= 0:
             raise HTTPException(422, "Скорость должна быть положительным числом")
-    elif capability_fields:
+    elif any(value is not None for value in capability_fields.values()):
         raise HTTPException(422, "Для производственных параметров выберите линию")
     return capability
 

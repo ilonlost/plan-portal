@@ -65,7 +65,7 @@ export interface CatalogRow {
   legacy_daily_capacity_units: number | null; legacy_capacity_unit: string | null;
   recipe_component_count: number; reference_source: string | null;
   mono_group: string | null;
-  active: boolean; catalog_status: "active" | "blocked";
+  active: boolean; catalog_status: "active" | "blocked" | "deleted";
 }
 
 export interface CatalogProduct {
@@ -73,7 +73,7 @@ export interface CatalogProduct {
   advance_status: string | null; fk_status: string | null; unit_weight_kg: number | null;
   units_per_box: number | null; box_weight_kg: number | null; capability_count: number; line_names: string[];
   mono_group: string | null;
-  active: boolean; catalog_status: "active" | "blocked";
+  active: boolean; catalog_status: "active" | "blocked" | "deleted";
   capabilities: { capability_id: number; line_id: number; line_name: string; workshop_code: string; workshop_name: string; speed_kg_hour: number; batch_quantum_kg: number | null; min_order_kg: number | null; restrictions: string | null }[];
 }
 

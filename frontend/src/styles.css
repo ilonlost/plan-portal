@@ -569,3 +569,6 @@ html:has(.modal-backdrop, .drawer-backdrop), body:has(.modal-backdrop, .drawer-b
 .fact-hour-label { font-size:11px; }
 .sku-card-head em.exported, .execution-badge.exported { color: #3185bd; }
 .portal-return { color: inherit; text-decoration: none; font-weight: 800; }.portal-return:hover,.portal-return:focus-visible { color: var(--red); outline: none; }.nav-return { padding: 10px 12px; display:flex; gap:10px; align-items:center; color:var(--muted); font-size:12px; }.nav-return:hover { background:var(--surface-alt); border-radius:7px; }.nav-return i { color:var(--red); font-style:normal; }
+.catalog-search-result { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border-left: 3px solid #c8102e; }
+.catalog-search-result p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.catalog-search-result .button { flex-shrink: 0; }

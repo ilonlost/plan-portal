@@ -58,6 +58,7 @@ export const api = {
   createScheduleTemplate: (data: { name: string; description?: string; pattern: { day_hours: number; night_hours: number }[] }) => request<ScheduleTemplate>("/lines/schedule-templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   workshops: () => request<WorkshopData[]>("/lines/workshops"),
   catalog: (params = "", signal?: AbortSignal) => request<CatalogData>(`/catalog${params ? `?${params}` : ""}`, { signal }),
+  lookupProduct: (sku: string, signal?: AbortSignal) => optional<import("./types").CatalogProduct>(`/catalog/products/lookup?sku=${encodeURIComponent(sku.trim())}`, { signal }),
   assignProduct: (productId: number, lineId: number, speed: number) => request(`/catalog/products/${productId}/capabilities`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ line_id: lineId, units_per_hour: speed }) }),
   updateCapability: (id: number, data: object) => request<{ ok: boolean }>(`/catalog/capabilities/${id}`, {
     method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),

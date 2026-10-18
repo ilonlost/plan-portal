@@ -418,6 +418,57 @@ def test_catalog_create_restores_soft_deleted_sku_instead_of_duplicate_error(cli
     assert db.get(ProductionPlan, plan.id) is not None
 
 
+def test_catalog_lookup_finds_deleted_sku_with_saved_line_and_parameters(client, db):
+    plan, demand = make_plan(db)
+    product_id = demand.product_id
+    capability = db.scalar(select(LineCapability).where(LineCapability.product_id == product_id))
+    assert client.delete(f"/catalog/products/{product_id}").status_code == 200
+    assert client.get("/catalog").json()["products"] == []
+
+    response = client.get("/catalog/products/lookup", params={"sku": f"  {demand.sku}  "})
+    assert response.status_code == 200, response.text
+    product = response.json()
+    assert product["product_id"] == product_id
+    assert product["catalog_status"] == "deleted"
+    assert not product["active"]
+    assert product["capabilities"][0]["capability_id"] == capability.id
+    assert Decimal(str(product["capabilities"][0]["speed_kg_hour"])) == capability.units_per_hour
+    assert client.get("/catalog").json()["products"] == []
+    assert db.get(ProductionPlan, plan.id) is not None
+
+
+def test_catalog_lookup_finds_blocked_unmapped_sku_and_resolves_duplicate(client, db):
+    product = Product(sku="Mixed-SKU", name="Без линии", active=False, catalog_status="blocked")
+    db.add(product)
+    db.commit()
+    payload = {"sku": "mixed-sku", "product_name": "Дубликат"}
+    assert client.post("/catalog/products", json=payload).status_code == 409
+    response = client.get("/catalog/products/lookup", params={"sku": " mixed-sku "})
+    assert response.status_code == 200, response.text
+    assert response.json()["product_id"] == product.id
+    assert response.json()["catalog_status"] == "blocked"
+    assert response.json()["capabilities"] == []
+    assert client.get("/catalog/products/lookup", params={"sku": "not-in-catalog"}).status_code == 404
+    assert db.scalar(select(func.count(Product.id))) == 1
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+def test_catalog_can_create_or_restore_unmapped_article_with_empty_parameters(client, db, deleted):
+    if deleted:
+        db.add(Product(sku="unmapped", name="Сохранённый", active=False, catalog_status="deleted"))
+        db.commit()
+    response = client.post("/catalog/products", json={
+        "sku": "unmapped", "product_name": "Без линии", "batch_quantum_kg": None,
+        "min_order_kg": None, "restrictions": None,
+    })
+    assert response.status_code == 200, response.text
+    assert response.json().get("restored", False) is deleted
+    product = client.get("/catalog/products/lookup", params={"sku": "unmapped"}).json()
+    assert product["catalog_status"] == "active"
+    assert product["capabilities"] == []
+    assert db.scalar(select(func.count(Product.id))) == 1
+
+
 def test_catalog_xlsx_roundtrip_updates_without_deleting_missing_rows(client, db):
     plan, demand = make_plan(db)
     exported = client.get("/catalog/export.xlsx")
