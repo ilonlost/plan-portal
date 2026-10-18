@@ -20,7 +20,7 @@ from app.db.session import get_db
 from app.core.config import settings
 from app.core.security import UserContext, create_session_token, parse_session_token
 from app.api.routes import session, plans, imports, catalog, admin, advance_confirmations, production_fact, lines
-from app.models.entities import User, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, LineCapability, LineCapacity, DemandItem, ImportedOrder
+from app.models.entities import User, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, LineCapability, LineCapacity, LineComment, DemandItem, ImportedOrder
 from app.schemas.common import ImportConfirmRequest
 from app.services.import_service import ExcelImportService
 from app.services.plan_service import PlanService
@@ -676,14 +676,19 @@ def test_planner_only_can_recalculate_active_plan(client, db):
     assert client.post("/plans/active/recalculate").status_code == 403
 
 
-def test_downtime_insights_are_hidden_for_non_admin_users(client, db, monkeypatch):
-    db.scalar(select(User).where(User.username == "regular.admin")).role = "planner"
+@pytest.mark.parametrize("role", ["admin", "planner", "master", "viewer"])
+def test_paused_downtime_insights_are_hidden_for_every_role(client, db, monkeypatch, role):
+    db.scalar(select(User).where(User.username == "regular.admin")).role = role
+    line = db.scalar(select(ProductionLine))
+    db.add(LineComment(line_id=line.id, comment_date=date(2026, 9, 8), text="Комментарий сохранён",
+                       author_username="regular.admin", author_name="Administrator"))
     db.commit()
-    monkeypatch.setattr(lines, "load_downtimes", lambda *_: pytest.fail("non-admin must not query downtime source"))
+    monkeypatch.setattr(lines, "load_downtimes", lambda *_: pytest.fail("paused downtime source must not be queried"))
     response = client.get("/lines/insights?start=2026-09-08&end=2026-09-08")
     assert response.status_code == 200
     assert response.json()["source_status"] == "hidden"
     assert response.json()["downtimes"] == [] and response.json()["issues"] == []
+    assert response.json()["comments"][0]["text"] == "Комментарий сохранён"
 
 
 def test_shipping_date_stays_fixed_when_production_item_moves(client, db):
