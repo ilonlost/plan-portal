@@ -82,6 +82,8 @@ class ExcelExportService:
 
     @staticmethod
     def _shipping_date(item: dict):
+        if item.get("source_kind") == "zam":
+            return item.get("production_date")
         value = item.get("shipping_date")
         if value:
             return value

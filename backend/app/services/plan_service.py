@@ -207,6 +207,22 @@ class PlanService:
         self.db.commit()
         return plan is not None
 
+    def apply_complete_ohl_upgrade(self) -> bool:
+        key = "complete_ohl_placement_v1"
+        if self.db.scalar(select(PortalSetting).where(PortalSetting.key == key)):
+            return False
+        plan = self.active_plan()
+        if plan:
+            demands = self._latest_source_demands()
+            if demands:
+                self.calculate(plan, demands, "complete_ohl_placement")
+            for item in plan.schedule_items:
+                if item.source_kind == "zam":
+                    item.marking_date = item.production_date
+        self.db.add(PortalSetting(key=key, value={"enabled": True}, updated_by="system"))
+        self.db.commit()
+        return plan is not None
+
     def _latest_source_demands(self) -> list[DemandItem]:
         orders = list(self.db.scalars(select(ImportedOrder).where(
             ImportedOrder.template_type.in_(("ohl_daily", "quarter_weekly")),
@@ -246,6 +262,12 @@ class PlanService:
 
     def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation") -> ProductionPlan:
         previous_requested_dates = {demand.id: demand.requested_date for demand in demands}
+        auto_execution = {
+            (row.demand_item_id, row.line_id, row.production_date, row.shift, Decimal(row.quantity)): {
+                name: getattr(row, name) for name in ("execution_status", "execution_note", "reported_by", "reported_at", "actual_quantity_kg")
+            }
+            for row in plan.schedule_items if row.source == "auto" and row.schedule_kind == "production"
+        }
         auto_sort_ranks = {
             (item.demand_item_id, item.line_id, item.production_date, item.shift): item.sort_rank
             for item in plan.schedule_items
@@ -329,6 +351,7 @@ class PlanService:
             remaining_quantity[demand.id] = Decimal(demand.quantity) - consumed
         reserved = defaultdict(lambda: Decimal("0"))
         reserved_groups = defaultdict(set)
+        manual_cleaning_days = {(row.line_id, row.production_date) for row in plan.schedule_items if row.excluded and row.reason == "manual_cleaning_day"}
         capability_map = {(c.line_id, c.product_id): c for c in capabilities}
         for item in plan.schedule_items:
             if item.source != "auto" and not item.excluded and item.line_id and item.production_date:
@@ -343,7 +366,8 @@ class PlanService:
                     default_restart = Decimal("0.5") if line and line.workshop_code == "KC" else Decimal("0")
                     reserved[(item.line_id, item.production_date, item.shift)] += Decimal(str((line.planning_settings or {}).get("restart_after_downtime_hours", default_restart))) if line else Decimal("0")
         for key, groups in reserved_groups.items():
-            reserved[key] += Decimal(len(groups))
+            if (key[0], key[1]) not in manual_cleaning_days:
+                reserved[key] += Decimal(len(groups))
         result = PlanningEngine().plan(
             demands=[DemandInput(
                 id=item.id, product_id=item.product_id or 0, sku=item.sku, quantity=remaining_quantity[item.id],
@@ -373,6 +397,7 @@ class PlanService:
             ) for item in capacities],
             horizon_end=plan.horizon_end,
             reserved_groups=reserved_groups,
+            manual_cleaning_days=manual_cleaning_days,
         )
         for existing in list(plan.schedule_items):
             if existing.source == "auto":
@@ -390,6 +415,7 @@ class PlanService:
                 sort_rank=auto_sort_ranks.get((item.demand_id, item.line_id, item.production_date, item.shift)),
                 required_hours=item.required_hours, status=ScheduleStatus(item.status),
                 source="auto", warnings=item.warnings,
+                **auto_execution.get((item.demand_id, item.line_id, item.production_date, item.shift, Decimal(item.quantity)), {}),
             ))
         plan.status = PlanStatus.NEEDS_REVIEW if any(item.status in {"conflict", "unscheduled"} for item in result) else PlanStatus.CALCULATED
         self.db.flush()
@@ -423,7 +449,7 @@ class PlanService:
                 warnings = [warning for warning in (item.warnings or []) if not warning.startswith("Загрузка линии")]
                 item.load_percent = load
                 if load > 100:
-                    item.status = ScheduleStatus.CONFLICT
+                    item.status = ScheduleStatus.WARNING if item.source_kind == "ohl" and item.schedule_kind == "production" else ScheduleStatus.CONFLICT
                     warnings.append(f"Загрузка линии {load}% превышает доступную мощность")
                 elif load >= 85 and item.status != ScheduleStatus.CONFLICT:
                     item.status = ScheduleStatus.WARNING
@@ -435,11 +461,13 @@ class PlanService:
             if item.line_id is None or item.production_date is None:
                 item.load_percent = 0
                 item.status = ScheduleStatus.UNSCHEDULED
-        plan.status = PlanStatus.NEEDS_REVIEW if any(not item.excluded and item.status in {ScheduleStatus.CONFLICT, ScheduleStatus.UNSCHEDULED} for item in plan.schedule_items) else PlanStatus.CALCULATED
+        plan.status = PlanStatus.NEEDS_REVIEW if any(not item.excluded and (item.status in {ScheduleStatus.CONFLICT, ScheduleStatus.UNSCHEDULED} or item.load_percent > 100) for item in plan.schedule_items) else PlanStatus.CALCULATED
         self.db.flush()
 
     def update_item(self, item: ProductionScheduleItem, values: dict) -> ProductionPlan:
         plan = item.plan
+        if item.line_id and item.production_date and any(key in values for key in ("before_item_id", "sequence", "duration_minutes")):
+            self._preserve_pc_day_order(plan, item.line_id, item.production_date)
         next_line = values.get("line_id") or item.line_id
         if values.get("shift") not in {None, "day", "night"}:
             raise ValueError("Выберите дневную или ночную смену")
@@ -450,6 +478,16 @@ class PlanService:
                 setattr(item, field, values[field])
         if "marking_date" in values:
             item.marking_date = values["marking_date"]
+        if item.source_kind == "zam":
+            item.marking_date = item.production_date
+        if item.line_id and item.production_date and any(key in values for key in ("before_item_id", "sequence", "duration_minutes")):
+            self._preserve_pc_day_order(plan, item.line_id, item.production_date)
+        if values.get("duration_minutes") is not None:
+            if item.schedule_kind == "production":
+                raise ValueError("Время продукции рассчитывается по скорости линии")
+            item.required_hours = Decimal(values["duration_minutes"]) / Decimal("60")
+            item.duration_hours = item.required_hours
+            item.start_time = item.end_time = None
         capability = None
         if item.schedule_kind == "production" and item.line_id and item.product_id:
             capability = self.db.scalar(select(LineCapability).where(
@@ -481,12 +519,12 @@ class PlanService:
                 if replacement:
                     item.shift = replacement.shift
         item.source = "manual"
-        if "before_item_id" in values and item.line_id and item.production_date:
-            peers = [row for row in plan.schedule_items if not row.excluded and (row.schedule_kind == "production" or row.source != "auto") and row.line_id == item.line_id and row.production_date == item.production_date and row.shift == item.shift]
+        if ("before_item_id" in values or values.get("sequence") is not None) and item.line_id and item.production_date:
+            peers = [row for row in plan.schedule_items if not row.excluded and (row.schedule_kind == "production" or row.source != "auto") and row.line_id == item.line_id and row.production_date == item.production_date]
             peers.sort(key=lambda row: (Decimal(row.sort_rank) if row.sort_rank is not None else Decimal(row.sequence or 0) * 10, row.id or 0))
             peers = [row for row in peers if row is not item]
             before_id = values.get("before_item_id")
-            index = next((idx for idx, row in enumerate(peers) if row.id == before_id), len(peers))
+            index = min(values["sequence"] - 1, len(peers)) if values.get("sequence") is not None else next((idx for idx, row in enumerate(peers) if row.id == before_id), len(peers))
             peers.insert(index, item)
             for rank, row in enumerate(peers, start=1):
                 row.sort_rank = Decimal(rank * 10)
@@ -544,6 +582,8 @@ class PlanService:
         return (quantity / box_weight).to_integral_value(rounding=ROUND_CEILING)
 
     def create_manual_task(self, plan: ProductionPlan, values: dict) -> ProductionPlan:
+        if values.get("source_kind", "generic") not in {"ohl", "zam", "generic", "pf"}:
+            raise ValueError("Выберите источник: ОХЛ, ЗАМ, Прочее или ПФ")
         product = self.db.get(Product, values["product_id"])
         line = self.db.get(ProductionLine, values["line_id"])
         if not product or not line:
@@ -562,7 +602,7 @@ class PlanService:
         required_hours = self._production_duration(quantity, Decimal(capability.units_per_hour))
         item = ProductionScheduleItem(
             plan_id=plan.id, product_id=product.id, line_id=line.id,
-            production_date=values["production_date"], marking_date=values.get("marking_date") or values["production_date"],
+            production_date=values["production_date"], marking_date=values["production_date"] if values.get("source_kind") == "zam" else values.get("marking_date") or values["production_date"],
             shift=values.get("shift", "day"), sequence=len(plan.schedule_items) + 1,
             quantity=quantity, source_quantity=quantity, source_unit="кг", quantity_kg=quantity,
             box_count=boxes, batch_count=batches, required_hours=required_hours, duration_hours=required_hours,
@@ -669,6 +709,24 @@ class PlanService:
         self.db.commit()
         return item.plan
 
+    def _preserve_pc_day_order(self, plan: ProductionPlan, line_id: int, production_date: date) -> None:
+        """A planner-managed PC day keeps its existing washes and explicit order."""
+        line = self.db.get(ProductionLine, line_id)
+        if not line or line.workshop_code != "PC":
+            return
+        if any(row.excluded and row.reason == "manual_cleaning_day" and row.line_id == line_id and row.production_date == production_date for row in plan.schedule_items):
+            return
+        rows = sorted([row for row in plan.schedule_items if not row.excluded and row.line_id == line_id and row.production_date == production_date], key=lambda row: (row.sequence, row.id or 0))
+        for index, row in enumerate(rows, start=1):
+            row.sort_rank = Decimal(index * 10)
+            if row.schedule_kind == "cleaning" and row.source == "auto":
+                row.source = "manual"
+        plan.schedule_items.append(ProductionScheduleItem(
+            line_id=line_id, production_date=production_date, schedule_kind="cleaning", source="manual",
+            excluded=True, quantity=Decimal("0"), required_hours=Decimal("0"), reason="manual_cleaning_day",
+        ))
+        self.db.flush()
+
     def refresh_sequence_and_cleanings(self, plan: ProductionPlan) -> None:
         for existing in list(plan.schedule_items):
             if existing.source == "auto" and existing.schedule_kind in {"cleaning", "startup", "changeover", "restart"}:
@@ -689,6 +747,7 @@ class PlanService:
             item.reason for item in plan.schedule_items
             if item.excluded and item.source == "manual" and item.schedule_kind == "cleaning" and (item.reason or "").startswith("suppress_cleaning:")
         }
+        manual_days = {(row.line_id, row.production_date) for row in plan.schedule_items if row.excluded and row.reason == "manual_cleaning_day"}
         for (line_id, production_date), items in sorted(grouped.items(), key=lambda value: (value[0][1], lines[value[0][0]].priority)):
             line = lines[line_id]
             name = line.name.casefold()
@@ -730,7 +789,7 @@ class PlanService:
                 suppression_key = cleaning_suppression_key(
                     line_id, production_date, previous_group, previous_shift, current_group, item.shift,
                 )
-                if line.workshop_code == "PC" and transition and suppression_key not in suppressed:
+                if line.workshop_code == "PC" and (line_id, production_date) not in manual_days and transition and suppression_key not in suppressed:
                     wash = ProductionScheduleItem(
                         plan_id=plan.id, product_id=None, line_id=line_id, production_date=production_date,
                         shift=previous_shift, sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"),
@@ -740,7 +799,7 @@ class PlanService:
                     )
                     plan.schedule_items.append(wash)
                     sequence += 1
-                elif transition and Decimal(str(settings["changeover_hours"])) > 0:
+                elif line.workshop_code != "PC" and transition and Decimal(str(settings["changeover_hours"])) > 0:
                     hours = Decimal(str(settings["changeover_hours"]))
                     plan.schedule_items.append(ProductionScheduleItem(
                         plan_id=plan.id, line_id=line_id, production_date=production_date, shift=previous_shift,
@@ -755,7 +814,7 @@ class PlanService:
             end_suppression = cleaning_suppression_key(
                 line_id, production_date, previous_group, previous_shift,
             )
-            if line.workshop_code == "PC" and previous_group and end_suppression not in suppressed:
+            if line.workshop_code == "PC" and (line_id, production_date) not in manual_days and previous_group and end_suppression not in suppressed:
                 plan.schedule_items.append(ProductionScheduleItem(
                     plan_id=plan.id, product_id=None, line_id=line_id, production_date=production_date,
                     shift=previous_shift, sequence=sequence, quantity=Decimal("0"), quantity_kg=Decimal("0"),
@@ -775,6 +834,11 @@ class PlanService:
                         schedule_kind="restart", reason="Запуск линии после простоя", source_kind="generic", source="auto", locked=True, status=ScheduleStatus.PLANNED,
                     ))
                     sequence += 1
+            if (line_id, production_date) in manual_days:
+                ordered = [row for row in plan.schedule_items if not row.excluded and row.line_id == line_id and row.production_date == production_date]
+                ordered.sort(key=lambda row: (Decimal(row.sort_rank) if row.sort_rank is not None else Decimal(row.sequence or 0) * 10, row.sequence, row.id or 0))
+                for index, row in enumerate(ordered, start=1):
+                    row.sequence = index
         for sequence, item in enumerate(unscheduled, start=1):
             item.sequence = sequence
         self.db.flush()
@@ -829,8 +893,8 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "reason": item.reason,
         "actual_quantity_kg": item.actual_quantity_kg,
         "source_kind": item.source_kind,
-        "marking_date": item.marking_date,
-        "shipping_date": (
+        "marking_date": item.production_date if item.source_kind == "zam" else item.marking_date,
+        "shipping_date": item.production_date if item.source_kind == "zam" else (
             item.marking_date
             or (item.demand_item.due_date if item.demand_item and item.demand_item.source_kind == "ohl" else None)
         ) - timedelta(days=1) if (

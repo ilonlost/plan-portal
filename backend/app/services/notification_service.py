@@ -49,7 +49,7 @@ def build_plan_xlsx(items: list[dict], audience: str) -> bytes:
         sheet.append([
             _date(item.get("production_date")), _date(item.get("marking_date")), _date(_shipping_date(item)), item.get("workshop_name") or item.get("workshop_code") or "—",
             item.get("line_name") or "—", item.get("sequence") or 0, item.get("sku") or "—", item.get("product_name") or "—",
-            str(item.get("source_kind") or "").upper(), "День" if item.get("shift") == "day" else "Ночь",
+            {"ohl": "ОХЛ", "zam": "ЗАМ", "pf": "ПФ", "generic": "Прочее"}.get(item.get("source_kind"), "—"), "День" if item.get("shift") == "day" else "Ночь",
             float(item.get("quantity_units") or 0), float(item.get("quantity_kg") or 0), float(item.get("box_count") or 0),
             float(item.get("required_hours") or 0), item.get("mercury") or "—",
         ])
@@ -72,6 +72,8 @@ def _date(value: object) -> str:
 
 
 def _shipping_date(item: dict) -> object | None:
+    if item.get("source_kind") == "zam":
+        return item.get("production_date")
     value = item.get("shipping_date")
     if value:
         return value

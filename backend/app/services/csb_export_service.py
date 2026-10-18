@@ -48,7 +48,7 @@ def build_csb_text(items: list, destination: str = "ДМД") -> tuple[str, list[
         quantity = Decimal(item.quantity_kg or item.quantity or 0)
         if not quantity or Decimal(quantity) <= 0 or not item.line.csb_line_code:
             continue
-        marking_date = item.marking_date or item.production_date
+        marking_date = item.production_date if item.source_kind == "zam" else item.marking_date or item.production_date
         production_date = item.production_date
         if not marking_date or not production_date:
             continue

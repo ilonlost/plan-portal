@@ -86,6 +86,7 @@ class PlanningEngine:
         capacities: list[CapacityInput],
         horizon_end: date,
         reserved_groups: dict | None = None,
+        manual_cleaning_days: set[tuple[int, date]] | None = None,
     ) -> list[PlannedItem]:
         compatible: dict[int, list[CapabilityInput]] = defaultdict(list)
         for capability in capabilities:
@@ -150,7 +151,7 @@ class PlanningEngine:
             first_date = demand.requested_date
             last_date = (
                 demand.requested_date
-                if demand.exact_date
+                if demand.exact_date or demand.source_kind == "ohl"
                 else horizon_end if demand.source_kind == "zam" else min(horizon_end, demand.due_date)
             )
             candidates: list[tuple[CapabilityInput, date, str]] = []
@@ -172,6 +173,7 @@ class PlanningEngine:
                     # Остальные SKU той же группы используют уже зарезервированную мойку.
                     needs_wash = bool(
                         capability.workshop_code == "PC"
+                        and (capability.line_id, production_date) not in (manual_cleaning_days or set())
                         and (demand.mono_group or demand.sku) not in seen_groups[day_key]
                     )
                     setup_hours = Decimal("1") if needs_wash else (
@@ -221,6 +223,24 @@ class PlanningEngine:
                 ))
 
             if remaining > 0:
+                if demand.source_kind == "ohl":
+                    # OHL is mandatory on its requested date, even on a closed or overloaded shift.
+                    choices = candidates or [(options[0], demand.requested_date, "day")]
+                    best, production_date, shift = min(choices, key=lambda slot: (
+                        used_hours[(slot[0].line_id, slot[1], slot[2])], slot[0].line_priority,
+                        self._shift_order(slot[2]), slot[0].line_id,
+                    ))
+                    previous = next((row for row in result if row.demand_id == demand.id and row.line_id == best.line_id and row.production_date == production_date and row.shift == shift), None)
+                    quantity = remaining + (previous.quantity if previous else Decimal("0"))
+                    hours = self._hours(quantity, best.units_per_hour)
+                    used_hours[(best.line_id, production_date, shift)] += hours - (previous.required_hours if previous else Decimal("0"))
+                    placed = self._item(demand, best, production_date, quantity, hours, "warning", shift, quantum,
+                        [*warnings, "ОХЛ размещён полностью на требуемую дату сверх доступной мощности"])
+                    if previous:
+                        result[result.index(previous)] = placed
+                    else:
+                        result.append(placed)
+                    continue
                 best = options[0]
                 conflict_date = last_date
                 shift = "day"
@@ -256,7 +276,7 @@ class PlanningEngine:
             quantity=quantity, quantity_kg=quantity, source_quantity=source_quantity,
             source_unit=demand.source_unit, box_count=box_count, batch_count=batch_count,
             required_hours=hours, status=status, shift=shift, warnings=warnings,
-            source_kind=demand.source_kind, marking_date=demand.marking_date,
+            source_kind=demand.source_kind, marking_date=production_date if demand.source_kind == "zam" else demand.marking_date,
         )
 
     @staticmethod

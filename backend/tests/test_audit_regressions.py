@@ -23,7 +23,7 @@ from app.api.routes import session, plans, imports, catalog, admin, planner_admi
 from app.models.entities import User, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, LineCapability, LineCapacity, LineComment, DemandItem, ImportedOrder
 from app.schemas.common import ImportConfirmRequest
 from app.services.import_service import ExcelImportService
-from app.services.plan_service import PlanService
+from app.services.plan_service import PlanService, schedule_item_dict
 from app.services.planning_engine import PlanningEngine, DemandInput, CapabilityInput, CapacityInput
 from app.services.notification_service import build_plan_email_html
 from app.seed import WORKSHOPS
@@ -311,7 +311,8 @@ def test_imported_maintenance_reserves_capacity_during_recalculation(db):
     db.add(demand); db.flush()
     PlanService(db).calculate(plan, [demand])
     scheduled = sum(item.quantity for item in plan.schedule_items if item.schedule_kind == "production" and item.status.value != "unscheduled")
-    assert scheduled == Decimal("200")
+    assert scheduled == Decimal("400")
+    assert any(row.source_kind == "ohl" and row.load_percent > 100 for row in plan.schedule_items)
     assert any(item.schedule_kind == "maintenance" and not item.excluded for item in plan.schedule_items)
     assert plan.horizon_end == future_day
 
@@ -533,6 +534,8 @@ def test_admin_can_delete_other_user_without_deleting_plan_history(client, db):
 def test_delete_split_stays_deleted_and_other_volume_survives(db):
     plan, demand = make_plan(db, 150)
     service = PlanService(db)
+    demand.source_kind = "zam"; demand.exact_date = False; demand.order.template_type = "quarter_weekly"
+    service.calculate(plan, [demand])
     original = next(i for i in plan.schedule_items if i.production_date)
     service.delete_item(original)
     service.calculate(plan, [demand])
@@ -540,9 +543,9 @@ def test_delete_split_stays_deleted_and_other_volume_survives(db):
     assert sum(i.quantity for i in live) == 50
     assert original.excluded
     # Reimport under a different filename and row number uses the same business identity.
-    new_order = ImportedOrder(source_name="Новая неделя.xlsx", template_type="ohl_daily")
+    new_order = ImportedOrder(source_name="Новая неделя.xlsx", template_type="quarter_weekly")
     db.add(new_order); db.flush()
-    fresh = DemandItem(order_id=new_order.id, product=demand.product, source_row=9, sku=demand.sku, product_name=demand.product_name, quantity=150, source_kind="ohl", source_plan_date=demand.source_plan_date, requested_date=demand.requested_date, due_date=demand.due_date, exact_date=True)
+    fresh = DemandItem(order_id=new_order.id, product=demand.product, source_row=9, sku=demand.sku, product_name=demand.product_name, quantity=150, source_kind="zam", source_plan_date=demand.source_plan_date, requested_date=demand.requested_date, due_date=demand.due_date, exact_date=False)
     db.add(fresh); db.flush()
     assert [d.id for d in service._latest_source_demands()] == [fresh.id]
     service.calculate(plan, [fresh])
@@ -848,7 +851,9 @@ def test_real_import_pipeline_preserves_capacity_and_status(db, monkeypatch):
         if item.production_date and not item.excluded:
             usage[(item.line_id, item.production_date, item.shift)] += item.required_hours
     capacity = {(c.line_id, c.capacity_date, c.shift): c.available_hours if c.available else 0 for c in db.scalars(select(LineCapacity))}
-    assert all(hours <= capacity.get(key, 0) for key, hours in usage.items())
+    for key, hours in usage.items():
+        if hours > capacity.get(key, 0):
+            assert any(row.source_kind == "ohl" and (row.line_id, row.production_date, row.shift) == key and any("Загрузка линии" in warning for warning in row.warnings) for row in plan.schedule_items)
     expected = len([item for item in plan.schedule_items if not item.excluded])
     service.calculate(plan, service._latest_source_demands())
     assert len([item for item in plan.schedule_items if not item.excluded]) == expected
@@ -1040,3 +1045,80 @@ def test_conversation_migration_preserves_legacy_comments_and_allows_multiple_me
         assert connection.exec_driver_sql("SELECT text FROM line_comments").scalar() == "legacy"
         assert connection.exec_driver_sql("SELECT COUNT(*) FROM line_comment_messages").scalar() == 2
     engine.dispose()
+
+
+def test_zam_dates_match_production_after_create_and_move(client, db):
+    plan, demand = make_plan(db)
+    line = plan.schedule_items[0].line
+    response = client.post(f"/plans/{plan.id}/items", headers={"If-Match": str(plan.revision)}, json={"product_id": demand.product_id, "line_id": line.id, "production_date": "2026-09-08", "marking_date": "2026-09-20", "source_kind": "zam", "quantity": 10})
+    assert response.status_code == 200, response.text
+    item = next(row for row in plan.schedule_items if row.source_kind == "zam")
+    assert item.marking_date == item.production_date
+    PlanService(db).update_item(item, {"production_date": date(2026, 9, 9), "marking_date": date(2026, 10, 1)})
+    result = schedule_item_dict(item)
+    assert result["production_date"] == result["marking_date"] == result["shipping_date"] == date(2026, 9, 9)
+    from app.services.notification_service import _shipping_date
+    from app.services.export_service import ExcelExportService
+    assert _shipping_date(result) == ExcelExportService._shipping_date(result) == date(2026, 9, 9)
+
+
+def test_ohl_overload_is_displayed_and_included_in_plan_email(client, db):
+    plan, demand = make_plan(db, quantity=250)
+    ohl = [row for row in plan.schedule_items if row.schedule_kind == "production"]
+    assert sum(row.quantity for row in ohl) == 250
+    assert all(row.production_date == demand.requested_date for row in ohl)
+    assert all(row.status.value != "conflict" for row in ohl)
+    assert any(row.load_percent > 100 for row in ohl)
+    response = client.get("/admin/mail-preview?start=2026-09-08&end=2026-09-08")
+    assert response.status_code == 200
+    assert response.json()["item_count"] == len(ohl)
+
+
+def test_pc_manual_order_and_wash_duration_survive_recalculation(db):
+    day = date(2026, 10, 22)
+    line = db.scalar(select(ProductionLine).where(ProductionLine.workshop_code == "PC"))
+    first = Product(sku="PC-OHL", name="Булочка", mono_group="Булочка")
+    second = Product(sku="PC-OTHER", name="Слойка", mono_group="Слойка")
+    plan = ProductionPlan(name="PC manual order", horizon_start=day, horizon_end=day)
+    db.add_all([first, second, plan]); db.flush()
+    for product, kind in ((first, "ohl"), (second, "generic")):
+        db.add(LineCapability(line_id=line.id, product_id=product.id, units_per_hour=100))
+        plan.schedule_items.append(ProductionScheduleItem(product_id=product.id, line_id=line.id, production_date=day, source_kind=kind, source="manual", schedule_kind="production", quantity=100, quantity_kg=100, required_hours=1))
+    db.flush(); service = PlanService(db); service.refresh_sequence_and_cleanings(plan); db.commit()
+    before = next(row for row in plan.schedule_items if row.product_id == first.id)
+    other = next(row for row in plan.schedule_items if row.product_id == second.id)
+    service.update_item(other, {"before_item_id": before.id})
+    assert other.sequence < before.sequence
+    washes = [row for row in plan.schedule_items if row.schedule_kind == "cleaning" and not row.excluded]
+    assert len(washes) == 2
+    wash = washes[0]
+    service.update_item(wash, {"duration_minutes": 45, "sequence": 1})
+    assert wash.sequence == 1 and wash.required_hours == Decimal("0.75")
+    assert not wash.start_time and not wash.end_time
+    service.calculate(plan, [])
+    assert wash.sequence == 1 and wash.duration_hours == Decimal("0.75")
+    assert other.sequence < before.sequence
+    assert len([row for row in plan.schedule_items if row.schedule_kind == "cleaning" and not row.excluded]) == 2
+
+
+def test_manual_pf_is_valid_source_and_unknown_source_is_rejected(client, db):
+    plan, demand = make_plan(db)
+    service = PlanService(db)
+    values = {"product_id": demand.product_id, "line_id": plan.schedule_items[0].line_id, "production_date": plan.horizon_start, "quantity": 10, "source_kind": "pf"}
+    service.create_manual_task(plan, values)
+    assert any(row.source_kind == "pf" and row.quantity == 10 for row in plan.schedule_items)
+    with pytest.raises(ValueError):
+        service.create_manual_task(plan, {**values, "source_kind": "unknown"})
+
+
+def test_complete_ohl_upgrade_is_once_and_preserves_unchanged_execution_metadata(db):
+    plan, demand = make_plan(db, 50)
+    original = next(row for row in plan.schedule_items if row.schedule_kind == "production")
+    original.execution_status = "exported"; original.execution_note = "Existing export"; db.commit()
+    service = PlanService(db)
+    assert service.apply_complete_ohl_upgrade() is True
+    current = next(row for row in plan.schedule_items if row.schedule_kind == "production")
+    assert current.execution_status == "exported" and current.execution_note == "Existing export"
+    revision = plan.revision
+    assert service.apply_complete_ohl_upgrade() is False
+    assert plan.revision == revision

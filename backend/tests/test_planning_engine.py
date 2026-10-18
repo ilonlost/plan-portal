@@ -233,3 +233,34 @@ def test_line_startup_and_changeover_reduce_capacity() -> None:
     )
     assert items[0].status == "planned"
     assert items[1].status == "unscheduled"
+
+
+def test_ohl_is_fully_placed_on_required_day_even_when_capacity_is_exceeded():
+    day = date(2026, 10, 22)
+    from datetime import timedelta
+    items = PlanningEngine().plan(
+        [DemandInput(1, 1, "OHL", Decimal("250"), day, day, source_kind="ohl", exact_date=True), DemandInput(2, 1, "ZAM", Decimal("100"), day, day, source_kind="zam")],
+        [CapabilityInput(1, 1, Decimal("100"))],
+        [CapacityInput(1, day, Decimal("1")), CapacityInput(1, day + timedelta(days=1), Decimal("1"))], day + timedelta(days=1),
+    )
+    ohl = [item for item in items if item.source_kind == "ohl"]
+    zam = [item for item in items if item.source_kind == "zam"]
+    assert sum(item.quantity for item in ohl) == 250
+    assert all(item.production_date == day for item in ohl)
+    assert any("сверх" in warning for item in ohl for warning in item.warnings)
+    assert all(item.production_date == day + timedelta(days=1) for item in zam)
+    assert all(item.marking_date == item.production_date for item in zam)
+
+
+def test_ohl_closed_day_keeps_full_volume_but_missing_mapping_is_still_an_error():
+    day = date(2026, 10, 22)
+    items = PlanningEngine().plan([DemandInput(1, 1, "OHL", Decimal("20"), day, day, source_kind="ohl"), DemandInput(2, 2, "UNKNOWN", Decimal("10"), day, day, source_kind="ohl")], [CapabilityInput(1, 1, Decimal("100"))], [], day)
+    assert items[0].production_date == day and items[0].quantity == 20
+    assert items[1].production_date is None and items[1].status == "unscheduled"
+
+
+def test_manual_pc_washes_use_their_recorded_duration_without_default_reserve():
+    day = date(2026, 10, 22)
+    items = PlanningEngine().plan([DemandInput(1, 1, "ZAM", Decimal("200"), day, day, source_kind="zam")], [CapabilityInput(1, 1, Decimal("100"), workshop_code="PC")], [CapacityInput(1, day, Decimal("2"))], day, manual_cleaning_days={(1, day)})
+    assert sum(row.quantity for row in items if row.production_date == day) == 200
+    assert not any(row.status == "unscheduled" for row in items)

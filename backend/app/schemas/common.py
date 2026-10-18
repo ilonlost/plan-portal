@@ -119,6 +119,8 @@ class ScheduleItemUpdate(BaseModel):
     excluded: bool | None = None
     comment: str | None = None
     before_item_id: int | None = None
+    duration_minutes: int | None = Field(default=None, gt=0, le=1440)
+    sequence: int | None = Field(default=None, ge=1)
 
 
 class ScheduleEventCreate(BaseModel):

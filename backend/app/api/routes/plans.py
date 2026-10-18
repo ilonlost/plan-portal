@@ -50,7 +50,7 @@ class ManualTaskCreate(BaseModel):
     marking_date: date | None = None
     shift: str = "day"
     quantity: Decimal = Field(gt=0)
-    source_kind: str = "generic"
+    source_kind: Literal["ohl", "zam", "generic", "pf"] = "generic"
 
 
 class BulkDeleteRequest(BaseModel):
@@ -148,7 +148,7 @@ def active_plan_matrix(
                 "gap_hours": max(Decimal("0"), capacity - hours),
                 "ohl_kg": sum((Decimal(item.quantity_kg or 0) for item in day_items if item.source_kind == "ohl"), Decimal("0")),
                 "zam_kg": sum((Decimal(item.quantity_kg or 0) for item in day_items if item.source_kind == "zam"), Decimal("0")),
-                "items": [schedule_item_dict(item) for item in sorted(day_items, key=lambda value: (value.shift, value.sequence))],
+                "items": [schedule_item_dict(item) for item in sorted(day_items, key=lambda value: value.sequence)],
             })
         workshop["lines"].append({"id": line.id, "code": line.code, "name": line.name, "cells": cells})
     unplaced = list(db.scalars(select(ProductionScheduleItem).where(
