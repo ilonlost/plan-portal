@@ -207,11 +207,16 @@ export interface PortalConfiguration {
   full_downtime_percent: number;
 }
 
+export interface LineCommentEntry {
+  id: string; line_id: number; date: string; text: string; author_name: string;
+  author_username: string; created_at: string; updated_at: string;
+}
+
 export interface LineInsights {
   issues?: { id: string; line_id: number | null; line_name: string; message: string; start_at?: string; end_at?: string }[];
   source_status: "connected" | "not_configured" | "unavailable" | "hidden";
   partial_downtime_percent: number | null; full_downtime_percent: number | null;
-  comments: { id: number; line_id: number; date: string; text: string; author_name: string; updated_at: string }[];
+  comments: LineCommentEntry[];
   downtimes: { id: string; line_id: number; date: string; start_at: string; end_at: string; downtime_type: "partial" | "full" | "unknown"; reason: string; hours: number; loss_percent: number | null; average_rate_kg_hour: number; estimated_loss_kg: number | null }[];
 }
 

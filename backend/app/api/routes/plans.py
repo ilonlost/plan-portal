@@ -154,7 +154,7 @@ def active_plan_matrix(
     unplaced = list(db.scalars(select(ProductionScheduleItem).where(
         ProductionScheduleItem.plan_id == plan.id, ProductionScheduleItem.production_date.is_(None),
         ProductionScheduleItem.excluded.is_(False),
-    ).options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item))))
+    ).options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item)))) if user.role in {"admin", "planner"} else []
     unplaced = [item for item in unplaced if item.line_id in line_ids or (item.line_id is None and user.role != "master" and not line_id and not workshop_code)]
     return {"plan": {"id": plan.id, "name": plan.name, "status": plan.status.value, "version": plan.revision}, "dates": dates, "workshops": list(workshops.values()), "unscheduled": [schedule_item_dict(item) for item in unplaced]}
 

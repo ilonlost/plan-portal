@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
 from app.core.security import UserContext, current_user, require_planner
-from app.models.entities import AuditEvent, DemandItem, LineCapacity, LineCapability, LineComment, LineScheduleTemplate, ProductionLine, ProductionPlan, ProductionScheduleItem
+from app.models.entities import AuditEvent, DemandItem, LineCapacity, LineCapability, LineComment, LineCommentMessage, LineScheduleTemplate, ProductionLine, ProductionPlan, ProductionScheduleItem
 from app.services.line_schedule_service import DEFAULT_ANCHOR, SCHEDULE_LABELS, ensure_line_capacities, shift_hours
 from app.services.plan_service import PlanService
 from app.services.downtime_service import load_downtimes, resolve_downtime_line
@@ -41,12 +41,11 @@ def line_insights(
     if end < start or (end - start).days > 31:
         from fastapi import HTTPException
         raise HTTPException(422, "Период должен быть от 1 до 31 дня")
-    comments = list(db.scalars(select(LineComment).where(LineComment.comment_date >= start, LineComment.comment_date <= end)))
+    comments = line_conversation(db, start, end)
     if not DOWNTIME_INSIGHTS_ENABLED or user.role != "admin":
         return {
             "source_status": "hidden", "partial_downtime_percent": None, "full_downtime_percent": None,
-            "comments": [{"id": row.id, "line_id": row.line_id, "date": row.comment_date, "text": row.text,
-                          "author_name": row.author_name, "updated_at": row.updated_at} for row in comments],
+            "comments": comments,
             "downtimes": [], "issues": [],
         }
     lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
@@ -98,13 +97,24 @@ def line_insights(
         "source_status": source_status,
         "partial_downtime_percent": partial_percent,
         "full_downtime_percent": full_percent,
-        "comments": [{"id": row.id, "line_id": row.line_id, "date": row.comment_date, "text": row.text,
-                      "author_name": row.author_name, "updated_at": row.updated_at} for row in comments],
+        "comments": comments,
         "downtimes": downtimes,
         "issues": issues,
     }
 
 
+def line_conversation(db: Session, start: date, end: date) -> list[dict]:
+    messages = []
+    for model, prefix in ((LineComment, "legacy"), (LineCommentMessage, "message")):
+        for row in db.scalars(select(model).where(model.comment_date >= start, model.comment_date <= end)):
+            created_at = row.updated_at if isinstance(row, LineComment) else row.created_at
+            messages.append({"id": f"{prefix}-{row.id}", "line_id": row.line_id, "date": row.comment_date,
+                             "text": row.text, "author_name": row.author_name, "author_username": row.author_username,
+                             "created_at": created_at, "updated_at": created_at})
+    return sorted(messages, key=lambda row: (row["date"], row["created_at"].isoformat(), row["id"].split("-")[0], int(row["id"].split("-")[1])))
+
+
+@router.post("/{line_id}/comments/{comment_date}")
 @router.put("/{line_id}/comments/{comment_date}")
 def save_line_comment(
     line_id: int, comment_date: date, payload: LineCommentUpdate,
@@ -118,23 +128,16 @@ def save_line_comment(
         raise HTTPException(403, "Недостаточно прав для комментария")
     if user.role == "master" and (user.line_name != line.name or (user.workshop_code and user.workshop_code != line.workshop_code)):
         raise HTTPException(403, "Мастер может комментировать только свою линию")
-    row = db.scalar(select(LineComment).where(LineComment.line_id == line_id, LineComment.comment_date == comment_date))
     clean = payload.text.strip()
     if not clean:
-        if row:
-            db.delete(row)
-        db.commit()
-        send_notification(db, "line_comment_updated", f"PLAN Portal: комментарий мастера удалён · {line.name}", f"{user.display_name} удалил комментарий по линии {line.name} за {comment_date}.")
-        return {"ok": True, "comment": None}
-    if not row:
-        row = LineComment(line_id=line_id, comment_date=comment_date, text=clean, author_username=user.username, author_name=user.display_name)
-        db.add(row)
-    else:
-        row.text, row.author_username, row.author_name, row.updated_at = clean, user.username, user.display_name, datetime.now(timezone.utc)
-    db.add(AuditEvent(username=user.username, action="line_comment_updated", entity_type="production_line", entity_id=str(line_id), details={"date": comment_date.isoformat()}))
+        raise HTTPException(422, "Введите комментарий")
+    row = LineCommentMessage(line_id=line_id, comment_date=comment_date, text=clean, author_username=user.username, author_name=user.display_name)
+    db.add(row)
+    db.flush()
+    db.add(AuditEvent(username=user.username, action="line_comment_added", entity_type="production_line", entity_id=str(line_id), details={"date": comment_date.isoformat(), "message_id": row.id}))
     db.commit(); db.refresh(row)
-    send_notification(db, "line_comment_updated", f"PLAN Portal: комментарий мастера · {line.name}", f"{user.display_name}, линия {line.name}, {comment_date}:\n{clean}")
-    return {"ok": True, "comment": {"id": row.id, "line_id": row.line_id, "date": row.comment_date, "text": row.text, "author_name": row.author_name, "updated_at": row.updated_at}}
+    send_notification(db, "line_comment_added", f"PLAN Portal: комментарий · {line.name}", f"{user.display_name}, линия {line.name}, {comment_date}:\n{clean}")
+    return {"ok": True, "comment": {"id": f"message-{row.id}", "line_id": row.line_id, "date": row.comment_date, "text": row.text, "author_name": row.author_name, "author_username": row.author_username, "created_at": row.created_at, "updated_at": row.created_at}}
 
 
 class LineScheduleUpdate(BaseModel):

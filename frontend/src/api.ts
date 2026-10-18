@@ -104,8 +104,8 @@ export const api = {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),
   }),
   lineInsights: (start: string, end: string, signal?: AbortSignal) => request<import("./types").LineInsights>(`/lines/insights?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, { signal }),
-  saveLineComment: (lineId: number, date: string, text: string) => request<{ ok: boolean }>(`/lines/${lineId}/comments/${date}`, {
-    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+  saveLineComment: (lineId: number, date: string, text: string) => request<{ ok: boolean; comment: import("./types").LineCommentEntry }>(`/lines/${lineId}/comments/${date}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
   }),
   shelfLife: (skus: string[]) => request<{ configured: boolean; values: Record<string, string | null> }>("/catalog/shelf-life", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ skus }),

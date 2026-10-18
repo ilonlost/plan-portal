@@ -970,3 +970,73 @@ def test_removing_older_source_keeps_latest_demand_and_unrelated_manual_event(cl
     assert [row.id for row in PlanService(db)._latest_source_demands()] == [demand.id]
     assert db.get(ProductionScheduleItem, manual_id).reason == "Газ"
     assert any(item.demand_item_id == demand.id for item in plan.schedule_items)
+
+
+def test_line_conversation_appends_replies_and_keeps_legacy_comment(client, db):
+    from app.models.entities import LineCommentMessage
+    line = db.scalar(select(ProductionLine))
+    db.add(LineComment(line_id=line.id, comment_date=date(2026, 10, 18), text="Старое сообщение", author_username="old.master", author_name="Мастер")); db.commit()
+    path = f"/lines/{line.id}/comments/2026-10-18"
+    first = client.post(path, json={"text": "Первый ответ"})
+    assert first.status_code == 200
+    assert first.json()["comment"]["author_username"] == "regular.admin"
+    actor = db.scalar(select(User).where(User.username == "regular.admin"))
+    actor.role = "planner"; actor.display_name = "Планер"; db.commit()
+    assert client.post(path, json={"text": "Второй ответ"}).status_code == 200
+    messages = client.get("/lines/insights?start=2026-10-18&end=2026-10-18").json()["comments"]
+    assert {row["text"] for row in messages} == {"Старое сообщение", "Первый ответ", "Второй ответ"}
+    assert len({row["id"] for row in messages}) == 3
+    assert next(row for row in messages if row["text"] == "Второй ответ")["author_name"] == "Планер"
+    assert all(row["created_at"] for row in messages)
+    assert db.scalar(select(func.count(LineCommentMessage.id))) == 2
+    assert client.post(path, json={"text": "   "}).status_code == 422
+    assert client.post(path, json={"text": "x" * 2001}).status_code == 422
+    assert db.scalar(select(func.count(LineCommentMessage.id))) == 2
+    assert db.scalar(select(LineComment)).text == "Старое сообщение"
+
+
+def test_line_conversation_obeys_writer_permissions_and_date_scope(client, db):
+    line, other = list(db.scalars(select(ProductionLine).limit(2)))
+    actor = db.scalar(select(User).where(User.username == "regular.admin"))
+    actor.role = "master"; actor.line_name = line.name; actor.workshop_code = line.workshop_code; db.commit()
+    assert client.post(f"/lines/{line.id}/comments/2026-10-18", json={"text": "Сообщение мастера"}).status_code == 200
+    assert client.post(f"/lines/{other.id}/comments/2026-10-18", json={"text": "Чужая линия"}).status_code == 403
+    actor.role = "viewer"; db.commit()
+    assert client.post(f"/lines/{line.id}/comments/2026-10-18", json={"text": "Просмотр"}).status_code == 403
+    assert len(client.get("/lines/insights?start=2026-10-18&end=2026-10-18").json()["comments"]) == 1
+    assert not client.get("/lines/insights?start=2026-10-19&end=2026-10-19").json()["comments"]
+
+
+@pytest.mark.parametrize("role,visible", [("admin", True), ("planner", True), ("master", False), ("viewer", False)])
+def test_only_planners_receive_unplaced_diagnostics(client, db, role, visible):
+    plan, demand = make_plan(db)
+    for row in db.scalars(select(LineCapability).where(LineCapability.product_id == demand.product_id)):
+        db.delete(row)
+    db.flush(); PlanService(db).calculate(plan, [demand]); db.commit()
+    actor = db.scalar(select(User).where(User.username == "regular.admin"))
+    actor.role = role; actor.line_name = "Сэндвичи"; db.commit()
+    response = client.get("/plans/active/matrix?start=2026-09-08&days=1")
+    assert response.status_code == 200
+    assert bool(response.json()["unscheduled"]) is visible
+
+
+def test_conversation_migration_preserves_legacy_comments_and_allows_multiple_messages():
+    import importlib.util
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    migration_path = Path(__file__).parents[1] / "alembic/versions/20261018_0019_line_comment_messages.py"
+    spec = importlib.util.spec_from_file_location("conversation_migration", migration_path)
+    migration = importlib.util.module_from_spec(spec); spec.loader.exec_module(migration)
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE production_lines (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql("INSERT INTO production_lines VALUES (1)")
+        connection.exec_driver_sql("CREATE TABLE line_comments (id INTEGER PRIMARY KEY, text TEXT)")
+        connection.exec_driver_sql("INSERT INTO line_comments VALUES (1, 'legacy')")
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+        for content in ("first", "second"):
+            connection.exec_driver_sql("INSERT INTO line_comment_messages(line_id,comment_date,text,author_username,author_name) VALUES (1,'2026-10-18',?,'test','Test')", (content,))
+        assert connection.exec_driver_sql("SELECT text FROM line_comments").scalar() == "legacy"
+        assert connection.exec_driver_sql("SELECT COUNT(*) FROM line_comment_messages").scalar() == 2
+    engine.dispose()
