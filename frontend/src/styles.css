@@ -438,6 +438,11 @@ body { min-width: 820px; }
 .daily-line-side .daily-line-name { width:100%; min-width:0; }
 .daily-items { min-width:0; grid-template-columns:repeat(auto-fill,minmax(min(260px,100%),1fr)); align-items:start; }
 .sku-card,.sku-facts,.sku-facts > span { min-width:0; }
+.sku-card { position:relative; }
+.sku-card .sku-card-head { padding-right:22px; }
+.sku-card-shift { position:absolute; top:10px; right:10px; display:flex; align-items:center; }
+.sku-card-shift .shift-mark { padding:0; background:transparent; }
+.sku-card.technical-task .sku-facts { grid-template-columns:1fr; }
 .sku-card-head { flex-wrap:wrap; }
 .line-operations { min-width:0; padding:10px; }
 .line-comment-box,.downtime-box { min-width:0; max-width:100%; }
