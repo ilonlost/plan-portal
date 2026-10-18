@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+from datetime import date, timedelta
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -13,7 +14,7 @@ class ExcelExportService:
     HEADERS = [
         "№", "Дата", "Смена", "Линия", "Тип записи", "Продукт", "Артикул",
         "Количество источника", "Ед. источника", "Задание, шт.", "Задание, кг", "Коробов", "Квантов",
-        "Время, ч", "Загрузка смены, %", "Причина", "Статус", "Источник", "Предупреждения",
+        "Время, ч", "Загрузка смены, %", "Причина", "Статус", "Источник", "Предупреждения", "Дата отгрузки",
     ]
 
     def __init__(self) -> None:
@@ -63,13 +64,13 @@ class ExcelExportService:
                 self._float(item.get("quantity_units")), self._float(item.get("quantity_kg") or item.get("quantity")), self._float(item.get("box_count")),
                 self._float(item.get("batch_count")), float(item.get("required_hours", 0)),
                 float(item.get("load_percent", 0)), item.get("reason"), item.get("status"),
-                item.get("source"), "; ".join(item.get("warnings", [])),
+                item.get("source"), "; ".join(item.get("warnings", [])), self._shipping_date(item),
             ])
             status = item.get("status")
             color = "FCE8EC" if status in {"conflict", "unscheduled"} else "FFF5DF" if status == "warning" else "EAF8F1"
             for cell in sheet[sheet.max_row]:
                 cell.fill = PatternFill("solid", fgColor=color)
-        widths = [8, 14, 10, 24, 16, 30, 16, 20, 14, 16, 16, 12, 12, 14, 20, 30, 16, 14, 44]
+        widths = [8, 14, 10, 24, 16, 30, 16, 20, 14, 16, 16, 12, 12, 14, 20, 30, 16, 14, 44, 18]
         for index, width in enumerate(widths, start=1):
             sheet.column_dimensions[sheet.cell(1, index).column_letter].width = width
         sheet.freeze_panes = "A2"
@@ -78,3 +79,18 @@ class ExcelExportService:
     @staticmethod
     def _float(value):
         return float(value) if value is not None else None
+
+    @staticmethod
+    def _shipping_date(item: dict):
+        value = item.get("shipping_date")
+        if value:
+            return value
+        value = item.get("marking_date")
+        if not value:
+            return None
+        if isinstance(value, date):
+            return value - timedelta(days=1)
+        try:
+            return date.fromisoformat(str(value)[:10]) - timedelta(days=1)
+        except ValueError:
+            return None

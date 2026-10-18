@@ -48,6 +48,7 @@ export const api = {
   activePlan: () => optional<PlanData>("/plans/active"),
   matrix: (params = "", signal?: AbortSignal) => optional<MatrixData>(`/plans/active/matrix${params ? `?${params}` : ""}`, { signal }),
   planRevision: (signal?: AbortSignal) => optional<{ id: number; version: number }>("/plans/active/revision", { signal }),
+  recalculatePlan: () => request<{ ok: boolean; plan_recalculated: boolean; plan_id: number; version: number; unscheduled_count: number }>("/plans/active/recalculate", { method: "POST" }),
   lines: () => request<LineData[]>("/lines"),
   lineSchedule: (lineId: number, start: string, days = 14) => request<LineScheduleData>(`/lines/${lineId}/schedule?start=${encodeURIComponent(start)}&days=${days}`),
   updateLineSchedule: (lineId: number, data: { schedule_code: string; anchor_date: string; template_id?: number | null; mail_recipients?: string; csb_line_code?: string; csb_t5?: string; csb_t55?: string; planning_settings: object; slots: { capacity_date: string; day_hours: number; night_hours: number; note?: string | null }[] }) => request<{ ok: boolean; plan_recalculated: boolean }>(`/lines/${lineId}/schedule`, {

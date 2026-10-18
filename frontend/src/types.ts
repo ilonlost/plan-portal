@@ -10,7 +10,7 @@ export interface UserProfile {
 export interface SessionMode { auth_mode: string; }
 
 export interface ScheduleItem {
-  id: number; sequence: number; production_date: string | null; marking_date: string | null; line_id: number | null;
+  id: number; sequence: number; production_date: string | null; marking_date: string | null; shipping_date: string | null; line_id: number | null;
   line_code: string | null; line_name: string | null; workshop_code: string | null; workshop_name: string | null;
   product_id: number | null; product_name: string; sku: string; quantity: number; required_hours: number;
   load_percent: number; shift: string; source_quantity: number | null; source_unit: string;
@@ -202,8 +202,8 @@ export interface PortalConfiguration {
 
 export interface LineInsights {
   issues?: { id: string; line_id: number | null; line_name: string; message: string; start_at?: string; end_at?: string }[];
-  source_status: "connected" | "not_configured" | "unavailable";
-  partial_downtime_percent: number; full_downtime_percent: number;
+  source_status: "connected" | "not_configured" | "unavailable" | "hidden";
+  partial_downtime_percent: number | null; full_downtime_percent: number | null;
   comments: { id: number; line_id: number; date: string; text: string; author_name: string; updated_at: string }[];
   downtimes: { id: string; line_id: number; date: string; start_at: string; end_at: string; downtime_type: "partial" | "full" | "unknown"; reason: string; hours: number; loss_percent: number | null; average_rate_kg_hour: number; estimated_loss_kg: number | null }[];
 }

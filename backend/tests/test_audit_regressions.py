@@ -19,7 +19,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.core.config import settings
 from app.core.security import UserContext, create_session_token, parse_session_token
-from app.api.routes import session, plans, imports, catalog, admin, advance_confirmations, production_fact
+from app.api.routes import session, plans, imports, catalog, admin, advance_confirmations, production_fact, lines
 from app.models.entities import User, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, LineCapability, LineCapacity, DemandItem, ImportedOrder
 from app.schemas.common import ImportConfirmRequest
 from app.services.import_service import ExcelImportService
@@ -51,6 +51,7 @@ def client(db, monkeypatch):
     app = FastAPI()
     app.include_router(session.router)
     app.include_router(plans.router)
+    app.include_router(lines.router)
     app.include_router(imports.router)
     app.include_router(advance_confirmations.router)
     app.include_router(catalog.router)
@@ -395,6 +396,28 @@ def test_product_soft_delete_keeps_plan_and_catalog_relations(client, db):
     assert client.get("/catalog").json()["products"] == []
 
 
+def test_catalog_create_restores_soft_deleted_sku_instead_of_duplicate_error(client, db):
+    plan, demand = make_plan(db)
+    product_id = demand.product_id
+    deleted = client.delete(f"/catalog/products/{product_id}")
+    assert deleted.status_code == 200, deleted.text
+
+    restored = client.post("/catalog/products", json={
+        "sku": demand.sku, "product_name": "Восстановленный товар", "state": "ОХЛ",
+        "line_id": db.scalar(select(LineCapability).where(LineCapability.product_id == product_id)).line_id,
+        "units_per_hour": 100,
+    })
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["restored"] is True
+    assert restored.json()["product_id"] == product_id
+    catalog_body = client.get("/catalog").json()
+    found = next(row for row in catalog_body["products"] if row["sku"] == demand.sku)
+    assert found["product_name"] == "Восстановленный товар"
+    assert found["capability_count"] == 1
+    assert not catalog_body["unmapped_products"]
+    assert db.get(ProductionPlan, plan.id) is not None
+
+
 def test_catalog_xlsx_roundtrip_updates_without_deleting_missing_rows(client, db):
     plan, demand = make_plan(db)
     exported = client.get("/catalog/export.xlsx")
@@ -497,6 +520,60 @@ def test_catalog_speed_recalculates_without_changing_shift_capacity(client, db):
     assert not any(i.status.value == "unscheduled" for i in plan.schedule_items if not i.excluded)
 
 
+def test_catalog_quantum_change_updates_manually_moved_plan_task(client, db):
+    plan, demand = make_plan(db, 103)
+    product = demand.product
+    product.box_weight_kg = None
+    product.unit_weight_kg = None
+    capability = db.scalar(select(LineCapability).where(LineCapability.product_id == product.id))
+    capability.batch_quantum_kg = Decimal("10")
+    db.commit()
+    item = next(row for row in plan.schedule_items if row.schedule_kind == "production")
+    service = PlanService(db)
+    service.update_item(item, {"quantity": 103, "production_date": item.production_date, "line_id": item.line_id, "locked": True})
+    assert item.source == "manual" and item.quantity == Decimal("110")
+
+    response = client.patch(f"/catalog/capabilities/{capability.id}", json={"batch_quantum_kg": 25})
+    assert response.status_code == 200, response.text
+    assert item.quantity == Decimal("125")
+    assert item.batch_count == Decimal("5.000")
+
+
+def test_catalog_advance_status_change_updates_existing_manual_task_date(client, db):
+    plan, demand = make_plan(db)
+    demand.product.advance_status = "По графику"
+    PlanService(db).calculate(plan, [demand])
+    item = next(row for row in plan.schedule_items if row.schedule_kind == "production")
+    old_date = demand.requested_date
+    assert item.production_date == old_date
+    planner_date = old_date + timedelta(days=2)
+    PlanService(db).update_item(item, {"production_date": planner_date, "line_id": item.line_id, "locked": True})
+
+    response = client.patch(f"/catalog/products/{demand.product_id}", json={"advance_status": "АЗ"})
+    assert response.status_code == 200, response.text
+    assert demand.requested_date == old_date - timedelta(days=1)
+    assert item.production_date == planner_date - timedelta(days=1)
+
+
+def test_catalog_line_change_moves_manual_task_to_valid_mapping(client, db):
+    plan, demand = make_plan(db)
+    capability = db.scalar(select(LineCapability).where(LineCapability.product_id == demand.product_id))
+    old_line_id = capability.line_id
+    target = db.scalar(select(ProductionLine).where(
+        ProductionLine.workshop_code == capability.line.workshop_code,
+        ProductionLine.id != old_line_id,
+    ))
+    item = next(row for row in plan.schedule_items if row.schedule_kind == "production")
+    PlanService(db).update_item(item, {"production_date": item.production_date, "line_id": item.line_id, "locked": True})
+
+    response = client.patch(f"/catalog/products/{demand.product_id}", json={
+        "capability_id": capability.id, "line_id": target.id, "units_per_hour": 100,
+    })
+    assert response.status_code == 200, response.text
+    assert item.source == "manual"
+    assert item.line_id == target.id
+
+
 def test_product_line_change_immediately_rebuilds_active_plan(client, db):
     plan, demand = make_plan(db)
     capability = db.scalar(select(LineCapability).where(LineCapability.product_id == demand.product_id))
@@ -509,6 +586,73 @@ def test_product_line_change_immediately_rebuilds_active_plan(client, db):
     assert response.json()["plan_recalculated"] is True
     assert plan.revision > previous_revision
     assert {item.line_id for item in plan.schedule_items if not item.excluded and item.schedule_kind == "production"} == {target.id}
+
+
+def test_unplaced_refresh_recalculates_and_clears_resolved_catalog_warning(client, db):
+    plan, demand = make_plan(db)
+    capability = db.scalar(select(LineCapability).where(LineCapability.product_id == demand.product_id))
+    db.delete(capability)
+    demand.validation_errors = [
+        "Артикул отсутствует в справочнике мощностей: он будет добавлен в список нераспределённых"
+    ]
+    PlanService(db).calculate(plan, [demand])
+    assert sum(
+        item.status.value == "unscheduled" and not item.excluded
+        for item in plan.schedule_items
+    ) == 1
+
+    response = client.post("/plans/active/recalculate")
+    assert response.status_code == 200, response.text
+    assert response.json()["unscheduled_count"] == 1
+
+    line = db.scalar(select(ProductionLine).where(ProductionLine.name == "Сэндвичи"))
+    db.add(LineCapability(line_id=line.id, product_id=demand.product_id, units_per_hour=100))
+    db.commit()
+    response = client.post("/plans/active/recalculate")
+    assert response.status_code == 200, response.text
+    assert response.json()["unscheduled_count"] == 0
+    assert not demand.validation_errors
+    assert not any(
+        item.status.value == "unscheduled" and not item.excluded
+        for item in plan.schedule_items
+    )
+
+
+def test_planner_only_can_recalculate_active_plan(client, db):
+    make_plan(db)
+    db.scalar(select(User).where(User.username == "regular.admin")).role = "viewer"
+    db.commit()
+    assert client.post("/plans/active/recalculate").status_code == 403
+
+
+def test_downtime_insights_are_hidden_for_non_admin_users(client, db, monkeypatch):
+    db.scalar(select(User).where(User.username == "regular.admin")).role = "planner"
+    db.commit()
+    monkeypatch.setattr(lines, "load_downtimes", lambda *_: pytest.fail("non-admin must not query downtime source"))
+    response = client.get("/lines/insights?start=2026-09-08&end=2026-09-08")
+    assert response.status_code == 200
+    assert response.json()["source_status"] == "hidden"
+    assert response.json()["downtimes"] == [] and response.json()["issues"] == []
+
+
+def test_shipping_date_stays_fixed_when_production_item_moves(client, db):
+    plan, demand = make_plan(db)
+    demand.product.advance_status = "По графику"
+    demand.marking_date = date(2026, 9, 8)
+    PlanService(db).calculate(plan, [demand])
+    item = next(row for row in plan.schedule_items if row.schedule_kind == "production")
+    marking_date = item.marking_date
+    shipping_date = marking_date - timedelta(days=1)
+    next_day = item.production_date + timedelta(days=1)
+    client.patch(
+        f"/plans/{plan.id}/items/{item.id}",
+        headers={"If-Match": str(plan.revision)},
+        json={"production_date": next_day.isoformat(), "line_id": item.line_id, "locked": True},
+    )
+    assert item.production_date == next_day
+    assert item.marking_date == marking_date
+    from app.services.plan_service import schedule_item_dict
+    assert schedule_item_dict(item)["shipping_date"] == shipping_date
 
 
 def test_advance_date_and_production_day_do_not_shift_twice(db):
@@ -586,7 +730,7 @@ def test_department_templates_do_not_leak_production_fields():
     warehouse = build_plan_email_html({}, "Plan", day, day, items, "warehouse")
     materials = build_plan_email_html({}, "Plan", day, day, items, "materials")
     production = build_plan_email_html({}, "Plan", day, day, items)
-    assert "PRIVATE-LINE" not in warehouse and "09.09.2026" in warehouse
+    assert "PRIVATE-LINE" not in warehouse and "08.09.2026" in warehouse
     assert "&lt;Test&gt;" in warehouse
     assert "не заявка на сырьё" in materials
     assert "PRIVATE-LINE" in production

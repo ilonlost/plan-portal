@@ -77,6 +77,16 @@ async def preview_import(file: UploadFile = File(...), user: UserContext = Depen
     try:
         preview = ExcelImportService().parse(content, file.filename)
         names = {line_key(line.name) for line in db.scalars(select(ProductionLine).where(ProductionLine.status == "active"))}
+        mapped_skus = {
+            sku for sku in db.scalars(
+                select(Product.sku).join(LineCapability, LineCapability.product_id == Product.id)
+                .join(ProductionLine, LineCapability.line_id == ProductionLine.id)
+                .where(
+                    Product.active.is_(True), Product.catalog_status == "active",
+                    ProductionLine.status == "active",
+                )
+            )
+        }
         for row in preview.rows:
             if row.line_hint and line_key(row.line_hint) not in names:
                 text = f"Неизвестная линия «{row.line_hint}»: линия не будет создана автоматически"
@@ -85,7 +95,7 @@ async def preview_import(file: UploadFile = File(...), user: UserContext = Depen
                     row.valid = False
                 else:
                     row.warnings.append(text)
-            elif preview.template_type in {"ohl_daily", "quarter_weekly"} and not row.line_hint:
+            elif preview.template_type in {"ohl_daily", "quarter_weekly"} and not row.line_hint and row.sku not in mapped_skus:
                 row.warnings.append("Артикул отсутствует в справочнике мощностей: он будет добавлен в список нераспределённых")
         preview.valid_rows = sum(row.valid for row in preview.rows)
         preview.invalid_rows = len(preview.rows) - preview.valid_rows

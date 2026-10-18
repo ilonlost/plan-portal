@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from contextlib import contextmanager
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
 from html import escape
@@ -34,20 +34,20 @@ def build_plan_xlsx(items: list[dict], audience: str) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "План"
-    headers = ["Дата производства", "Дата маркировки", "Цех", "Линия", "№", "SKU", "Продукция", "Источник", "Смена", "Штуки", "Кг", "Короба", "Время, ч", "Меркурий"]
+    headers = ["Дата производства", "Дата маркировки", "Дата отгрузки", "Цех", "Линия", "№", "SKU", "Продукция", "Источник", "Смена", "Штуки", "Кг", "Короба", "Время, ч", "Меркурий"]
     sheet.append(headers)
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="C8102E")
     for item in items:
         sheet.append([
-            _date(item.get("production_date")), _date(item.get("marking_date")), item.get("workshop_name") or item.get("workshop_code") or "—",
+            _date(item.get("production_date")), _date(item.get("marking_date")), _date(_shipping_date(item)), item.get("workshop_name") or item.get("workshop_code") or "—",
             item.get("line_name") or "—", item.get("sequence") or 0, item.get("sku") or "—", item.get("product_name") or "—",
             str(item.get("source_kind") or "").upper(), "День" if item.get("shift") == "day" else "Ночь",
             float(item.get("quantity_units") or 0), float(item.get("quantity_kg") or 0), float(item.get("box_count") or 0),
             float(item.get("required_hours") or 0), item.get("mercury") or "—",
         ])
-    widths = [18, 18, 13, 24, 7, 15, 48, 12, 12, 14, 14, 12, 12, 14]
+    widths = [18, 18, 18, 13, 24, 7, 15, 48, 12, 12, 14, 14, 12, 12, 14]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + index)].width = width
     sheet.freeze_panes = "A2"
@@ -63,6 +63,19 @@ def _date(value: object) -> str:
         return date.fromisoformat(text[:10]).strftime("%d.%m.%Y")
     except ValueError:
         return text or "—"
+
+
+def _shipping_date(item: dict) -> object | None:
+    value = item.get("shipping_date")
+    if value:
+        return value
+    value = item.get("marking_date")
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10]) - timedelta(days=1)
+    except ValueError:
+        return None
 
 
 def _duration(value: object) -> str:
@@ -92,16 +105,17 @@ def build_plan_email_html(
         for item in items:
             if item.get("schedule_kind", "production") != "production" or item.get("status") in {"conflict", "unscheduled"}:
                 continue
-            day = item.get("marking_date") or item.get("production_date") if audience == "warehouse" else item.get("production_date")
-            key = (_date(day), str(item.get("sku") or ""), str(item.get("product_name") or ""))
+            production_day = item.get("production_date")
+            shipping_day = _shipping_date(item) or production_day
+            key = (_date(production_day), _date(shipping_day), str(item.get("sku") or ""), str(item.get("product_name") or ""))
             quantity, boxes, units, mercury = grouped.get(key, (0.0, 0.0, 0.0, "—"))
             grouped[key] = (quantity + float(item.get("quantity_kg") or 0), boxes + float(item.get("box_count") or 0), units + float(item.get("quantity_units") or 0), item.get("mercury") or mercury)
         if audience == "warehouse":
-            body = "".join(f"<tr><td>{escape(day)}</td><td>{escape(sku)}</td><td>{escape(name)}</td><td>{quantity:,.3f}</td><td>{boxes:,.0f}</td><td>{escape(str(mercury))}</td></tr>" for (day, sku, name), (quantity, boxes, units, mercury) in sorted(grouped.items()))
-            columns = "<th>Дата</th><th>SKU</th><th>Продукция</th><th>Кг</th><th>Короба</th><th>Меркурий</th>"
+            body = "".join(f"<tr><td>{escape(production_day)}</td><td>{escape(shipping_day)}</td><td>{escape(sku)}</td><td>{escape(name)}</td><td>{quantity:,.3f}</td><td>{boxes:,.0f}</td><td>{escape(str(mercury))}</td></tr>" for (production_day, shipping_day, sku, name), (quantity, boxes, units, mercury) in sorted(grouped.items()))
+            columns = "<th>Дата производства</th><th>Дата отгрузки</th><th>SKU</th><th>Продукция</th><th>Кг</th><th>Короба</th><th>Меркурий</th>"
         else:
-            body = "".join(f"<tr><td>{escape(day)}</td><td>{escape(sku)}</td><td>{escape(name)}</td><td>{units:,.0f}</td><td>{quantity:,.3f}</td><td>{boxes:,.0f}</td></tr>" for (day, sku, name), (quantity, boxes, units, mercury) in sorted(grouped.items()))
-            columns = "<th>Дата</th><th>SKU</th><th>Продукция</th><th>Штуки</th><th>Кг</th><th>Короба</th>"
+            body = "".join(f"<tr><td>{escape(production_day)}</td><td>{escape(shipping_day)}</td><td>{escape(sku)}</td><td>{escape(name)}</td><td>{units:,.0f}</td><td>{quantity:,.3f}</td><td>{boxes:,.0f}</td></tr>" for (production_day, shipping_day, sku, name), (quantity, boxes, units, mercury) in sorted(grouped.items()))
+            columns = "<th>Дата производства</th><th>Дата отгрузки</th><th>SKU</th><th>Продукция</th><th>Штуки</th><th>Кг</th><th>Короба</th>"
         return f'<!doctype html><html><body style="font:14px Arial;color:#202124"><h1>{title}</h1><p>{escape(plan_name)} · {_date(start)} — {_date(end)}</p>{warning}<table border="1" cellpadding="8" cellspacing="0"><tr>{columns}</tr>{body}</table></body></html>'
     accent = str(configuration.get("accent_color") or "#c8102e")
     grouped: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
@@ -116,6 +130,7 @@ def build_plan_email_html(
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">№{int(row.get("sequence") or 0)}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">{escape(str(row.get("sku") or "—"))}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1">{escape(str(row.get("product_name") or "—"))}</td>'
+                f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape(_date(_shipping_date(row)))}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape("День" if row.get("shift") == "day" else "Ночь")}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("quantity_units") or 0):,.0f} шт.</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("quantity_kg") or 0):,.2f} кг</td>'
@@ -126,7 +141,7 @@ def build_plan_email_html(
                 f'<tr><td style="padding:8px 24px 18px"><div style="border:1px solid #dfe2e6;border-left:4px solid {escape(accent)}">'
                 f'<div style="padding:10px 12px;background:#f4f5f7;font-weight:700;color:#202124">{escape(line_name)} · {len(rows)} поз.</div>'
                 '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px;color:#34373c">'
-                '<tr style="background:#fafafa;color:#6f747c"><th align="left" style="padding:7px 10px">№</th><th align="left" style="padding:7px 10px">SKU</th><th align="left" style="padding:7px 10px">Готовая продукция</th><th align="left" style="padding:7px 10px">Смена</th><th align="right" style="padding:7px 10px">Штуки</th><th align="right" style="padding:7px 10px">Кг</th><th align="right" style="padding:7px 10px">Время</th></tr>'
+                '<tr style="background:#fafafa;color:#6f747c"><th align="left" style="padding:7px 10px">№</th><th align="left" style="padding:7px 10px">SKU</th><th align="left" style="padding:7px 10px">Готовая продукция</th><th align="left" style="padding:7px 10px">Дата отгрузки</th><th align="left" style="padding:7px 10px">Смена</th><th align="right" style="padding:7px 10px">Штуки</th><th align="right" style="padding:7px 10px">Кг</th><th align="right" style="padding:7px 10px">Время</th></tr>'
                 f'{body}</table></div></td></tr>'
             )
     intro = escape(str(configuration.get("plan_intro") or "")).replace("\n", "<br>")

@@ -76,6 +76,30 @@ def active_plan_revision(db: Session = Depends(get_db), user: UserContext = Depe
     return {"id": row.id, "version": row.revision}
 
 
+@router.post("/active/recalculate")
+def recalculate_active_plan(db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
+    service = PlanService(db)
+    plan = service.active_plan()
+    if not plan:
+        raise HTTPException(404, "Активный план не найден")
+    db.add(AuditEvent(
+        username=user.username, action="plan_recalculated", entity_type="production_plan",
+        entity_id=str(plan.id), details={"reason": "manual_unplaced_refresh"},
+    ))
+    plan = service.recalculate_after_catalog_change("manual_recalculation")
+    if not plan:
+        raise HTTPException(404, "Активный план не найден")
+    unscheduled_count = db.scalar(select(func.count(ProductionScheduleItem.id)).where(
+        ProductionScheduleItem.plan_id == plan.id,
+        ProductionScheduleItem.production_date.is_(None),
+        ProductionScheduleItem.excluded.is_(False),
+    )) or 0
+    return {
+        "ok": True, "plan_recalculated": True, "plan_id": plan.id,
+        "version": plan.revision, "unscheduled_count": unscheduled_count,
+    }
+
+
 @router.get("/active/matrix")
 def active_plan_matrix(
     start: date | None = None, days: int = 21, workshop_code: str | None = None, line_id: int | None = None,

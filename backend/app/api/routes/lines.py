@@ -39,6 +39,13 @@ def line_insights(
         raise HTTPException(422, "Период должен быть от 1 до 31 дня")
     lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
     comments = list(db.scalars(select(LineComment).where(LineComment.comment_date >= start, LineComment.comment_date <= end)))
+    if user.role != "admin":
+        return {
+            "source_status": "hidden", "partial_downtime_percent": None, "full_downtime_percent": None,
+            "comments": [{"id": row.id, "line_id": row.line_id, "date": row.comment_date, "text": row.text,
+                          "author_name": row.author_name, "updated_at": row.updated_at} for row in comments],
+            "downtimes": [], "issues": [],
+        }
     source_status, external = load_downtimes(start, end)
     configuration = get_portal_configuration(db)
     partial_percent = int(configuration["partial_downtime_percent"])

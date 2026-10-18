@@ -214,8 +214,10 @@ def _save_product_capability(db: Session, product: Product, values: dict) -> Lin
             LineCapability.product_id == product.id, LineCapability.line_id == line_id,
             *( [LineCapability.id != capability.id] if capability else [] ),
         ))
-        if duplicate:
+        if duplicate and capability:
             raise HTTPException(409, "Связь этого артикула и линии уже существует")
+        if duplicate and not capability:
+            capability = duplicate
         if capability:
             capability.line_id = line_id
         elif capability_fields.get("units_per_hour"):
@@ -237,8 +239,23 @@ def create_product(
 ) -> dict:
     values = payload.model_dump(exclude_unset=True)
     sku = values.get("sku", "").strip()
-    if db.scalar(select(Product).where(func.lower(Product.sku) == sku.lower())):
-        raise HTTPException(409, "Артикул уже существует")
+    existing = db.scalar(select(Product).where(func.lower(func.trim(Product.sku)) == sku.lower()))
+    if existing and existing.catalog_status != "deleted":
+        raise HTTPException(409, "Артикул уже существует в справочнике. Найдите его через поиск и откройте строку для изменения.")
+    if existing:
+        # Deletion is a soft hide so historical plans can keep their product
+        # links. Reuse that row instead of making the SKU impossible to restore.
+        product = existing
+        product.name = values.get("product_name", sku).strip()
+        product.active = True
+        product.catalog_status = "active"
+        _product_values(product, values)
+        capability = _save_product_capability(db, product, values)
+        db.add(AuditEvent(username=user.username, action="product_restored", entity_type="product", entity_id=str(product.id), details={"sku": product.sku}))
+        recalculated = _recalculate_active_plan(db)
+        db.commit()
+        send_notification(db, "catalog_product_restored", f"PLAN Portal: восстановлен артикул {product.sku}", f"{user.display_name} восстановил ранее скрытый артикул {product.sku} · {product.name}. Пересчёт плана: {'выполнен' if recalculated else 'не требовался'}.")
+        return {"ok": True, "product_id": product.id, "capability_id": capability.id if capability else None, "plan_recalculated": recalculated, "restored": True}
     product = Product(sku=sku, name=values.get("product_name", sku).strip(), active=True, catalog_status="active")
     db.add(product)
     db.flush()

@@ -225,7 +225,12 @@ class PlanService:
     def recalculate_after_catalog_change(self, change_type: str = "catalog_updated") -> ProductionPlan | None:
         """Immediately rebuild the active plan after any catalog mutation."""
         self.db.flush()
-        plan = self.active_plan()
+        # Serialize catalog-triggered rebuilds and explicit user refreshes so
+        # they cannot replace each other's generated schedule items.
+        plan = self.db.scalar(
+            select(ProductionPlan).where(ProductionPlan.active.is_(True))
+            .order_by(ProductionPlan.updated_at.desc()).with_for_update()
+        )
         if not plan:
             return None
         demands = self._latest_source_demands()
@@ -238,6 +243,7 @@ class PlanService:
         return plan
 
     def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation") -> ProductionPlan:
+        previous_requested_dates = {demand.id: demand.requested_date for demand in demands}
         auto_sort_ranks = {
             (item.demand_item_id, item.line_id, item.production_date, item.shift): item.sort_rank
             for item in plan.schedule_items
@@ -265,6 +271,44 @@ class PlanService:
                 ProductionLine.status == "active", Product.active.is_(True), Product.catalog_status == "active",
             ).options(joinedload(LineCapability.line))
         ))
+        capabilities_by_key = {(capability.line_id, capability.product_id): capability for capability in capabilities}
+        capabilities_by_product: dict[int, list[LineCapability]] = defaultdict(list)
+        for capability in capabilities:
+            capabilities_by_product[capability.product_id].append(capability)
+        demand_by_id = {demand.id: demand for demand in demands}
+        # Manually moved cards stay in place during normal recalculation, but
+        # catalog changes still have to update dates, valid line mappings and
+        # production quantities for those cards.
+        for item in plan.schedule_items:
+            if item.source != "manual" or item.excluded or item.schedule_kind != "production" or not item.product_id:
+                continue
+            demand = demand_by_id.get(item.demand_item_id)
+            if demand and demand.source_kind == "ohl":
+                previous_date = previous_requested_dates.get(demand.id)
+                if previous_date and previous_date != demand.requested_date and item.production_date:
+                    # Keep a planner's relative offset from the requested date,
+                    # while applying the catalog-driven date shift itself.
+                    item.production_date += demand.requested_date - previous_date
+            capability = capabilities_by_key.get((item.line_id, item.product_id))
+            if capability is None:
+                options = sorted(capabilities_by_product.get(item.product_id, []), key=lambda row: (row.line.priority, row.line_id))
+                if options:
+                    preferred_line = (demand.raw_data or {}).get("preferred_line_id") if demand else None
+                    capability = next((row for row in options if row.line_id == preferred_line), options[0])
+                    item.line_id = capability.line_id
+            if capability:
+                self._sync_manual_item_quantity(item, capability)
+        mapped_product_ids = {capability.product_id for capability in capabilities}
+        missing_capability_warning = "Артикул отсутствует в справочнике мощностей: он будет добавлен в список нераспределённых"
+        for demand in demands:
+            # This warning is a snapshot from import time. Once the catalog has
+            # a usable line mapping, keep it from poisoning every subsequent
+            # plan calculation.
+            if demand.product_id in mapped_product_ids and demand.validation_errors:
+                demand.validation_errors = [
+                    warning for warning in demand.validation_errors
+                    if warning != missing_capability_warning
+                ]
         capacities = list(self.db.scalars(select(LineCapacity).where(
             LineCapacity.capacity_date >= plan.horizon_start,
             LineCapacity.capacity_date <= plan.horizon_end,
@@ -404,14 +448,18 @@ class PlanService:
                 setattr(item, field, values[field])
         if "marking_date" in values:
             item.marking_date = values["marking_date"]
-        if values.get("quantity") is not None:
-            item.quantity = self._round_quantity_for_product(Decimal(values["quantity"]), item.product)
-            item.quantity_kg = item.quantity
-            item.box_count = self._box_count(item.quantity, item.product)
+        capability = None
         if item.schedule_kind == "production" and item.line_id and item.product_id:
             capability = self.db.scalar(select(LineCapability).where(
                 LineCapability.line_id == item.line_id, LineCapability.product_id == item.product_id,
             ))
+        if values.get("quantity") is not None:
+            item.quantity = self._round_quantity_for_product(Decimal(values["quantity"]), item.product, capability)
+            item.quantity_kg = item.quantity
+            item.box_count = self._box_count(item.quantity, item.product)
+            if capability and capability.batch_quantum_kg and Decimal(capability.batch_quantum_kg) > 0:
+                item.batch_count = (item.quantity / Decimal(capability.batch_quantum_kg)).quantize(Decimal("0.001"))
+        if item.schedule_kind == "production" and item.line_id and item.product_id:
             if capability and Decimal(capability.units_per_hour) > 0:
                 item.required_hours = self._production_duration(Decimal(item.quantity), Decimal(capability.units_per_hour))
                 item.duration_hours = item.required_hours
@@ -464,13 +512,27 @@ class PlanService:
         return (quantity / quantum).to_integral_value(rounding=ROUND_CEILING) * quantum
 
     @classmethod
-    def _round_quantity_for_product(cls, quantity: Decimal, product: Product | None) -> Decimal:
+    def _round_quantity_for_product(cls, quantity: Decimal, product: Product | None, capability: LineCapability | None = None) -> Decimal:
         rounded_kg = quantity
         box_weight = Decimal(product.box_weight_kg) if product and product.box_weight_kg else None
         if box_weight and box_weight > 0:
             return cls._ceil_quantum(rounded_kg, box_weight)
         unit_weight = Decimal(product.unit_weight_kg) if product and product.unit_weight_kg else None
-        return cls._ceil_quantum(rounded_kg, unit_weight) if unit_weight and unit_weight > 0 else rounded_kg
+        if unit_weight and unit_weight > 0:
+            return cls._ceil_quantum(rounded_kg, unit_weight)
+        batch_quantum = Decimal(capability.batch_quantum_kg) if capability and capability.batch_quantum_kg else None
+        return cls._ceil_quantum(rounded_kg, batch_quantum) if batch_quantum and batch_quantum > 0 else rounded_kg
+
+    @classmethod
+    def _sync_manual_item_quantity(cls, item: ProductionScheduleItem, capability: LineCapability) -> None:
+        quantity = cls._round_quantity_for_product(Decimal(item.quantity_kg or item.quantity or 0), item.product, capability)
+        item.quantity = quantity
+        item.quantity_kg = quantity
+        item.box_count = cls._box_count(quantity, item.product)
+        quantum = Decimal(capability.batch_quantum_kg) if capability.batch_quantum_kg else None
+        item.batch_count = (quantity / quantum).quantize(Decimal("0.001")) if quantum and quantum > 0 else None
+        item.required_hours = cls._production_duration(quantity, Decimal(capability.units_per_hour))
+        item.duration_hours = item.required_hours
 
     @staticmethod
     def _box_count(quantity: Decimal, product: Product | None) -> Decimal | None:
@@ -489,7 +551,7 @@ class PlanService:
         ))
         if not capability or Decimal(capability.units_per_hour) <= 0:
             raise ValueError("Для выбранного SKU не задана скорость на этой линии")
-        quantity = self._round_quantity_for_product(Decimal(values["quantity"]), product)
+        quantity = self._round_quantity_for_product(Decimal(values["quantity"]), product, capability)
         if quantity <= 0:
             raise ValueError("Задание должно быть больше нуля")
         quantum = Decimal(capability.batch_quantum_kg) if capability.batch_quantum_kg else None
@@ -766,6 +828,13 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "actual_quantity_kg": item.actual_quantity_kg,
         "source_kind": item.source_kind,
         "marking_date": item.marking_date,
+        "shipping_date": (
+            item.marking_date
+            or (item.demand_item.due_date if item.demand_item and item.demand_item.source_kind == "ohl" else None)
+        ) - timedelta(days=1) if (
+            item.marking_date
+            or (item.demand_item.due_date if item.demand_item and item.demand_item.source_kind == "ohl" else None)
+        ) else None,
         "execution_status": item.execution_status,
         "execution_note": item.execution_note,
         "reported_by": item.reported_by,
