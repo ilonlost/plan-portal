@@ -61,7 +61,10 @@ def test_source_errors_are_not_returned_with_credentials(monkeypatch):
 
 
 def test_insights_report_invalid_dates_and_do_not_invent_loss_without_tasks(db, monkeypatch):
+    monkeypatch.setattr(line_routes, "DOWNTIME_INSIGHTS_ENABLED", True)
     line = db.scalar(select(ProductionLine))
+    from app.services.settings_service import save_planner_configuration
+    save_planner_configuration(db, {"line_downtime": {str(line.id): {"partial_percent": 35, "full_percent": 90}}}, "test")
     common = {"line_code": line.code, "line_name": line.name, "reason": "Test"}
     monkeypatch.setattr(line_routes, "load_downtimes", lambda *_: ("connected", [
         {**common, "id": "bad", "data_error": "Конец простоя не позже начала", "start_at": datetime(2026, 9, 20, 11), "end_at": datetime(2026, 9, 20, 10)},
@@ -72,6 +75,6 @@ def test_insights_report_invalid_dates_and_do_not_invent_loss_without_tasks(db, 
     assert len(result["issues"]) == 1
     assert result["issues"][0]["line_id"] == line.id
     assert result["issues"][0]["start_at"] > result["issues"][0]["end_at"]
-    assert result["downtimes"][0]["loss_percent"] == 80
+    assert result["downtimes"][0]["loss_percent"] == 90
     assert result["downtimes"][1]["loss_percent"] is None
     assert all(row["estimated_loss_kg"] is None for row in result["downtimes"])

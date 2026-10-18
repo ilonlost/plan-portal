@@ -93,6 +93,13 @@ export const api = {
     body: JSON.stringify({ preview, create_plan: true, merge_into_active: true }),
   }),
   adminOverview: () => request<AdminOverview>("/admin/overview"),
+  plannerAdministration: () => request<import("./types").PlannerAdministration>("/planner-admin"),
+  plannerDirectoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/planner-admin/directory-users?query=${encodeURIComponent(query)}`),
+  plannerUpdateAccess: (id: number, data: { role: string; active: boolean; section_permissions: Record<string, boolean> }) => request<{ ok: boolean }>(`/planner-admin/users/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
+  plannerCreateAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean }) => request<{ ok: boolean }>("/planner-admin/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
+  plannerSaveRecipients: (data: import("./types").PlannerAdministration["recipients"]) => request<{ ok: boolean }>("/planner-admin/recipients", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
+  plannerSaveDowntime: (id: number, data: { partial_percent: number; full_percent: number }) => request<{ ok: boolean }>(`/planner-admin/lines/${id}/downtime`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
+  plannerDeleteSource: (id: number) => request<{ ok: boolean; removed_tasks: number }>(`/planner-admin/sources/${id}`, { method: "DELETE" }),
   updatePortalConfiguration: (configuration: import("./types").PortalConfiguration) => request<{ ok: boolean; configuration: import("./types").PortalConfiguration }>("/admin/portal-configuration", {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),
   }),

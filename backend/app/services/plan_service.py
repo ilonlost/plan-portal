@@ -216,7 +216,9 @@ class PlanService:
         for order in orders:
             key = order.template_type
             if key not in seen:
-                latest_ids.append(order.id)
+                # A removed latest file disables that source; do not resurrect an older upload.
+                if order.status != "deleted":
+                    latest_ids.append(order.id)
                 seen.add(key)
         if not latest_ids:
             return []

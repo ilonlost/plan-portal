@@ -19,7 +19,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.core.config import settings
 from app.core.security import UserContext, create_session_token, parse_session_token
-from app.api.routes import session, plans, imports, catalog, admin, advance_confirmations, production_fact, lines
+from app.api.routes import session, plans, imports, catalog, admin, planner_admin, advance_confirmations, production_fact, lines
 from app.models.entities import User, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, LineCapability, LineCapacity, LineComment, DemandItem, ImportedOrder
 from app.schemas.common import ImportConfirmRequest
 from app.services.import_service import ExcelImportService
@@ -56,6 +56,7 @@ def client(db, monkeypatch):
     app.include_router(advance_confirmations.router)
     app.include_router(catalog.router)
     app.include_router(admin.router)
+    app.include_router(planner_admin.router)
     app.include_router(production_fact.router)
     app.dependency_overrides[get_db] = lambda: db
     client = TestClient(app)
@@ -859,3 +860,113 @@ def test_real_import_pipeline_preserves_capacity_and_status(db, monkeypatch):
     assert product.advance_status == "По графику"
     assert product.fk_status == "Изменено вручную"
     assert len(service._latest_source_demands()) == 802 + 127
+
+
+def test_planner_administration_restricts_roles_and_hides_integration_settings(client, db):
+    actor = db.scalar(select(User).where(User.username == "regular.admin"))
+    actor.role = "planner"
+    protected = User(username="protected.admin", display_name="Protected", role="admin")
+    target = User(username="colleague", display_name="Colleague", role="viewer")
+    db.add_all([protected, target]); db.commit()
+    body = client.get("/planner-admin").json()
+    assert {row["role"] for row in body["users"]} <= {"planner", "viewer"}
+    assert "smtp" not in json.dumps(body).lower()
+    for role in ("admin", "master"):
+        assert client.patch(f"/planner-admin/users/{target.id}", json={"role": role}).status_code == 422
+        assert client.post("/planner-admin/users", json={"username": "new", "role": role}).status_code == 422
+    assert client.patch(f"/planner-admin/users/{protected.id}", json={"role": "viewer"}).status_code == 403
+    assert client.patch(f"/planner-admin/users/{actor.id}", json={"role": "viewer"}).status_code == 409
+    assert client.patch(f"/planner-admin/users/{target.id}", json={"role": "planner", "section_permissions": {"sources": False}}).status_code == 200
+    assert db.get(User, target.id).role == "planner"
+    assert db.get(User, target.id).section_permissions["sources"] is False
+    assert client.post("/planner-admin/users", json={"username": "new.viewer", "role": "viewer"}).status_code == 200
+    assert client.put("/admin/mail-configuration", json={"configuration": {}}).status_code == 403
+    assert client.get("/admin/overview").status_code == 403
+    actor.role = "viewer"; db.commit()
+    assert client.get("/planner-admin").status_code == 403
+    assert client.delete("/planner-admin/sources/1").status_code == 403
+    assert client.put("/planner-admin/recipients", json={"production": "", "materials": "", "warehouse": ""}).status_code == 403
+    actor.role = "master"; db.commit()
+    assert client.get("/planner-admin").status_code == 403
+
+
+def test_planner_recipients_are_separate_and_exact_for_preview_and_delivery(client, db, monkeypatch):
+    from app.services.settings_service import get_mail_configuration, save_mail_configuration
+    from app.services.notification_service import send_notification, resolve_plan_recipients
+    plan, _ = make_plan(db)
+    db.scalar(select(User).where(User.username == "regular.admin")).role = "planner"
+    configuration = get_mail_configuration(db)
+    configuration.update({"smtp_host": "private.mail", "notification_emails": "legacy@example.com", "event_recipients": {"planning": "planning-events@example.com"}, "enabled": False})
+    save_mail_configuration(db, configuration, "test"); db.commit()
+    recipients = {"production": "Production@example.com;production@example.com", "warehouse": "warehouse@example.com", "materials": "raw@example.com"}
+    assert client.put("/planner-admin/recipients", json={**recipients, "smtp_host": "evil"}).status_code == 422
+    assert client.put("/planner-admin/recipients", json={**recipients, "materials": "invalid"}).status_code == 422
+    assert client.put("/planner-admin/recipients", json=recipients).status_code == 200
+    assert get_mail_configuration(db)["smtp_host"] == "private.mail"
+    for audience, expected in (("production", "production@example.com"), ("warehouse", "warehouse@example.com"), ("materials", "raw@example.com")):
+        preview = client.get(f"/admin/mail-preview?start=2026-09-08&end=2026-09-08&audience={audience}")
+        assert preview.status_code == 200
+        assert preview.json()["recipients"] == [expected]
+        result = client.post(f"/plans/{plan.id}/email", json={"start": "2026-09-08", "end": "2026-09-08", "audience": audience, "recipients": ["extra@example.com"]})
+        assert result.status_code == 200
+        assert result.json()["recipients"] == [expected, "extra@example.com"]
+    assert resolve_plan_recipients(db, "warehouse", ["master@example.com"]) == ["warehouse@example.com"]
+    log = send_notification(db, "schedule_item_updated", "test", "test", ["exact@example.com"], exact_recipients=True)
+    assert log.recipients == ["exact@example.com"]
+
+
+def test_planner_line_downtime_settings_are_per_line_and_stay_hidden(client, db):
+    db.scalar(select(User).where(User.username == "regular.admin")).role = "planner"; db.commit()
+    first, second = list(db.scalars(select(ProductionLine).limit(2)))
+    assert client.put(f"/planner-admin/lines/{first.id}/downtime", json={"partial_percent": 35, "full_percent": 90}).status_code == 200
+    for value in (-1, 101, 20.5):
+        assert client.put(f"/planner-admin/lines/{first.id}/downtime", json={"partial_percent": value, "full_percent": 80}).status_code == 422
+    body = client.get("/planner-admin").json()
+    rows = {row["id"]: row for row in body["lines"]}
+    assert (rows[first.id]["partial_percent"], rows[first.id]["full_percent"]) == (35, 90)
+    assert (rows[second.id]["partial_percent"], rows[second.id]["full_percent"]) == (50, 80)
+    assert client.get("/lines/insights?start=2026-09-08&end=2026-09-08").json()["source_status"] == "hidden"
+
+
+def test_removing_latest_source_removes_its_tasks_without_resurrecting_older_upload(client, db):
+    plan, demand = make_plan(db)
+    older = ImportedOrder(source_name="Old.xlsx", template_type="ohl_daily", imported_at=demand.order.imported_at - timedelta(days=1))
+    db.add(older); db.commit()
+    db.scalar(select(User).where(User.username == "regular.admin")).role = "planner"; db.commit()
+    source_id = demand.order_id
+    assert plan.schedule_items
+    response = client.delete(f"/planner-admin/sources/{source_id}")
+    assert response.status_code == 200, response.text
+    assert response.json()["removed_tasks"] > 0
+    assert db.get(ImportedOrder, source_id).status == "deleted"
+    assert not PlanService(db)._latest_source_demands()
+    assert not any(item.demand_item_id == demand.id for item in plan.schedule_items)
+    assert all(row["id"] != source_id for row in client.get("/planner-admin").json()["sources"])
+    assert all(row["id"] != source_id for row in client.get("/catalog").json()["sources"])
+    assert client.delete(f"/planner-admin/sources/{source_id}").status_code == 404
+    assert db.get(Product, demand.product_id) is not None
+
+
+def test_archiving_reference_does_not_rebuild_plan_or_undo_catalogue(client, db):
+    plan, demand = make_plan(db)
+    source = ImportedOrder(source_name="Reference.xlsx", template_type="production_reference", status="reference_imported")
+    db.add(source); db.commit()
+    before = [(item.id, item.quantity) for item in plan.schedule_items]
+    response = client.delete(f"/planner-admin/sources/{source.id}")
+    assert response.status_code == 200
+    assert response.json()["plan_recalculated"] is False
+    assert [(item.id, item.quantity) for item in plan.schedule_items] == before
+    assert db.get(Product, demand.product_id).name == "Test"
+
+
+def test_removing_older_source_keeps_latest_demand_and_unrelated_manual_event(client, db):
+    plan, demand = make_plan(db)
+    older = ImportedOrder(source_name="Old.xlsx", template_type="ohl_daily", imported_at=demand.order.imported_at - timedelta(days=1))
+    manual = ProductionScheduleItem(plan=plan, production_date=plan.horizon_start, line_id=plan.schedule_items[0].line_id, source="manual", schedule_kind="gas", quantity=0, required_hours=Decimal("0.1"), duration_hours=Decimal("0.1"), reason="Газ")
+    db.add_all([older, manual]); db.commit()
+    manual_id = manual.id
+    response = client.delete(f"/planner-admin/sources/{older.id}")
+    assert response.status_code == 200
+    assert [row.id for row in PlanService(db)._latest_source_demands()] == [demand.id]
+    assert db.get(ProductionScheduleItem, manual_id).reason == "Газ"
+    assert any(item.demand_item_id == demand.id for item in plan.schedule_items)

@@ -9,6 +9,32 @@ from app.models.entities import PortalSetting
 
 MAIL_SETTING_KEY = "mail_configuration"
 PORTAL_SETTING_KEY = "portal_configuration"
+PLANNER_SETTING_KEY = "planner_configuration"
+
+
+def get_planner_configuration(db: Session) -> dict:
+    row = db.scalar(select(PortalSetting).where(PortalSetting.key == PLANNER_SETTING_KEY))
+    saved = row.value if row else {}
+    portal = get_portal_configuration(db)
+    legacy_recipients = get_mail_configuration(db).get("notification_emails", "")
+    return {
+        "recipients": {**dict.fromkeys(("production", "warehouse", "materials"), legacy_recipients), **saved.get("recipients", {})},
+        "line_downtime": saved.get("line_downtime", {}),
+        "default_downtime": {"partial_percent": portal["partial_downtime_percent"], "full_percent": portal["full_downtime_percent"]},
+    }
+
+
+def save_planner_configuration(db: Session, values: dict, username: str) -> None:
+    row = db.scalar(select(PortalSetting).where(PortalSetting.key == PLANNER_SETTING_KEY).with_for_update())
+    saved = dict(row.value) if row else {}
+    for key in ("recipients", "line_downtime"):
+        if key in values:
+            saved[key] = {**saved.get(key, {}), **values[key]}
+    if row:
+        row.value, row.updated_by = saved, username
+    else:
+        db.add(PortalSetting(key=PLANNER_SETTING_KEY, value=saved, updated_by=username))
+    db.flush()
 
 
 def default_portal_configuration() -> dict:
@@ -74,7 +100,7 @@ def get_mail_configuration(db: Session) -> dict:
 
 
 def save_mail_configuration(db: Session, values: dict, username: str) -> dict:
-    clean = {**default_mail_configuration(), **values}
+    clean = {**get_mail_configuration(db), **values}
     row = db.scalar(select(PortalSetting).where(PortalSetting.key == MAIL_SETTING_KEY))
     if not row:
         row = PortalSetting(key=MAIL_SETTING_KEY, value=clean, updated_by=username)

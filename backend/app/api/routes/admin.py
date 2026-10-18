@@ -17,7 +17,7 @@ from app.models.entities import (
     AuditEvent, DemandItem, ExportFile, ImportedOrder, ImportFile, IntegrationRun,
     NotificationLog, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, User,
 )
-from app.services.notification_service import build_plan_email_html, resolve_recipients, send_notification, smtp_diagnostics
+from app.services.notification_service import build_plan_email_html, resolve_plan_recipients, send_notification, smtp_diagnostics
 from app.services.plan_service import schedule_item_dict
 from app.services.settings_service import get_mail_configuration, get_portal_configuration, save_mail_configuration, save_portal_configuration
 
@@ -246,7 +246,7 @@ def mail_preview(
     html = build_plan_email_html(get_mail_configuration(db), plan.name, start, end, [schedule_item_dict(item) for item in items], audience)
     line_recipients = [value.strip() for item in items if item.line and item.line.mail_recipients for value in item.line.mail_recipients.replace(";", ",").replace("\n", ",").split(",") if value.strip()]
     return {"html": html, "item_count": len(items), "start": start, "end": end,
-            "recipients": resolve_recipients(get_mail_configuration(db), line_recipients)}
+            "recipients": resolve_plan_recipients(db, audience, line_recipients)}
 
 
 @router.patch("/users/{user_id}")

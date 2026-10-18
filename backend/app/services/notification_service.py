@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.entities import NotificationLog
-from app.services.settings_service import get_mail_configuration
+from app.services.settings_service import get_mail_configuration, get_planner_configuration
 
 
 def _recipients(configuration: dict, extra: list[str] | None = None) -> list[str]:
@@ -28,6 +28,12 @@ def _recipients(configuration: dict, extra: list[str] | None = None) -> list[str
 
 def resolve_recipients(configuration: dict, extra: list[str] | None = None) -> list[str]:
     return _recipients(configuration, extra)
+
+
+def resolve_plan_recipients(db: Session, audience: str, line_recipients: list[str], extra: list[str] | None = None) -> list[str]:
+    configuration = get_planner_configuration(db)
+    addresses = configuration["recipients"][audience]
+    return _recipients({"notification_emails": addresses}, [*(line_recipients if audience == "production" else []), *(extra or [])])
 
 
 def build_plan_xlsx(items: list[dict], audience: str) -> bytes:
@@ -216,7 +222,7 @@ def send_notification(
     configuration = get_mail_configuration(db)
     event_group = _notification_group(event_type)
     event_addresses = (configuration.get("event_recipients") or {}).get(event_group, "") if event_group else ""
-    recipient_source = {"notification_emails": event_addresses or ("" if exact_recipients else configuration.get("notification_emails", ""))}
+    recipient_source = {"notification_emails": "" if exact_recipients else event_addresses or configuration.get("notification_emails", "")}
     recipients = _recipients(recipient_source, extra_recipients)
     log = NotificationLog(event_type=event_type, recipients=recipients, subject=subject, status="pending")
     db.add(log)

@@ -152,7 +152,7 @@ def catalog(
         ).order_by(Product.sku)
     ).unique())
     products_total = len(products)
-    sources = list(db.scalars(select(ImportedOrder).order_by(ImportedOrder.imported_at.desc()).limit(20)))
+    sources = list(db.scalars(select(ImportedOrder).where(ImportedOrder.status != "deleted").order_by(ImportedOrder.imported_at.desc()).limit(20)))
     product_rows = []
     unmapped_products = []
     for product in products:

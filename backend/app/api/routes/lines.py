@@ -12,7 +12,7 @@ from app.models.entities import AuditEvent, DemandItem, LineCapacity, LineCapabi
 from app.services.line_schedule_service import DEFAULT_ANCHOR, SCHEDULE_LABELS, ensure_line_capacities, shift_hours
 from app.services.plan_service import PlanService
 from app.services.downtime_service import load_downtimes, resolve_downtime_line
-from app.services.settings_service import get_portal_configuration
+from app.services.settings_service import get_portal_configuration, get_planner_configuration
 from app.services.notification_service import send_notification
 
 router = APIRouter(prefix="/lines", tags=["lines"])
@@ -52,6 +52,7 @@ def line_insights(
     lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
     source_status, external = load_downtimes(start, end)
     configuration = get_portal_configuration(db)
+    line_downtime = get_planner_configuration(db)["line_downtime"]
     partial_percent = int(configuration["partial_downtime_percent"])
     full_percent = int(configuration["full_downtime_percent"])
     active_plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
@@ -88,7 +89,8 @@ def line_insights(
         values = rates.get((line.id, event_date), [])
         average_rate = sum(values) / len(values) if values else 0.0
         hours = max(0.0, (row["end_at"] - row["start_at"]).total_seconds() / 3600)
-        percent = full_percent if row["downtime_type"] == "full" else partial_percent if row["downtime_type"] == "partial" else None
+        line_percent = line_downtime.get(str(line.id), {})
+        percent = line_percent.get("full_percent", full_percent) if row["downtime_type"] == "full" else line_percent.get("partial_percent", partial_percent) if row["downtime_type"] == "partial" else None
         downtimes.append({**row, "line_id": line.id, "date": event_date, "hours": round(hours, 2),
                           "loss_percent": percent, "average_rate_kg_hour": round(average_rate, 2),
                           "estimated_loss_kg": round(hours * average_rate * percent / 100, 2) if percent is not None and values else None})

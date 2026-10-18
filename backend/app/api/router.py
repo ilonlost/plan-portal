@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import admin, advance_confirmations, catalog, dashboard, feedback, imports, integrations, lines, plans, production_fact, session
+from app.api.routes import admin, advance_confirmations, catalog, dashboard, feedback, imports, integrations, lines, plans, planner_admin, production_fact, session
 
 api_router = APIRouter()
 api_router.include_router(dashboard.router)
@@ -12,5 +12,6 @@ api_router.include_router(catalog.router)
 api_router.include_router(session.router)
 api_router.include_router(feedback.router)
 api_router.include_router(admin.router)
+api_router.include_router(planner_admin.router)
 api_router.include_router(integrations.router)
 api_router.include_router(production_fact.router)

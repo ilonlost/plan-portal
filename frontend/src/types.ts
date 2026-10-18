@@ -165,6 +165,13 @@ export interface AdminOverview {
   recent_audit: AuditRow[]; recent_notifications: NotificationRow[]; recent_integrations: IntegrationRow[];
 }
 
+export interface PlannerAdministration {
+  users: Pick<AdminOverview["users"][number], "id" | "username" | "display_name" | "email" | "role" | "active" | "section_permissions">[];
+  recipients: Record<"production" | "warehouse" | "materials", string>;
+  lines: { id: number; name: string; workshop_name: string; partial_percent: number; full_percent: number }[];
+  sources: Pick<SourceFile, "id" | "file_name" | "template_type" | "imported_at" | "valid_rows">[];
+}
+
 export interface DirectoryUser {
   username: string;
   display_name: string;

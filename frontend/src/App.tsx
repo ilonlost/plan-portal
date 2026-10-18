@@ -3,13 +3,14 @@ import { ApiError, api } from "./api";
 import frontendPackage from "../package.json";
 import { matchesCatalogText, normalizeCatalogSearch } from "./catalogSearch";
 import { TailBuffers } from "./TailBuffers";
+import { PlannerAdmin } from "./PlannerAdmin";
 import type {
   AdminOverview, AdvanceConfirmationBatch, AdvanceConfirmationPreview, AdvanceConfirmationRow, BomData, CatalogData, CatalogProduct, CatalogRow, ImportPreview, LineData, MatrixCell,
   DirectoryUser, FeedbackData, FeedbackEntry, FeedbackEvent, LineInsights, LineScheduleData, MailConfiguration, MatrixData, PortalConfiguration, ScheduleItem, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 import "./styles.css";
 
-type Page = "plan" | "catalog" | "import" | "az" | "sources" | "feedback" | "fact" | "admin";
+type Page = "plan" | "catalog" | "import" | "az" | "sources" | "feedback" | "fact" | "admin" | "planner-admin";
 type ViewDays = 1 | 7 | 21;
 type Theme = "dark" | "light";
 type DayLayout = "cards" | "table";
@@ -21,13 +22,13 @@ const executionLabels: Record<string, string> = {
 };
 const today = () => new Date().toLocaleDateString("sv-SE");
 const canPlan = (user: UserProfile | null) => user?.role === "admin" || user?.role === "planner";
-const sectionVisible = (user: UserProfile, section: Page) => user.role === "admin" || (section !== "admin" && (user.section_visibility?.[section] ?? section !== "fact"));
+const sectionVisible = (user: UserProfile, section: Page) => section === "planner-admin" ? canPlan(user) : user.role === "admin" || (section !== "admin" && (user.section_visibility?.[section] ?? section !== "fact"));
 const sectionLabels: Record<string, string> = { plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", sources: "Источники данных", feedback: "Обратная связь", fact: "Факт производства" };
 const articleBlocked = (product: CatalogProduct) => product.catalog_status === "blocked" || /блок/i.test(product.fk_status || "");
 const articleStatus = (product: CatalogProduct) => product.catalog_status === "deleted" ? "Удалён из справочника" : articleBlocked(product) ? "Заблокирован" : !product.active ? "Отключён" : product.fk_status || "Активен";
 const portalRoles = [
   { value: "viewer", label: "Просмотр", hint: "Только просмотр разделов и планов" },
-  { value: "planner", label: "Планер", hint: "Вся работа с планом, без администрирования" },
+  { value: "planner", label: "Планер", hint: "Планирование, получатели писем и доступы планеров / просмотра" },
   { value: "admin", label: "Администратор", hint: "Полный доступ, включая администрирование" },
 ];
 const feedbackCategoryLabels: Record<string, string> = { suggestion: "Предложение", problem: "Проблема", question: "Вопрос", other: "Другое" };
@@ -230,6 +231,7 @@ export default function App() {
         {sectionVisible(user, "sources") && <Nav active={page === "sources"} icon="◫" label="Источники данных" onClick={() => setPage("sources")} />}
         {sectionVisible(user, "feedback") && <Nav active={page === "feedback"} icon="✎" label="Обратная связь" onClick={() => setPage("feedback")} />}
         {sectionVisible(user, "fact") && <Nav active={page === "fact"} icon="◷" label="Факт производства" onClick={() => setPage("fact")} />}
+        {canPlan(user) && <Nav active={page === "planner-admin"} icon="⚙" label="Управление планированием" onClick={() => setPage("planner-admin")} />}
         {user.role === "admin" && <Nav active={page === "admin"} icon="⚙" label="Администрирование планирования" onClick={() => setPage("admin")} />}
       </nav>
       <div className="sidebar-tip"><span>?</span><b>Нужна помощь?</b><small>Инструкция, роли и выгрузки</small><button onClick={() => setHelpOpen(true)}>Открыть инструкцию</button>{sectionVisible(user, "feedback") && <button onClick={() => setPage("feedback")}>Написать в ИТ</button>}</div>
@@ -271,6 +273,7 @@ export default function App() {
         {page === "sources" && !catalog && <Loading />}{page === "sources" && catalog && <SourcesView data={catalog} />}
         {page === "feedback" && <FeedbackView user={user} onNotice={setNotice} onError={setError} />}
         {page === "fact" && sectionVisible(user, "fact") && <ProductionFactView onError={setError} />}
+        {page === "planner-admin" && canPlan(user) && <PlannerAdmin username={user.username} onChanged={async () => { await refreshPlan(); setCatalog(null); }} />}
         {page === "admin" && user.role === "admin" && <AdminView onDeleted={async text => { setNotice(text); setMatrix(null); setPage("import"); await loadBase(user); }} onError={setError} />}
       </>}</div>
     </main>
@@ -871,11 +874,11 @@ function Toast({ tone, text, close }: { tone: string; text: string; close: () =>
 }
 function Loading() { return <div className="loading"><i /><p>Загружаем производственные данные…</p></div>; }
 function Empty({ title, text, action }: { title: string; text: string; action?: React.ReactNode }) { return <section className="empty"><span>◇</span><h2>{title}</h2><p>{text}</p>{action}</section>; }
-function pageTitle(page: Page) { return ({ plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", sources: "Источники данных", feedback: "Обратная связь", fact: "Факт производства", admin: "Администрирование" } as const)[page]; }
+function pageTitle(page: Page) { return ({ plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", sources: "Источники данных", feedback: "Обратная связь", fact: "Факт производства", admin: "Администрирование", "planner-admin": "Управление планированием" } as const)[page]; }
 function eventLabel(kind: ScheduleItem["schedule_kind"], compact = false) { const labels = { cleaning: ["Технологическая мойка", "МОЙКА"], downtime: ["Простой линии", "ПРОСТОЙ"], maintenance: ["Плановое ТО", "ТО"], trial: ["Проработка", "ПРОБА"], startup: ["Запуск линии", "ЗАПУСК"], changeover: ["Перестройка линии", "ПЕРЕСТРОЙКА"], restart: ["Запуск после простоя", "СТАРТ"], gas: ["Газ", "ГАЗ"] } as const; return kind === "production" ? "Продукция" : labels[kind][compact ? 1 : 0]; }
 function templateLabel(v: string) { return ({ ohl_daily: "Недельный план ОХЛ", quarter_weekly: "Квартальный план ЗАМ", production_reference: "Актуальный справочник ПЦ/КЦ", capacity_reference: "Мощности линий", legacy_reference: "Старый план и рецептуры", maintenance_schedule: "График ТО и событий", generic: "Универсальный шаблон" } as Record<string, string>)[v] || v; }
 function planStatus(v: string) { return ({ needs_review: "Требует проверки", calculated: "Рассчитан", approved: "Утверждён", draft: "Черновик" } as Record<string, string>)[v] || v; }
-function auditLabel(v: string) { return ({ plan_imported: "План загружен", reference_imported: "Справочник обновлён", schedule_item_updated: "Задание изменено", schedule_item_deleted: "Задание удалено", manual_task_created: "Создано ручное задание", line_schedule_template_created: "Создан шаблон графика", line_schedule_updated: "График линии изменён", execution_status_updated: "Статус исполнения", plan_approved: "План утверждён", plan_data_deleted: "Все планы удалены", csb_next_day_prepared: "Задание CSB подготовлено", csb_txt_downloaded: "Скачан файл CSB", ohl_source_kg_corrected: "ОХЛ: единицы исправлены на кг", user_access_updated: "Права пользователя изменены", user_access_created: "Доступ пользователя добавлен", feedback_created: "Создано обращение", feedback_updated: "Обращение обработано", mail_configuration_updated: "Настройки писем изменены", production_plan_emailed: "План отправлен по почте" } as Record<string, string>)[v] || v; }
+function auditLabel(v: string) { return ({ plan_imported: "План загружен", reference_imported: "Справочник обновлён", schedule_item_updated: "Задание изменено", schedule_item_deleted: "Задание удалено", manual_task_created: "Создано ручное задание", line_schedule_template_created: "Создан шаблон графика", line_schedule_updated: "График линии изменён", execution_status_updated: "Статус исполнения", plan_approved: "План утверждён", plan_data_deleted: "Все планы удалены", csb_next_day_prepared: "Задание CSB подготовлено", csb_txt_downloaded: "Скачан файл CSB", ohl_source_kg_corrected: "ОХЛ: единицы исправлены на кг", user_access_updated: "Права пользователя изменены", user_access_created: "Доступ пользователя добавлен", feedback_created: "Создано обращение", feedback_updated: "Обращение обработано", mail_configuration_updated: "Настройки писем изменены", production_plan_emailed: "План отправлен по почте", source_deleted: "Источник удалён", plan_recipients_updated: "Получатели плановых писем изменены", line_downtime_settings_updated: "Проценты простоев линии изменены" } as Record<string, string>)[v] || v; }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : "Неизвестная ошибка"; }
 function number(value: number | string) { return Number(value || 0).toLocaleString("ru-RU", { maximumFractionDigits: 2 }); }
 function duration(value: number | string) { const minutes = Math.max(0, Math.round(Number(value || 0) * 60)); const hours = Math.floor(minutes / 60); const rest = minutes % 60; if (hours && rest) return `${hours} ч ${rest} мин`; if (hours) return `${hours} ч`; return `${rest} мин`; }
