@@ -152,6 +152,7 @@ def delete_source(source_id: int, db: Session = Depends(get_db), user: UserConte
         if source.scope_line_id:
             from app.services.line_import_service import demands_for_line
             demands = demands_for_line(db, plan, demands, source.scope_line_id)
-        service.calculate(plan, demands, "source_deleted", line_id=source.scope_line_id)
+        kind = {"ohl_daily": "ohl", "quarter_weekly": "zam"}.get(source.template_type) if source.scope_line_id else None
+        service.calculate(plan, demands, "source_deleted", line_id=source.scope_line_id, source_kind=kind)
     db.commit()
     return {"ok": True, "removed_tasks": removed, "plan_recalculated": recalculate}

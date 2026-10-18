@@ -266,7 +266,11 @@ class PlanService:
         self.db.commit()
         return plan
 
-    def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation", line_id: int | None = None) -> ProductionPlan:
+    def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation", line_id: int | None = None, source_kind: str | None = None) -> ProductionPlan:
+        if source_kind is not None:
+            if line_id is None:
+                raise ValueError("Source-specific recalculation requires a line")
+            demands = [demand for demand in demands if demand.source_kind == source_kind]
         previous_requested_dates = {demand.id: demand.requested_date for demand in demands}
         auto_execution = {
             (row.demand_item_id, row.line_id, row.production_date, row.shift, Decimal(row.quantity)): {
@@ -313,6 +317,8 @@ class PlanService:
         # production quantities for those cards.
         for item in plan.schedule_items:
             if line_id is not None and item.line_id != line_id:
+                continue
+            if source_kind is not None and item.source_kind != source_kind:
                 continue
             if item.source != "manual" or item.excluded or item.schedule_kind != "production" or not item.product_id:
                 continue
@@ -364,10 +370,14 @@ class PlanService:
         manual_cleaning_days = {(row.line_id, row.production_date) for row in plan.schedule_items if row.excluded and row.reason == "manual_cleaning_day"}
         capability_map = {(c.line_id, c.product_id): c for c in capabilities}
         for item in plan.schedule_items:
-            if item.source != "auto" and not item.excluded and item.line_id and item.production_date:
+            if line_id is not None and item.line_id != line_id:
+                continue
+            frozen_production = source_kind is not None and item.schedule_kind == "production" and item.source_kind != source_kind
+            if (item.source != "auto" or frozen_production) and not item.excluded and item.line_id and item.production_date:
                 capability = capability_map.get((item.line_id, item.product_id))
                 if item.schedule_kind == "production" and capability:
-                    item.required_hours = self._production_duration(Decimal(item.quantity), Decimal(capability.units_per_hour))
+                    if not frozen_production:
+                        item.required_hours = self._production_duration(Decimal(item.quantity), Decimal(capability.units_per_hour))
                     if capability.line.workshop_code == "PC":
                         reserved_groups[(item.line_id, item.production_date, item.shift)].add(mono_group(item.product.name, item.product.mono_group))
                 reserved[(item.line_id, item.production_date, item.shift)] += Decimal(item.required_hours)
@@ -410,7 +420,8 @@ class PlanService:
             manual_cleaning_days=manual_cleaning_days,
         )
         for existing in list(plan.schedule_items):
-            if existing.source == "auto" and (line_id is None or existing.line_id == line_id or existing.demand_item_id in demand_by_id):
+            replace_source = source_kind is None or existing.schedule_kind != "production" or existing.source_kind == source_kind
+            if existing.source == "auto" and replace_source and (line_id is None or existing.line_id == line_id or existing.demand_item_id in demand_by_id):
                 plan.schedule_items.remove(existing)
                 self.db.delete(existing)
         self.db.flush()
@@ -429,14 +440,14 @@ class PlanService:
             ))
         plan.status = PlanStatus.NEEDS_REVIEW if any(item.status in {"conflict", "unscheduled"} for item in result) else PlanStatus.CALCULATED
         self.db.flush()
-        self.refresh_sequence_and_cleanings(plan, line_id=line_id)
-        self.recalculate_load(plan, line_id=line_id)
+        self.refresh_sequence_and_cleanings(plan, line_id=line_id, source_kind=source_kind)
+        self.recalculate_load(plan, line_id=line_id, source_kind=source_kind)
         self.create_version(plan, change_type, "Автоматический расчёт по правилам конечной мощности")
         self.db.commit()
         self.db.refresh(plan)
         return plan
 
-    def recalculate_load(self, plan: ProductionPlan, line_id: int | None = None) -> None:
+    def recalculate_load(self, plan: ProductionPlan, line_id: int | None = None, source_kind: str | None = None) -> None:
         scope_line_id = line_id
         lines = {line.id: line for line in self.db.scalars(select(ProductionLine))}
         dated_items = [item for item in plan.schedule_items if item.line_id and item.production_date and not item.excluded and (line_id is None or item.line_id == line_id)]
@@ -459,6 +470,8 @@ class PlanService:
             total_hours = sum((Decimal(item.required_hours) for item in items), Decimal("0"))
             load = (total_hours / capacity * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if capacity else Decimal("999")
             for item in items:
+                if source_kind is not None and item.schedule_kind == "production" and item.source_kind != source_kind:
+                    continue
                 warnings = [warning for warning in (item.warnings or []) if not warning.startswith("Загрузка линии")]
                 item.load_percent = load
                 if load > 100:
@@ -472,6 +485,8 @@ class PlanService:
                 item.warnings = warnings
         for item in plan.schedule_items:
             if scope_line_id is not None and item.line_id != scope_line_id:
+                continue
+            if source_kind is not None and item.schedule_kind == "production" and item.source_kind != source_kind:
                 continue
             if item.line_id is None or item.production_date is None:
                 item.load_percent = 0
@@ -742,7 +757,10 @@ class PlanService:
         ))
         self.db.flush()
 
-    def refresh_sequence_and_cleanings(self, plan: ProductionPlan, line_id: int | None = None) -> None:
+    def refresh_sequence_and_cleanings(self, plan: ProductionPlan, line_id: int | None = None, source_kind: str | None = None) -> None:
+        # A per-source upload preserves the other source's cards, including their positions.
+        anchors = {row.id: row.sequence for row in plan.schedule_items
+                   if source_kind is not None and row.line_id == line_id and row.schedule_kind == "production" and row.source_kind != source_kind}
         for existing in list(plan.schedule_items):
             if line_id is not None and existing.line_id != line_id:
                 continue
@@ -860,6 +878,23 @@ class PlanService:
                     row.sequence = index
         for sequence, item in enumerate(unscheduled, start=1):
             item.sequence = sequence
+        if anchors:
+            scoped_groups = defaultdict(list)
+            for row in plan.schedule_items:
+                if row.line_id == line_id:
+                    scoped_groups[row.production_date].append(row)
+            for rows in scoped_groups.values():
+                reserved = {anchors[row.id] for row in rows if row.id in anchors}
+                next_sequence = 1
+                for row in sorted(rows, key=lambda value: (value.sequence, value.id or 0)):
+                    if row.id in anchors:
+                        row.sequence = anchors[row.id]
+                        next_sequence = max(next_sequence, row.sequence + 1)
+                    else:
+                        while next_sequence in reserved:
+                            next_sequence += 1
+                        row.sequence = next_sequence
+                        next_sequence += 1
         self.db.flush()
 
     def create_version(self, plan: ProductionPlan, change_type: str, comment: str) -> None:

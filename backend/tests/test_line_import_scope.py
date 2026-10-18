@@ -55,10 +55,12 @@ def snapshot(plan, line_id):
 def test_line_upload_preserves_other_line_and_zam_and_survives_recalculation(client, db, monkeypatch):
     plan, first, second, target, other = two_lines(db, monkeypatch)
     protected = snapshot(plan, other)
-    for amount in (35, 45):
+    for amount in (35, 450, 45):
+        zam_before = [row for row in snapshot(plan, target) if row[1]["source_kind"] == "zam"]
         response = client.post("/imports/confirm", json={"preview": preview(amount).model_dump(mode="json"), "line_id": target, "plan_version": plan.revision})
         assert response.status_code == 200, response.text
         assert snapshot(plan, other) == protected  # IDs, washes, status and rank as well as quantities.
+        assert [row for row in snapshot(plan, target) if row[1]["source_kind"] == "zam"] == zam_before
         effective = PlanService(db)._latest_source_demands()
         assert len(effective) == 3
         assert second in effective and first not in effective
@@ -70,6 +72,19 @@ def test_line_upload_preserves_other_line_and_zam_and_survives_recalculation(cli
         assert sum(row.quantity for row in plan.schedule_items if not row.excluded and row.source_kind == "ohl" and row.line_id == target) == amount
         # The next upload protects the state from this point, including the recalculated other line.
         protected = snapshot(plan, other)
+
+
+def test_line_zam_upload_keeps_ohl_cards_exactly_and_counts_reserved_hours(client, db, monkeypatch):
+    plan, first, second, target, other = two_lines(db, monkeypatch)
+    ohl_before = [row for row in snapshot(plan, target) if row[1]["source_kind"] == "ohl"]
+    protected = snapshot(plan, other)
+    response = client.post("/imports/confirm", json={"preview": preview(300, kind="quarter_weekly", skus=("101",)).model_dump(mode="json"), "line_id": target, "plan_version": plan.revision})
+    assert response.status_code == 200, response.text
+    assert [row for row in snapshot(plan, target) if row[1]["source_kind"] == "ohl"] == ohl_before
+    assert snapshot(plan, other) == protected
+    # One hour remains after the frozen OHL; finite-capacity ZAM must not occupy its hour.
+    placed = [row for row in plan.schedule_items if row.line_id == target and row.source_kind == "zam" and row.production_date and not row.excluded]
+    assert sum(row.required_hours for row in placed) == 1
 
 
 def test_bulk_line_delete_preview_version_and_no_resurrection(client, db, monkeypatch):

@@ -250,7 +250,7 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
         db.flush()
         service = PlanService(db)
         effective = demands_for_line(db, scoped_plan, service._latest_source_demands(), payload.line_id)
-        service.calculate(scoped_plan, effective, f"line_import_{source_kind}", line_id=payload.line_id)
+        service.calculate(scoped_plan, effective, f"line_import_{source_kind}", line_id=payload.line_id, source_kind=source_kind)
         db.add(AuditEvent(username=user.username, action="plan_imported", entity_type="production_plan", entity_id=str(scoped_plan.id), details={"line_id": payload.line_id, "source_kind": source_kind, "file_name": preview.file_name, "rows": len(demands), "replaced_demands": len(replaced_ids)}))
         db.commit()
         line = db.get(ProductionLine, payload.line_id)
