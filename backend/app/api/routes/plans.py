@@ -56,6 +56,7 @@ class ManualTaskCreate(BaseModel):
 class BulkDeleteRequest(BaseModel):
     start_date: date
     end_date: date
+    line_id: int | None = Field(default=None, gt=0)
 
 
 @router.get("/active")
@@ -230,12 +231,15 @@ def bulk_delete_items(plan_id: int, payload: BulkDeleteRequest, db: Session = De
     if payload.end_date < payload.start_date or (payload.end_date - payload.start_date).days > 92:
         raise HTTPException(422, "Выберите корректный диапазон не более 93 дней")
     plan = db.get(ProductionPlan, plan_id)
+    if payload.line_id is not None and not db.get(ProductionLine, payload.line_id):
+        raise HTTPException(404, "Линия не найдена")
     rows = list(db.scalars(select(ProductionScheduleItem).where(
         ProductionScheduleItem.plan_id == plan_id,
         ProductionScheduleItem.production_date >= payload.start_date,
         ProductionScheduleItem.production_date <= payload.end_date,
         ProductionScheduleItem.schedule_kind == "production",
         ProductionScheduleItem.excluded.is_(False),
+        *([ProductionScheduleItem.line_id == payload.line_id] if payload.line_id is not None else []),
     )))
     if not rows:
         return {"ok": True, "deleted_count": 0}
@@ -244,12 +248,13 @@ def bulk_delete_items(plan_id: int, payload: BulkDeleteRequest, db: Session = De
         item.source = "manual"
         item.locked = True
     service = PlanService(db)
-    service.refresh_sequence_and_cleanings(plan)
-    service.recalculate_load(plan)
+    service.refresh_sequence_and_cleanings(plan, line_id=payload.line_id)
+    service.recalculate_load(plan, line_id=payload.line_id)
     service.create_version(plan, "bulk_schedule_items_deleted", f"Массово исключено заданий: {len(rows)} · {payload.start_date}—{payload.end_date}")
-    db.add(AuditEvent(username=user.username, action="schedule_items_bulk_deleted", entity_type="production_plan", entity_id=str(plan_id), details={"count": len(rows), "start_date": payload.start_date.isoformat(), "end_date": payload.end_date.isoformat(), "item_ids": [item.id for item in rows]}))
+    db.add(AuditEvent(username=user.username, action="schedule_items_bulk_deleted", entity_type="production_plan", entity_id=str(plan_id), details={"count": len(rows), "line_id": payload.line_id, "start_date": payload.start_date.isoformat(), "end_date": payload.end_date.isoformat(), "item_ids": [item.id for item in rows]}))
     db.commit()
-    send_notification(db, "schedule_items_bulk_deleted", "PLAN Portal: задания исключены за период", f"Пользователь {user.display_name} исключил {len(rows)} заданий из плана «{plan.name}» за период {payload.start_date} — {payload.end_date}.")
+    line_text = f" Линия: {db.get(ProductionLine, payload.line_id).name}." if payload.line_id else ""
+    send_notification(db, "schedule_items_bulk_deleted", "PLAN Portal: задания исключены за период", f"Пользователь {user.display_name} исключил {len(rows)} заданий из плана «{plan.name}» за период {payload.start_date} — {payload.end_date}.{line_text}")
     return {"ok": True, "deleted_count": len(rows)}
 
 

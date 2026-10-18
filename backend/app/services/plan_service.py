@@ -228,17 +228,23 @@ class PlanService:
             ImportedOrder.template_type.in_(("ohl_daily", "quarter_weekly")),
         ).order_by(ImportedOrder.imported_at.desc(), ImportedOrder.id.desc())))
         latest_ids: list[int] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, int | None]] = set()
+        complete_seen: set[str] = set()
         for order in orders:
-            key = order.template_type
+            if order.template_type in complete_seen:
+                continue
+            key = (order.template_type, order.scope_line_id)
             if key not in seen:
                 # A removed latest file disables that source; do not resurrect an older upload.
                 if order.status != "deleted":
                     latest_ids.append(order.id)
                 seen.add(key)
+            if order.scope_line_id is None:
+                complete_seen.add(order.template_type)
         if not latest_ids:
             return []
-        return list(self.db.scalars(select(DemandItem).where(DemandItem.order_id.in_(latest_ids)).options(joinedload(DemandItem.product))))
+        return [row for row in self.db.scalars(select(DemandItem).where(DemandItem.order_id.in_(latest_ids)).options(joinedload(DemandItem.product)))
+                if not (row.raw_data or {}).get("replaced_by_line_id")]
 
     def recalculate_after_catalog_change(self, change_type: str = "catalog_updated") -> ProductionPlan | None:
         """Immediately rebuild the active plan after any catalog mutation."""
@@ -260,7 +266,7 @@ class PlanService:
         self.db.commit()
         return plan
 
-    def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation") -> ProductionPlan:
+    def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation", line_id: int | None = None) -> ProductionPlan:
         previous_requested_dates = {demand.id: demand.requested_date for demand in demands}
         auto_execution = {
             (row.demand_item_id, row.line_id, row.production_date, row.shift, Decimal(row.quantity)): {
@@ -285,8 +291,8 @@ class PlanService:
                 item.production_date for item in plan.schedule_items
                 if item.production_date and not item.excluded and item.source != "auto" and item.schedule_kind != "production"
             ]
-            plan.horizon_start = min([*(d.requested_date for d in demands), *persistent_event_dates])
-            plan.horizon_end = max([*(d.due_date for d in demands), *persistent_event_dates])
+            plan.horizon_start = min([*(d.requested_date for d in demands), *persistent_event_dates, *([plan.horizon_start] if line_id else [])])
+            plan.horizon_end = max([*(d.due_date for d in demands), *persistent_event_dates, *([plan.horizon_end] if line_id else [])])
             from app.services.line_schedule_service import ensure_line_capacities
             active_lines = list(self.db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
             ensure_line_capacities(self.db, active_lines, plan.horizon_start, plan.horizon_end)
@@ -296,6 +302,8 @@ class PlanService:
             ).options(joinedload(LineCapability.line))
         ))
         capabilities_by_key = {(capability.line_id, capability.product_id): capability for capability in capabilities}
+        if line_id is not None:
+            capabilities = [cap for cap in capabilities if cap.line_id == line_id]
         capabilities_by_product: dict[int, list[LineCapability]] = defaultdict(list)
         for capability in capabilities:
             capabilities_by_product[capability.product_id].append(capability)
@@ -304,6 +312,8 @@ class PlanService:
         # catalog changes still have to update dates, valid line mappings and
         # production quantities for those cards.
         for item in plan.schedule_items:
+            if line_id is not None and item.line_id != line_id:
+                continue
             if item.source != "manual" or item.excluded or item.schedule_kind != "production" or not item.product_id:
                 continue
             demand = demand_by_id.get(item.demand_item_id)
@@ -340,7 +350,7 @@ class PlanService:
         # Preserve manually handled splits, including deleted quantities, across reimports.
         handled = defaultdict(lambda: Decimal("0"))
         for item in plan.schedule_items:
-            if item.source == "manual" and item.demand_item:
+            if item.source == "manual" and item.demand_item and (line_id is None or item.line_id == line_id):
                 consumed = item.source_quantity if item.source_unit == "кг" and item.source_quantity is not None else item.quantity
                 handled[self.demand_key(item.demand_item)] += Decimal(consumed)
         remaining_quantity = {}
@@ -400,7 +410,7 @@ class PlanService:
             manual_cleaning_days=manual_cleaning_days,
         )
         for existing in list(plan.schedule_items):
-            if existing.source == "auto":
+            if existing.source == "auto" and (line_id is None or existing.line_id == line_id or existing.demand_item_id in demand_by_id):
                 plan.schedule_items.remove(existing)
                 self.db.delete(existing)
         self.db.flush()
@@ -419,16 +429,17 @@ class PlanService:
             ))
         plan.status = PlanStatus.NEEDS_REVIEW if any(item.status in {"conflict", "unscheduled"} for item in result) else PlanStatus.CALCULATED
         self.db.flush()
-        self.refresh_sequence_and_cleanings(plan)
-        self.recalculate_load(plan)
+        self.refresh_sequence_and_cleanings(plan, line_id=line_id)
+        self.recalculate_load(plan, line_id=line_id)
         self.create_version(plan, change_type, "Автоматический расчёт по правилам конечной мощности")
         self.db.commit()
         self.db.refresh(plan)
         return plan
 
-    def recalculate_load(self, plan: ProductionPlan) -> None:
+    def recalculate_load(self, plan: ProductionPlan, line_id: int | None = None) -> None:
+        scope_line_id = line_id
         lines = {line.id: line for line in self.db.scalars(select(ProductionLine))}
-        dated_items = [item for item in plan.schedule_items if item.line_id and item.production_date and not item.excluded]
+        dated_items = [item for item in plan.schedule_items if item.line_id and item.production_date and not item.excluded and (line_id is None or item.line_id == line_id)]
         capacity_rows = {
             (item.line_id, item.capacity_date, item.shift): Decimal(item.available_hours) if item.available else Decimal("0")
             for item in self.db.scalars(select(LineCapacity).where(
@@ -439,6 +450,8 @@ class PlanService:
         } if dated_items else {}
         groups: dict[tuple[int, date, str], list[ProductionScheduleItem]] = defaultdict(list)
         for item in plan.schedule_items:
+            if scope_line_id is not None and item.line_id != scope_line_id:
+                continue
             if item.line_id and item.production_date and not item.excluded:
                 groups[(item.line_id, item.production_date, item.shift)].append(item)
         for (line_id, production_date, shift), items in groups.items():
@@ -458,6 +471,8 @@ class PlanService:
                     item.status = ScheduleStatus.PLANNED
                 item.warnings = warnings
         for item in plan.schedule_items:
+            if scope_line_id is not None and item.line_id != scope_line_id:
+                continue
             if item.line_id is None or item.production_date is None:
                 item.load_percent = 0
                 item.status = ScheduleStatus.UNSCHEDULED
@@ -727,8 +742,10 @@ class PlanService:
         ))
         self.db.flush()
 
-    def refresh_sequence_and_cleanings(self, plan: ProductionPlan) -> None:
+    def refresh_sequence_and_cleanings(self, plan: ProductionPlan, line_id: int | None = None) -> None:
         for existing in list(plan.schedule_items):
+            if line_id is not None and existing.line_id != line_id:
+                continue
             if existing.source == "auto" and existing.schedule_kind in {"cleaning", "startup", "changeover", "restart"}:
                 plan.schedule_items.remove(existing)
                 self.db.delete(existing)
@@ -738,6 +755,8 @@ class PlanService:
         grouped: dict[tuple[int, date], list[ProductionScheduleItem]] = defaultdict(list)
         unscheduled: list[ProductionScheduleItem] = []
         for item in plan.schedule_items:
+            if line_id is not None and item.line_id != line_id:
+                continue
             if item.line_id and item.production_date and not item.excluded:
                 grouped[(item.line_id, item.production_date)].append(item)
             else:

@@ -153,6 +153,7 @@ class ImportedOrder(Base):
     status: Mapped[str] = mapped_column(String(30), default="preview")
     mapping_code: Mapped[str] = mapped_column(String(80), default="default_v1")
     template_type: Mapped[str] = mapped_column(String(50), default="generic")
+    scope_line_id: Mapped[int | None] = mapped_column(ForeignKey("production_lines.id"), index=True)
     total_rows: Mapped[int] = mapped_column(Integer, default=0)
     valid_rows: Mapped[int] = mapped_column(Integer, default=0)
     invalid_rows: Mapped[int] = mapped_column(Integer, default=0)

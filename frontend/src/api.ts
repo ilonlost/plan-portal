@@ -74,7 +74,7 @@ export const api = {
     method: "PATCH", headers: { "Content-Type": "application/json", ...(version == null ? {} : { "If-Match": String(version) }) }, body: JSON.stringify(data),
   }),
   deleteItem: (planId: number, itemId: number, version: number) => request<PlanData>(`/plans/${planId}/items/${itemId}`, { method: "DELETE", headers: { "If-Match": String(version) } }),
-  bulkDeleteItems: (planId: number, start_date: string, end_date: string, version: number) => request<{ ok: boolean; deleted_count: number }>(`/plans/${planId}/bulk-delete-items`, { method: "POST", headers: { "Content-Type": "application/json", "If-Match": String(version) }, body: JSON.stringify({ start_date, end_date }) }),
+  bulkDeleteItems: (planId: number, start_date: string, end_date: string, version: number, line_id?: number) => request<{ ok: boolean; deleted_count: number }>(`/plans/${planId}/bulk-delete-items`, { method: "POST", headers: { "Content-Type": "application/json", "If-Match": String(version) }, body: JSON.stringify({ start_date, end_date, line_id }) }),
   updateExecution: (planId: number, itemId: number, status: string, note?: string, version?: number) => request<PlanData>(`/plans/${planId}/items/${itemId}/execution-status`, {
     method: "PATCH", headers: { "Content-Type": "application/json", ...(version == null ? {} : { "If-Match": String(version) }) }, body: JSON.stringify({ status, note }),
   }),
@@ -83,17 +83,18 @@ export const api = {
   }),
   createManualTask: (planId: number, data: object) => request<PlanData>(`/plans/${planId}/items`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   manualProducts: (lineId: number) => request<{ product_id: number; sku: string; name: string; speed_kg_hour: number }[]>(`/catalog/manual-products?line_id=${lineId}`),
-  previewImport: async (file: File) => {
+  previewImport: async (file: File, lineId?: number) => {
     const data = new FormData(); data.append("file", file);
-    return request<ImportPreview>("/imports/preview", { method: "POST", body: data });
+    return request<ImportPreview>(`/imports/preview${lineId ? `?line_id=${lineId}` : ""}`, { method: "POST", body: data });
   },
   maintenanceTemplateUrl: () => `${API}/imports/maintenance-template.xlsx`,
-  confirmImport: (preview: ImportPreview) => request<{ order_id: number; plan: PlanData | null; reference_updated?: number; maintenance_updated?: number }>("/imports/confirm", {
+  confirmImport: (preview: ImportPreview, line_id?: number, plan_version?: number) => request<{ order_id: number; plan: PlanData | null; reference_updated?: number; maintenance_updated?: number }>("/imports/confirm", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ preview, create_plan: true, merge_into_active: true }),
+    body: JSON.stringify({ preview, create_plan: true, merge_into_active: true, line_id, plan_version }),
   }),
   adminOverview: () => request<AdminOverview>("/admin/overview"),
   plannerAdministration: () => request<import("./types").PlannerAdministration>("/planner-admin"),
+  plannerLineTasks: (lineId: number, start: string, end: string) => request<{ plan_id: number; version: number; count: number }>(`/planner-admin/line-tasks?line_id=${lineId}&start=${start}&end=${end}`),
   plannerDirectoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/planner-admin/directory-users?query=${encodeURIComponent(query)}`),
   plannerUpdateAccess: (id: number, data: { role: string; active: boolean; section_permissions: Record<string, boolean> }) => request<{ ok: boolean }>(`/planner-admin/users/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   plannerCreateAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean }) => request<{ ok: boolean }>("/planner-admin/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),

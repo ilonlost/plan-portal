@@ -210,3 +210,5 @@ class ImportConfirmRequest(BaseModel):
     preview: ImportPreview
     create_plan: bool = True
     merge_into_active: bool = True
+    line_id: int | None = Field(default=None, gt=0)
+    plan_version: int | None = Field(default=None, ge=1)

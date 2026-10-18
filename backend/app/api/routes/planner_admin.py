@@ -1,15 +1,16 @@
 """Delegated planning administration; never exposes SMTP or elevated roles."""
 from typing import Literal
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from app.api.routes import admin
 from app.core.security import UserContext, require_planner, user_sections
 from app.db.session import get_db
-from app.models.entities import AuditEvent, ImportedOrder, ProductionLine, ProductionPlan, User
+from app.models.entities import AuditEvent, ImportedOrder, ProductionLine, ProductionPlan, ProductionScheduleItem, User
 from app.services.plan_service import PlanService
 from app.services.settings_service import get_planner_configuration, save_planner_configuration
 
@@ -45,7 +46,9 @@ class DowntimeUpdate(BaseModel):
 @router.get("")
 def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     configuration = get_planner_configuration(db)
+    plan = PlanService(db).active_plan()
     return {
+        "active_plan": {"id": plan.id, "version": plan.revision, "start": plan.horizon_start, "end": plan.horizon_end} if plan else None,
         "users": [{"id": row.id, "username": row.username, "display_name": row.display_name,
                    "email": row.email, "role": row.role, "active": row.active,
                    "section_permissions": user_sections(row)}
@@ -55,9 +58,26 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
                    **configuration["line_downtime"].get(str(row.id), configuration["default_downtime"])}
                   for row in db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name))],
         "sources": [{"id": row.id, "file_name": row.source_name, "template_type": row.template_type,
-                     "imported_at": row.imported_at, "valid_rows": row.valid_rows}
+                     "imported_at": row.imported_at, "valid_rows": row.valid_rows, "scope_line_id": row.scope_line_id}
                     for row in db.scalars(select(ImportedOrder).where(ImportedOrder.status != "deleted").order_by(ImportedOrder.imported_at.desc(), ImportedOrder.id.desc()))],
     }
+
+
+@router.get("/line-tasks")
+def line_tasks(line_id: int, start: date, end: date, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
+    from app.services.line_import_service import active_line
+    active_line(db, line_id)
+    if end < start or (end - start).days > 92:
+        raise HTTPException(422, "Выберите корректный диапазон не более 93 дней")
+    plan = PlanService(db).active_plan()
+    if not plan:
+        raise HTTPException(404, "Активный план не найден")
+    count = db.scalar(select(func.count()).select_from(ProductionScheduleItem).where(
+        ProductionScheduleItem.plan_id == plan.id, ProductionScheduleItem.line_id == line_id,
+        ProductionScheduleItem.schedule_kind == "production", ProductionScheduleItem.excluded.is_(False),
+        ProductionScheduleItem.production_date.between(start, end),
+    ))
+    return {"plan_id": plan.id, "version": plan.revision, "count": count}
 
 
 @router.get("/directory-users")
@@ -128,6 +148,10 @@ def delete_source(source_id: int, db: Session = Depends(get_db), user: UserConte
     recalculate = plan is not None and (source.template_type in {"ohl_daily", "quarter_weekly"} or removed > 0)
     if recalculate:
         service = PlanService(db)
-        service.calculate(plan, service._latest_source_demands(), "source_deleted")
+        demands = service._latest_source_demands()
+        if source.scope_line_id:
+            from app.services.line_import_service import demands_for_line
+            demands = demands_for_line(db, plan, demands, source.scope_line_id)
+        service.calculate(plan, demands, "source_deleted", line_id=source.scope_line_id)
     db.commit()
     return {"ok": True, "removed_tasks": removed, "plan_recalculated": recalculate}

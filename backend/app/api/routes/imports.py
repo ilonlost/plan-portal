@@ -4,7 +4,7 @@ from decimal import Decimal
 from io import BytesIO
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Query
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -24,6 +24,7 @@ from app.services.import_service import ExcelImportService
 from app.services.line_schedule_service import ensure_line_capacities
 from app.services.plan_service import PlanService, plan_dict
 from app.services.notification_service import send_notification
+from app.services.line_import_service import active_line, filter_line_preview, demands_for_line
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 
@@ -68,7 +69,7 @@ def maintenance_template(db: Session = Depends(get_db), user: UserContext = Depe
 
 
 @router.post("/preview", response_model=ImportPreview)
-async def preview_import(file: UploadFile = File(...), user: UserContext = Depends(require_planner), db: Session = Depends(get_db)) -> ImportPreview:
+async def preview_import(file: UploadFile = File(...), user: UserContext = Depends(require_planner), db: Session = Depends(get_db), line_id: int | None = Query(default=None, gt=0)) -> ImportPreview:
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(400, "Поддерживаются файлы XLSX и XLSM")
     content = await file.read()
@@ -99,7 +100,7 @@ async def preview_import(file: UploadFile = File(...), user: UserContext = Depen
                 row.warnings.append("Артикул отсутствует в справочнике мощностей: он будет добавлен в список нераспределённых")
         preview.valid_rows = sum(row.valid for row in preview.rows)
         preview.invalid_rows = len(preview.rows) - preview.valid_rows
-        return preview
+        return filter_line_preview(db, preview, line_id) if isinstance(line_id, int) else preview
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -107,11 +108,25 @@ async def preview_import(file: UploadFile = File(...), user: UserContext = Depen
 @router.post("/confirm")
 def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     preview = payload.preview
+    scoped_plan = None
+    previous_demands = []
+    if payload.line_id is not None:
+        active_line(db, payload.line_id)
+        if not payload.create_plan or not payload.merge_into_active:
+            raise HTTPException(422, "Загрузка на линию выполняется только в активный план")
+        scoped_plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()).with_for_update())
+        if not scoped_plan:
+            raise HTTPException(422, "Сначала загрузите общий производственный план")
+        if payload.plan_version != scoped_plan.revision:
+            raise HTTPException(409, "План изменён. Обновите предпросмотр перед загрузкой на линию.")
+        preview = filter_line_preview(db, preview, payload.line_id)
+        previous_demands = demands_for_line(db, scoped_plan, PlanService(db)._latest_source_demands(), payload.line_id)
     if not preview.valid_rows:
         raise HTTPException(422, "В файле нет корректных строк")
     order = ImportedOrder(
         source_name=preview.file_name, status="confirmed", mapping_code=preview.mapping_code,
         template_type=preview.template_type,
+        scope_line_id=payload.line_id,
         total_rows=preview.total_rows, valid_rows=preview.valid_rows, invalid_rows=preview.invalid_rows,
     )
     db.add(order)
@@ -127,11 +142,13 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
         if not plan:
             raise HTTPException(422, "Сначала создайте производственный план, затем загрузите график ТО")
         line_by_name = {line_key(line.name): line for line in db.scalars(select(ProductionLine).where(ProductionLine.status == "active"))}
+        valid_rows = [row for row in preview.rows if row.valid and row.line_hint and row.requested_date and row.duration_hours and row.event_kind]
+        if payload.line_id is not None and not valid_rows:
+            raise HTTPException(422, "В файле нет корректных событий для выбранной линии")
         for existing in plan.schedule_items:
-            if existing.source == "maintenance_import" and existing.schedule_kind in {"maintenance", "cleaning", "downtime"}:
+            if existing.source == "maintenance_import" and existing.schedule_kind in {"maintenance", "cleaning", "downtime"} and (payload.line_id is None or existing.line_id == payload.line_id):
                 existing.excluded = True
         imported = 0
-        valid_rows = [row for row in preview.rows if row.valid and row.line_hint and row.requested_date and row.duration_hours and row.event_kind]
         if valid_rows:
             start = min(row.requested_date for row in valid_rows)
             end = max(row.requested_date for row in valid_rows)
@@ -154,11 +171,13 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
         order.status = "maintenance_imported"
         db.flush()
         demands = service._latest_source_demands()
+        if payload.line_id is not None:
+            demands = demands_for_line(db, plan, demands, payload.line_id)
         if demands:
-            service.calculate(plan, demands, "maintenance_import")
+            service.calculate(plan, demands, "maintenance_import", line_id=payload.line_id)
         else:
-            service.refresh_sequence_and_cleanings(plan)
-            service.recalculate_load(plan)
+            service.refresh_sequence_and_cleanings(plan, line_id=payload.line_id)
+            service.recalculate_load(plan, line_id=payload.line_id)
             service.create_version(plan, "maintenance_import", f"График ТО: {preview.file_name} · {imported} событий")
         db.add(AuditEvent(username=user.username, action="maintenance_schedule_imported", entity_type="production_plan", entity_id=str(plan.id), details={"file_name": preview.file_name, "events": imported}))
         db.commit()
@@ -211,11 +230,32 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
             requested_date=production_date if source_kind == "ohl" else row.requested_date,
             due_date=production_date if source_kind == "ohl" else row.due_date, priority=row.priority,
             customer=row.customer, valid=True, validation_errors=row.warnings,
-            raw_data={"template_type": preview.template_type, "line_hint": row.line_hint, "advance_marking": row.advance_marking, "source_quantity_exact": str(row.source_quantity), "source_date": str(source_date)},
+            raw_data={"template_type": preview.template_type, "line_hint": row.line_hint, "advance_marking": row.advance_marking, "source_quantity_exact": str(row.source_quantity), "source_date": str(source_date), **({"preferred_line_id": payload.line_id} if payload.line_id else {})},
         )
         db.add(demand)
         demands.append(demand)
     db.flush()
+    if payload.line_id is not None:
+        if not demands:
+            raise HTTPException(422, "В файле нет заданий с количеством и корректными датами для выбранной линии")
+        # Retain original quantities and source history, but supersede only this line/type.
+        replaced_ids = {demand.id for demand in previous_demands if demand.source_kind == source_kind}
+        for demand in previous_demands:
+            if demand.id in replaced_ids:
+                demand.raw_data = {**(demand.raw_data or {}), "replaced_by_line_id": payload.line_id}
+        for item in list(scoped_plan.schedule_items):
+            if item.schedule_kind == "production" and item.demand_item_id and item.source_kind == source_kind and (item.line_id == payload.line_id or item.demand_item_id in replaced_ids):
+                scoped_plan.schedule_items.remove(item)
+                db.delete(item)
+        db.flush()
+        service = PlanService(db)
+        effective = demands_for_line(db, scoped_plan, service._latest_source_demands(), payload.line_id)
+        service.calculate(scoped_plan, effective, f"line_import_{source_kind}", line_id=payload.line_id)
+        db.add(AuditEvent(username=user.username, action="plan_imported", entity_type="production_plan", entity_id=str(scoped_plan.id), details={"line_id": payload.line_id, "source_kind": source_kind, "file_name": preview.file_name, "rows": len(demands), "replaced_demands": len(replaced_ids)}))
+        db.commit()
+        line = db.get(ProductionLine, payload.line_id)
+        send_notification(db, "plan_imported", f"PLAN Portal: обновлена линия {line.name}", f"Пользователь {user.display_name} загрузил {preview.file_name} только на линию «{line.name}». Строк: {len(demands)}.")
+        return {"order_id": order.id, "plan": plan_dict(db, scoped_plan), "imported_rows": len(demands), "line_id": payload.line_id}
     if not payload.create_plan:
         db.add(AuditEvent(
             username=user.username, action="demand_imported", entity_type="imported_order",
