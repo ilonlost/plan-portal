@@ -43,6 +43,13 @@ class DowntimeUpdate(BaseModel):
     full_percent: int = Field(ge=0, le=100, strict=True)
 
 
+class PlacementUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    complete_ohl: bool = Field(strict=True)
+    complete_zam: bool = Field(strict=True)
+    plan_version: int | None = Field(default=None, ge=1)
+
+
 @router.get("")
 def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     configuration = get_planner_configuration(db)
@@ -54,6 +61,7 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
                    "section_permissions": user_sections(row)}
                   for row in db.scalars(select(User).where(User.role.in_(["planner", "viewer"])).order_by(User.display_name))],
         "recipients": configuration["recipients"],
+        "placement": configuration["placement"],
         "lines": [{"id": row.id, "name": row.name, "workshop_name": row.workshop_name,
                    **configuration["line_downtime"].get(str(row.id), configuration["default_downtime"])}
                   for row in db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name))],
@@ -61,6 +69,29 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
                      "imported_at": row.imported_at, "valid_rows": row.valid_rows, "scope_line_id": row.scope_line_id}
                     for row in db.scalars(select(ImportedOrder).where(ImportedOrder.status != "deleted").order_by(ImportedOrder.imported_at.desc(), ImportedOrder.id.desc()))],
     }
+
+
+@router.put("/placement")
+def save_placement(payload: PlacementUpdate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
+    plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()).with_for_update())
+    if plan and payload.plan_version != plan.revision:
+        raise HTTPException(409, "План изменён. Обновите настройки и повторите сохранение.")
+    values = payload.model_dump(exclude={"plan_version"})
+    previous = get_planner_configuration(db)["placement"]
+    changed = {key for key, value in values.items() if previous[key] != value}
+    if not changed:
+        return {"ok": True, "plan_recalculated": False}
+    save_planner_configuration(db, {"placement": values}, user.username)
+    db.add(AuditEvent(username=user.username, action="placement_rules_updated", entity_type="portal_setting", details=values))
+    service = PlanService(db)
+    demands = service._latest_source_demands() if plan else []
+    if demands:
+        service.calculate(plan, demands, "placement_rules_updated", source_kind="zam" if changed == {"complete_zam"} else None, update_all_loads=True)
+    elif plan:
+        service.recalculate_load(plan)
+        service.create_version(plan, "placement_rules_updated", "Изменены правила полного размещения ОХЛ / ЗАМ")
+    db.commit()
+    return {"ok": True, "plan_recalculated": bool(plan)}
 
 
 @router.get("/line-tasks")

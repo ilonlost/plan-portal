@@ -58,7 +58,7 @@ def seed() -> None:
                 capacity_unit="кг/день", priority=priority,
                 schedule_code=default_schedule_code(line_name), schedule_anchor_date=DEFAULT_ANCHOR,
                 csb_line_code=csb_code, csb_t5="4",
-                comments="Структура из файла «План производства 12.08.2026» · 22 ч производства + 2 ч обеда",
+                comments="Линия полуфабрикатов. Привязки и скорости задаются в справочнике." if line_name == "Горячий цех" else "Структура из файла «План производства 12.08.2026» · 22 ч производства + 2 ч обеда",
             ))
             priority += 10
         db.add_all([

@@ -13,7 +13,7 @@ from app.services.plan_service import PlanService
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title=settings.app_name, version="0.2.9", docs_url="/api/docs", openapi_url="/api/openapi.json")
+app = FastAPI(title=settings.app_name, version="0.2.10", docs_url="/api/docs", openapi_url="/api/openapi.json")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -62,5 +62,7 @@ def correct_legacy_ohl_source_units() -> None:
             logger.warning("Активный план пересчитан: ОХЛ размещён перед ЗАМ на всех линиях")
         if service.apply_complete_ohl_upgrade():
             logger.warning("Активный план пересчитан: ОХЛ размещён полностью, даты ЗАМ приведены к ДП")
+        if service.apply_complete_zam_upgrade():
+            logger.warning("Активный план пересчитан: весь объём ЗАМ размещён с отображением перегрузки")
     finally:
         db.close()

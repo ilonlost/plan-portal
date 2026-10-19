@@ -76,6 +76,9 @@ def test_line_upload_preserves_other_line_and_zam_and_survives_recalculation(cli
 
 def test_line_zam_upload_keeps_ohl_cards_exactly_and_counts_reserved_hours(client, db, monkeypatch):
     plan, first, second, target, other = two_lines(db, monkeypatch)
+    from app.services.settings_service import save_planner_configuration
+    save_planner_configuration(db, {"placement": {"complete_zam": False}}, "test")
+    db.commit()
     ohl_before = [row for row in snapshot(plan, target) if row[1]["source_kind"] == "ohl"]
     protected = snapshot(plan, other)
     response = client.post("/imports/confirm", json={"preview": preview(300, kind="quarter_weekly", skus=("101",)).model_dump(mode="json"), "line_id": target, "plan_version": plan.revision})

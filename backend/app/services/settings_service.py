@@ -18,6 +18,7 @@ def get_planner_configuration(db: Session) -> dict:
     portal = get_portal_configuration(db)
     legacy_recipients = get_mail_configuration(db).get("notification_emails", "")
     return {
+        "placement": {"complete_ohl": True, "complete_zam": True, **saved.get("placement", {})},
         "recipients": {**dict.fromkeys(("production", "warehouse", "materials"), legacy_recipients), **saved.get("recipients", {})},
         "line_downtime": saved.get("line_downtime", {}),
         "default_downtime": {"partial_percent": portal["partial_downtime_percent"], "full_percent": portal["full_downtime_percent"]},
@@ -27,7 +28,7 @@ def get_planner_configuration(db: Session) -> dict:
 def save_planner_configuration(db: Session, values: dict, username: str) -> None:
     row = db.scalar(select(PortalSetting).where(PortalSetting.key == PLANNER_SETTING_KEY).with_for_update())
     saved = dict(row.value) if row else {}
-    for key in ("recipients", "line_downtime"):
+    for key in ("recipients", "line_downtime", "placement"):
         if key in values:
             saved[key] = {**saved.get(key, {}), **values[key]}
     if row:

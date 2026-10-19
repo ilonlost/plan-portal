@@ -285,7 +285,7 @@ def test_maintenance_template_download_contains_lines_and_validations(client):
     assert workbook.sheetnames == ["График ТО", "Инструкция"]
     sheet = workbook["График ТО"]
     assert [cell.value for cell in sheet[1]] == ["Линия", "Дата", "Смена", "Тип события", "Начало", "Окончание", "Причина / работы"]
-    assert sum(1 for row in range(2, sheet.max_row + 1) if sheet.cell(row, 1).value) == 15
+    assert sum(1 for row in range(2, sheet.max_row + 1) if sheet.cell(row, 1).value) == sum(len(group[1]) for group in WORKSHOPS.values())
     assert len(sheet.data_validations.dataValidation) == 2
     workbook.close()
 
@@ -532,6 +532,9 @@ def test_admin_can_delete_other_user_without_deleting_plan_history(client, db):
 
 
 def test_delete_split_stays_deleted_and_other_volume_survives(db):
+    from app.services.settings_service import save_planner_configuration
+    save_planner_configuration(db, {"placement": {"complete_zam": False}}, "test")
+    db.commit()
     plan, demand = make_plan(db, 150)
     service = PlanService(db)
     demand.source_kind = "zam"; demand.exact_date = False; demand.order.template_type = "quarter_weekly"
@@ -781,7 +784,7 @@ def test_unknown_reference_line_is_rejected_without_inserting_it(client, db):
     with pytest.raises(Exception) as caught:
         imports._upsert_capability(db, product, ImportRow(row_number=1, sku=product.sku, line_hint="Новая случайная линия", speed_kg_hour=100))
     assert caught.value.status_code == 422
-    assert db.scalar(select(func.count(ProductionLine.id))) == 15
+    assert db.scalar(select(func.count(ProductionLine.id))) == sum(len(group[1]) for group in WORKSHOPS.values())
 
 
 def test_department_templates_do_not_leak_production_fields():
@@ -842,7 +845,7 @@ def test_real_import_pipeline_preserves_capacity_and_status(db, monkeypatch):
         result = imports.confirm_import(ImportConfirmRequest(preview=preview), db, user)
         snapshots.append({c.id: (c.units_per_hour, c.batch_quantum_kg, c.min_order_kg) for c in db.scalars(select(LineCapability))})
     assert snapshots[0] == snapshots[1] == snapshots[2]
-    assert db.scalar(select(func.count(ProductionLine.id))) == 15
+    assert db.scalar(select(func.count(ProductionLine.id))) == sum(len(group[1]) for group in WORKSHOPS.values())
     service = PlanService(db)
     plan = service.active_plan()
     assert plan and any(item.status.value == "unscheduled" for item in plan.schedule_items)
@@ -853,7 +856,7 @@ def test_real_import_pipeline_preserves_capacity_and_status(db, monkeypatch):
     capacity = {(c.line_id, c.capacity_date, c.shift): c.available_hours if c.available else 0 for c in db.scalars(select(LineCapacity))}
     for key, hours in usage.items():
         if hours > capacity.get(key, 0):
-            assert any(row.source_kind == "ohl" and (row.line_id, row.production_date, row.shift) == key and any("Загрузка линии" in warning for warning in row.warnings) for row in plan.schedule_items)
+            assert any(row.source_kind in {"ohl", "zam"} and (row.line_id, row.production_date, row.shift) == key and any("Загрузка линии" in warning for warning in row.warnings) for row in plan.schedule_items)
     expected = len([item for item in plan.schedule_items if not item.excluded])
     service.calculate(plan, service._latest_source_demands())
     assert len([item for item in plan.schedule_items if not item.excluded]) == expected

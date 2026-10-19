@@ -87,6 +87,8 @@ class PlanningEngine:
         horizon_end: date,
         reserved_groups: dict | None = None,
         manual_cleaning_days: set[tuple[int, date]] | None = None,
+        complete_ohl: bool = True,
+        complete_zam: bool = False,
     ) -> list[PlannedItem]:
         compatible: dict[int, list[CapabilityInput]] = defaultdict(list)
         for capability in capabilities:
@@ -223,8 +225,8 @@ class PlanningEngine:
                 ))
 
             if remaining > 0:
-                if demand.source_kind == "ohl":
-                    # OHL is mandatory on its requested date, even on a closed or overloaded shift.
+                if (demand.source_kind == "ohl" and complete_ohl) or (demand.source_kind == "zam" and complete_zam):
+                    # Mandatory source volume stays visible even on a closed or overloaded shift.
                     choices = candidates or [(options[0], demand.requested_date, "day")]
                     best, production_date, shift = min(choices, key=lambda slot: (
                         used_hours[(slot[0].line_id, slot[1], slot[2])], slot[0].line_priority,
@@ -235,7 +237,7 @@ class PlanningEngine:
                     hours = self._hours(quantity, best.units_per_hour)
                     used_hours[(best.line_id, production_date, shift)] += hours - (previous.required_hours if previous else Decimal("0"))
                     placed = self._item(demand, best, production_date, quantity, hours, "warning", shift, quantum,
-                        [*warnings, "ОХЛ размещён полностью на требуемую дату сверх доступной мощности"])
+                        [*warnings, "ОХЛ размещён полностью на требуемую дату сверх доступной мощности" if demand.source_kind == "ohl" else "ЗАМ размещён полностью сверх доступной мощности"])
                     if previous:
                         result[result.index(previous)] = placed
                     else:

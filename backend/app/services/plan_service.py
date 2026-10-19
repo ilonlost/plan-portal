@@ -246,6 +246,18 @@ class PlanService:
         return [row for row in self.db.scalars(select(DemandItem).where(DemandItem.order_id.in_(latest_ids)).options(joinedload(DemandItem.product)))
                 if not (row.raw_data or {}).get("replaced_by_line_id")]
 
+    def apply_complete_zam_upgrade(self) -> bool:
+        key = "complete_zam_placement_v1"
+        if self.db.scalar(select(PortalSetting).where(PortalSetting.key == key)):
+            return False
+        plan = self.db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()).with_for_update())
+        demands = self._latest_source_demands() if plan else []
+        if demands:
+            self.calculate(plan, demands, "complete_zam_placement", source_kind="zam", update_all_loads=True)
+        self.db.add(PortalSetting(key=key, value={"applied": True}, updated_by="system"))
+        self.db.commit()
+        return bool(demands)
+
     def recalculate_after_catalog_change(self, change_type: str = "catalog_updated") -> ProductionPlan | None:
         """Immediately rebuild the active plan after any catalog mutation."""
         self.db.flush()
@@ -266,10 +278,10 @@ class PlanService:
         self.db.commit()
         return plan
 
-    def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation", line_id: int | None = None, source_kind: str | None = None) -> ProductionPlan:
+    def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation", line_id: int | None = None, source_kind: str | None = None, update_all_loads: bool = False) -> ProductionPlan:
+        from app.services.settings_service import get_planner_configuration
+        placement = get_planner_configuration(self.db)["placement"]
         if source_kind is not None:
-            if line_id is None:
-                raise ValueError("Source-specific recalculation requires a line")
             demands = [demand for demand in demands if demand.source_kind == source_kind]
         previous_requested_dates = {demand.id: demand.requested_date for demand in demands}
         auto_execution = {
@@ -295,14 +307,15 @@ class PlanService:
                 item.production_date for item in plan.schedule_items
                 if item.production_date and not item.excluded and item.source != "auto" and item.schedule_kind != "production"
             ]
-            plan.horizon_start = min([*(d.requested_date for d in demands), *persistent_event_dates, *([plan.horizon_start] if line_id else [])])
-            plan.horizon_end = max([*(d.due_date for d in demands), *persistent_event_dates, *([plan.horizon_end] if line_id else [])])
+            plan.horizon_start = min([*(d.requested_date for d in demands), *persistent_event_dates, *([plan.horizon_start] if line_id or source_kind else [])])
+            plan.horizon_end = max([*(d.due_date for d in demands), *persistent_event_dates, *([plan.horizon_end] if line_id or source_kind else [])])
             from app.services.line_schedule_service import ensure_line_capacities
             active_lines = list(self.db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
             ensure_line_capacities(self.db, active_lines, plan.horizon_start, plan.horizon_end)
         capabilities = list(self.db.scalars(
             select(LineCapability).join(LineCapability.line).join(LineCapability.product).where(
                 ProductionLine.status == "active", Product.active.is_(True), Product.catalog_status == "active",
+                LineCapability.units_per_hour > 0,
             ).options(joinedload(LineCapability.line))
         ))
         capabilities_by_key = {(capability.line_id, capability.product_id): capability for capability in capabilities}
@@ -418,6 +431,7 @@ class PlanService:
             horizon_end=plan.horizon_end,
             reserved_groups=reserved_groups,
             manual_cleaning_days=manual_cleaning_days,
+            complete_ohl=placement["complete_ohl"], complete_zam=placement["complete_zam"],
         )
         for existing in list(plan.schedule_items):
             replace_source = source_kind is None or existing.schedule_kind != "production" or existing.source_kind == source_kind
@@ -441,13 +455,15 @@ class PlanService:
         plan.status = PlanStatus.NEEDS_REVIEW if any(item.status in {"conflict", "unscheduled"} for item in result) else PlanStatus.CALCULATED
         self.db.flush()
         self.refresh_sequence_and_cleanings(plan, line_id=line_id, source_kind=source_kind)
-        self.recalculate_load(plan, line_id=line_id, source_kind=source_kind)
+        self.recalculate_load(plan, line_id=line_id, source_kind=None if update_all_loads else source_kind)
         self.create_version(plan, change_type, "Автоматический расчёт по правилам конечной мощности")
         self.db.commit()
         self.db.refresh(plan)
         return plan
 
     def recalculate_load(self, plan: ProductionPlan, line_id: int | None = None, source_kind: str | None = None) -> None:
+        from app.services.settings_service import get_planner_configuration
+        placement = get_planner_configuration(self.db)["placement"]
         scope_line_id = line_id
         lines = {line.id: line for line in self.db.scalars(select(ProductionLine))}
         dated_items = [item for item in plan.schedule_items if item.line_id and item.production_date and not item.excluded and (line_id is None or item.line_id == line_id)]
@@ -475,7 +491,8 @@ class PlanService:
                 warnings = [warning for warning in (item.warnings or []) if not warning.startswith("Загрузка линии")]
                 item.load_percent = load
                 if load > 100:
-                    item.status = ScheduleStatus.WARNING if item.source_kind == "ohl" and item.schedule_kind == "production" else ScheduleStatus.CONFLICT
+                    mandatory = item.schedule_kind == "production" and placement.get(f"complete_{item.source_kind}", False)
+                    item.status = ScheduleStatus.WARNING if mandatory else ScheduleStatus.CONFLICT
                     warnings.append(f"Загрузка линии {load}% превышает доступную мощность")
                 elif load >= 85 and item.status != ScheduleStatus.CONFLICT:
                     item.status = ScheduleStatus.WARNING
@@ -758,9 +775,10 @@ class PlanService:
         self.db.flush()
 
     def refresh_sequence_and_cleanings(self, plan: ProductionPlan, line_id: int | None = None, source_kind: str | None = None) -> None:
+        scope_line_id = line_id
         # A per-source upload preserves the other source's cards, including their positions.
         anchors = {row.id: row.sequence for row in plan.schedule_items
-                   if source_kind is not None and row.line_id == line_id and row.schedule_kind == "production" and row.source_kind != source_kind}
+                   if source_kind is not None and (line_id is None or row.line_id == line_id) and row.schedule_kind == "production" and row.source_kind != source_kind}
         for existing in list(plan.schedule_items):
             if line_id is not None and existing.line_id != line_id:
                 continue
@@ -881,8 +899,8 @@ class PlanService:
         if anchors:
             scoped_groups = defaultdict(list)
             for row in plan.schedule_items:
-                if row.line_id == line_id:
-                    scoped_groups[row.production_date].append(row)
+                if scope_line_id is None or row.line_id == scope_line_id:
+                    scoped_groups[(row.line_id, row.production_date)].append(row)
             for rows in scoped_groups.values():
                 reserved = {anchors[row.id] for row in rows if row.id in anchors}
                 next_sequence = 1

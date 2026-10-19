@@ -166,6 +166,7 @@ export interface AdminOverview {
 }
 
 export interface PlannerAdministration {
+  placement: { complete_ohl: boolean; complete_zam: boolean };
   active_plan: { id: number; version: number; start: string; end: string } | null;
   users: Pick<AdminOverview["users"][number], "id" | "username" | "display_name" | "email" | "role" | "active" | "section_permissions">[];
   recipients: Record<"production" | "warehouse" | "materials", string>;

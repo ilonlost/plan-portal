@@ -94,6 +94,7 @@ export const api = {
   }),
   adminOverview: () => request<AdminOverview>("/admin/overview"),
   plannerAdministration: () => request<import("./types").PlannerAdministration>("/planner-admin"),
+  plannerSavePlacement: (data: { complete_ohl: boolean; complete_zam: boolean; plan_version?: number }) => request<{ ok: boolean; plan_recalculated: boolean }>("/planner-admin/placement", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   plannerLineTasks: (lineId: number, start: string, end: string) => request<{ plan_id: number; version: number; count: number }>(`/planner-admin/line-tasks?line_id=${lineId}&start=${start}&end=${end}`),
   plannerDirectoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/planner-admin/directory-users?query=${encodeURIComponent(query)}`),
   plannerUpdateAccess: (id: number, data: { role: string; active: boolean; section_permissions: Record<string, boolean> }) => request<{ ok: boolean }>(`/planner-admin/users/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
