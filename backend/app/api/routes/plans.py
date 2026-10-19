@@ -20,6 +20,7 @@ from app.services.plan_service import PlanService, plan_dict, schedule_item_dict
 from app.services.notification_service import build_plan_email_html, build_plan_xlsx, resolve_plan_recipients, send_notification
 from app.services.settings_service import get_mail_configuration
 from app.services.line_schedule_service import shift_hours
+from app.services.production_cycle_service import window_fields
 
 router = APIRouter(prefix="/plans", tags=["plans"])
 
@@ -146,6 +147,7 @@ def active_plan_matrix(
             load = float(hours / capacity * 100) if capacity else (999.0 if hours else 0.0)
             cells.append({
                 "date": day, "planned_hours": hours, "capacity_hours": capacity, "load_percent": round(load, 1),
+                **window_fields(line, day),
                 "gap_hours": max(Decimal("0"), capacity - hours),
                 "ohl_kg": sum((Decimal(item.quantity_kg or 0) for item in day_items if item.source_kind == "ohl"), Decimal("0")),
                 "zam_kg": sum((Decimal(item.quantity_kg or 0) for item in day_items if item.source_kind == "zam"), Decimal("0")),

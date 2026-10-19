@@ -58,6 +58,8 @@ class ScheduleItemOut(ORMModel):
     sequence: int = 0
     sort_rank: Decimal | None = None
     production_date: date | None
+    production_window_start: datetime | None = None
+    production_window_end: datetime | None = None
     shift: str = "day"
     line_id: int | None
     line_code: str | None

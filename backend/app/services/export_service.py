@@ -14,7 +14,7 @@ class ExcelExportService:
     HEADERS = [
         "№", "Дата", "Смена", "Линия", "Тип записи", "Продукт", "Артикул",
         "Количество источника", "Ед. источника", "Задание, шт.", "Задание, кг", "Коробов", "Квантов",
-        "Время, ч", "Загрузка смены, %", "Причина", "Статус", "Источник", "Предупреждения", "Дата отгрузки",
+        "Время, ч", "Загрузка смены, %", "Причина", "Статус", "Источник", "Предупреждения", "Дата отгрузки", "Начало производственных суток", "Конец производственных суток",
     ]
 
     def __init__(self) -> None:
@@ -65,12 +65,13 @@ class ExcelExportService:
                 self._float(item.get("batch_count")), float(item.get("required_hours", 0)),
                 float(item.get("load_percent", 0)), item.get("reason"), item.get("status"),
                 item.get("source"), "; ".join(item.get("warnings", [])), self._shipping_date(item),
+                item.get("production_window_start"), item.get("production_window_end"),
             ])
             status = item.get("status")
             color = "FCE8EC" if status in {"conflict", "unscheduled"} else "FFF5DF" if status == "warning" else "EAF8F1"
             for cell in sheet[sheet.max_row]:
                 cell.fill = PatternFill("solid", fgColor=color)
-        widths = [8, 14, 10, 24, 16, 30, 16, 20, 14, 16, 16, 12, 12, 14, 20, 30, 16, 14, 44, 18]
+        widths = [8, 14, 10, 24, 16, 30, 16, 20, 14, 16, 16, 12, 12, 14, 20, 30, 16, 14, 44, 18, 28, 28]
         for index, width in enumerate(widths, start=1):
             sheet.column_dimensions[sheet.cell(1, index).column_letter].width = width
         sheet.freeze_panes = "A2"

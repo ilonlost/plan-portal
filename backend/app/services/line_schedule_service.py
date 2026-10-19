@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.entities import LineCapacity, ProductionLine
+from app.services.production_cycle_service import cap_shift_hours
 
 
 SCHEDULE_LABELS = {
@@ -30,7 +31,7 @@ def default_schedule_code(line_name: str) -> str:
     return "day_daily"
 
 
-def shift_hours(line: ProductionLine, day: date) -> tuple[Decimal, Decimal]:
+def _template_hours(line: ProductionLine, day: date) -> tuple[Decimal, Decimal]:
     code = line.schedule_code or default_schedule_code(line.name)
     anchor = line.schedule_anchor_date or DEFAULT_ANCHOR
     cycle_day = (day - anchor).days % 4
@@ -45,6 +46,10 @@ def shift_hours(line: ProductionLine, day: date) -> tuple[Decimal, Decimal]:
     if code == "bread_cycle":
         return Decimal("11"), Decimal("11") if cycle_day < 2 else Decimal("0")
     return Decimal("11"), Decimal("0")
+
+
+def shift_hours(line: ProductionLine, day: date) -> tuple[Decimal, Decimal]:
+    return cap_shift_hours(line, *_template_hours(line, day))
 
 
 def ensure_line_capacities(

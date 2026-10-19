@@ -14,6 +14,7 @@ from app.services.plan_service import PlanService
 from app.services.downtime_service import load_downtimes, resolve_downtime_line
 from app.services.settings_service import get_portal_configuration, get_planner_configuration
 from app.services.notification_service import send_notification
+from app.services.production_cycle_service import production_cycle, validate_cycle, window_fields, cap_shift_hours
 
 router = APIRouter(prefix="/lines", tags=["lines"])
 
@@ -150,6 +151,8 @@ class LineScheduleUpdate(BaseModel):
     csb_t55: str | None = Field(default=None, max_length=80)
     slots: list[CapacityDayUpdate] = Field(default_factory=list)
     planning_settings: dict | None = None
+    production_cycle: dict | None = None
+    plan_version: int | None = None
 
 
 def effective_planning_settings(line: ProductionLine) -> dict:
@@ -252,6 +255,7 @@ def list_lines(db: Session = Depends(get_db), user: UserContext = Depends(curren
             "schedule_template_id": line.schedule_template_id, "production_day_start_hour": line.production_day_start_hour,
             "mail_recipients": line.mail_recipients, "csb_line_code": line.csb_line_code, "csb_t5": line.csb_t5, "csb_t55": line.csb_t55,
             "planning_settings": effective_planning_settings(line),
+            "production_cycle": production_cycle(line),
             "product_count": product_count, "today_load": float(today_load),
         })
     return result
@@ -314,6 +318,7 @@ def line_schedule(
         day_row, night_row = rows.get((current, "day")), rows.get((current, "night"))
         slots.append({
             "capacity_date": current,
+            **window_fields(line, current),
             "day_hours": Decimal(day_row.available_hours) if day_row and day_row.available else Decimal("0") if day_row else default_day,
             "night_hours": Decimal(night_row.available_hours) if night_row and night_row.available else Decimal("0") if night_row else default_night,
             "manual_override": bool((day_row and day_row.manual_override) or (night_row and night_row.manual_override)),
@@ -328,6 +333,7 @@ def line_schedule(
         "template_id": line.schedule_template_id, "production_day_start_hour": line.production_day_start_hour,
         "mail_recipients": line.mail_recipients or "", "csb_line_code": line.csb_line_code or "", "csb_t5": line.csb_t5 or "4", "csb_t55": line.csb_t55 or "",
         "planning_settings": effective_planning_settings(line),
+        "production_cycle": production_cycle(line),
         "slots": slots,
     }
 
@@ -341,6 +347,9 @@ def update_line_schedule(
     line = db.get(ProductionLine, line_id)
     if not line:
         raise HTTPException(404, "Линия не найдена")
+    plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()).with_for_update())
+    if plan and payload.plan_version is not None and payload.plan_version != plan.revision:
+        raise HTTPException(409, "План уже изменён. Обновите настройки и повторите сохранение.")
     if payload.schedule_code not in SCHEDULE_LABELS:
         raise HTTPException(422, "Неизвестный шаблон графика")
     template = None
@@ -364,20 +373,28 @@ def update_line_schedule(
     line.csb_t55 = (payload.csb_t55 or "").strip() or None
     try:
         next_settings = effective_planning_settings(line) if payload.planning_settings is None else validate_planning_settings(payload.planning_settings)
-    except (ValueError, TypeError) as exc:
+        next_cycle = production_cycle(line) if payload.production_cycle is None else validate_cycle(payload.production_cycle)
+    except (ValueError, TypeError, ArithmeticError) as exc:
         raise HTTPException(422, str(exc)) from exc
+    cycle_changed = production_cycle(line) != next_cycle
+    next_settings = {**next_settings, "production_cycle": next_cycle}
     rules_changed = effective_planning_settings(line) != next_settings
     line.planning_settings = next_settings
-    plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()))
-    if plan and pattern_changed:
+    if next_cycle["enabled"]:
+        line.production_day_start_hour = int(next_cycle["start_time"].split(":")[0])
+    if plan and (pattern_changed or cycle_changed):
         for row in db.scalars(select(LineCapacity).where(
             LineCapacity.line_id == line.id,
             LineCapacity.capacity_date >= plan.horizon_start,
             LineCapacity.capacity_date <= plan.horizon_end,
         )):
-            row.manual_override = False
+            if pattern_changed:
+                row.manual_override = False
         ensure_line_capacities(db, [line], plan.horizon_start, plan.horizon_end, refresh_generated=True)
     for slot in payload.slots:
+        limited = cap_shift_hours(line, slot.day_hours, slot.night_hours)
+        if limited != (slot.day_hours, slot.night_hours):
+            raise HTTPException(422, "Часы смен превышают длительность производственного окна. Уменьшите часы или увеличьте окно.")
         for shift, hours in (("day", slot.day_hours), ("night", slot.night_hours)):
             row = db.scalar(select(LineCapacity).where(
                 LineCapacity.line_id == line.id, LineCapacity.capacity_date == slot.capacity_date, LineCapacity.shift == shift,
@@ -390,23 +407,34 @@ def update_line_schedule(
             row.manual_override = True
             row.note = slot.note or "Ручная корректировка графика"
     db.flush()
+    if plan and next_cycle["enabled"]:
+        manual_days = {}
+        for row in db.scalars(select(LineCapacity).where(LineCapacity.line_id == line.id, LineCapacity.manual_override.is_(True), LineCapacity.capacity_date >= plan.horizon_start, LineCapacity.capacity_date <= plan.horizon_end)):
+            manual_days.setdefault(row.capacity_date, {})[row.shift] = Decimal(row.available_hours) if row.available else Decimal("0")
+        for day, shifts in manual_days.items():
+            hours = (shifts.get("day", Decimal("0")), shifts.get("night", Decimal("0")))
+            if cap_shift_hours(line, *hours) != hours:
+                raise HTTPException(422, f"Ручные часы на {day:%d.%m.%Y} не помещаются в новое окно. Сначала скорректируйте их.")
     recalculated = False
     if plan:
         demand_ids = list(db.scalars(select(ProductionScheduleItem.demand_item_id).where(
             ProductionScheduleItem.plan_id == plan.id, ProductionScheduleItem.demand_item_id.is_not(None),
+            ProductionScheduleItem.line_id == line.id,
         ).distinct()))
+        product_ids = list(db.scalars(select(LineCapability.product_id).where(LineCapability.line_id == line.id)))
+        demand_ids += [row.id for row in PlanService(db)._latest_source_demands() if row.product_id in product_ids]
         demands = list(db.scalars(select(DemandItem).where(DemandItem.id.in_(demand_ids)).options(joinedload(DemandItem.product)))) if demand_ids else []
         if demands:
-            PlanService(db).calculate(plan, demands, "line_rules_changed" if rules_changed else "line_schedule_changed")
+            PlanService(db).calculate(plan, demands, "line_rules_changed" if rules_changed else "line_schedule_changed", line_id=line.id, preserve_other_lines=True)
             recalculated = True
         else:
-            PlanService(db).refresh_sequence_and_cleanings(plan)
-            PlanService(db).recalculate_load(plan)
+            PlanService(db).refresh_sequence_and_cleanings(plan, line_id=line.id)
+            PlanService(db).recalculate_load(plan, line_id=line.id)
             if pattern_changed or rules_changed:
                 PlanService(db).create_version(plan, "line_rules_changed" if rules_changed else "line_schedule_changed", f"Настройки линии {line.name} обновлены")
     db.add(AuditEvent(
         username=user.username, action="line_schedule_updated", entity_type="production_line", entity_id=str(line.id),
-        details={"schedule_code": line.schedule_code, "template_id": line.schedule_template_id, "anchor_date": payload.anchor_date.isoformat(), "manual_days": len(payload.slots), "planning_settings": next_settings, "plan_recalculated": recalculated},
+        details={"schedule_code": line.schedule_code, "template_id": line.schedule_template_id, "anchor_date": payload.anchor_date.isoformat(), "manual_days": len(payload.slots), "planning_settings": next_settings, "production_cycle": next_cycle, "plan_recalculated": recalculated},
     ))
     db.commit()
     send_notification(db, "line_schedule_updated", f"PLAN Portal: изменены настройки линии {line.name}", f"{user.display_name} изменил график, мощность или параметры планирования линии {line.name}. Пересчёт плана: {'выполнен' if recalculated else 'не требовался'}.")

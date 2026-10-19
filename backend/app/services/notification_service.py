@@ -40,7 +40,7 @@ def build_plan_xlsx(items: list[dict], audience: str) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "План"
-    headers = ["Дата производства", "Дата маркировки", "Дата отгрузки", "Цех", "Линия", "№", "SKU", "Продукция", "Источник", "Смена", "Штуки", "Кг", "Короба", "Время, ч", "Меркурий"]
+    headers = ["Дата производства", "Дата маркировки", "Дата отгрузки", "Цех", "Линия", "№", "SKU", "Продукция", "Источник", "Смена", "Штуки", "Кг", "Короба", "Время, ч", "Меркурий", "Начало производственных суток", "Конец производственных суток"]
     sheet.append(headers)
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
@@ -52,13 +52,21 @@ def build_plan_xlsx(items: list[dict], audience: str) -> bytes:
             {"ohl": "ОХЛ", "zam": "ЗАМ", "pf": "ПФ", "generic": "Прочее"}.get(item.get("source_kind"), "—"), "День" if item.get("shift") == "day" else "Ночь",
             float(item.get("quantity_units") or 0), float(item.get("quantity_kg") or 0), float(item.get("box_count") or 0),
             float(item.get("required_hours") or 0), item.get("mercury") or "—",
+            item.get("production_window_start"), item.get("production_window_end"),
         ])
-    widths = [18, 18, 18, 13, 24, 7, 15, 48, 12, 12, 14, 14, 12, 12, 14]
+    widths = [18, 18, 18, 13, 24, 7, 15, 48, 12, 12, 14, 14, 12, 12, 14, 28, 28]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + index)].width = width
     sheet.freeze_panes = "A2"
     stream = BytesIO(); workbook.save(stream)
     return stream.getvalue()
+
+
+def _cycle_caption(item: dict) -> str:
+    start, end = item.get("production_window_start"), item.get("production_window_end")
+    if not start or not end:
+        return ""
+    return f'<br><small>Производственные сутки: {escape(start.strftime("%d.%m.%Y %H:%M"))} — {escape(end.strftime("%d.%m.%Y %H:%M"))}</small>'
 
 
 def _date(value: object) -> str:
@@ -137,7 +145,7 @@ def build_plan_email_html(
                 '<tr>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">№{int(row.get("sequence") or 0)}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">{escape(str(row.get("sku") or "—"))}</td>'
-                f'<td style="padding:8px;border-bottom:1px solid #eceef1">{escape(str(row.get("product_name") or "—"))}</td>'
+                f'<td style="padding:8px;border-bottom:1px solid #eceef1">{escape(str(row.get("product_name") or "—"))}{_cycle_caption(row)}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape(_date(_shipping_date(row)))}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape("День" if row.get("shift") == "day" else "Ночь")}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("quantity_units") or 0):,.0f} шт.</td>'

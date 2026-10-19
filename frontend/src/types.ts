@@ -10,6 +10,7 @@ export interface UserProfile {
 export interface SessionMode { auth_mode: string; }
 
 export interface ScheduleItem {
+  production_window_start?: string | null; production_window_end?: string | null;
   id: number; sequence: number; production_date: string | null; marking_date: string | null; shipping_date: string | null; line_id: number | null;
   line_code: string | null; line_name: string | null; workshop_code: string | null; workshop_name: string | null;
   product_id: number | null; product_name: string; sku: string; quantity: number; required_hours: number;
@@ -31,6 +32,7 @@ export interface PlanData {
 }
 
 export interface MatrixCell {
+  production_window_start?: string | null; production_window_end?: string | null;
   date: string; planned_hours: number; capacity_hours: number; load_percent: number; gap_hours: number;
   ohl_kg: number; zam_kg: number; items: ScheduleItem[];
 }
@@ -43,6 +45,7 @@ export interface MatrixData {
 }
 
 export interface LineData {
+  production_cycle: ProductionCycle;
   id: number; code: string; name: string; workshop_code: string; workshop_name: string; status: string;
   working_hours: number; default_capacity: number; capacity_unit: string; priority: number;
   comments?: string; schedule_code: string; schedule_label: string; schedule_anchor_date: string | null;
@@ -52,6 +55,7 @@ export interface LineData {
   planning_settings: PlanningSettings;
 }
 export interface PlanningSettings { daily_startup_hours: number; changeover_hours: number; restart_after_downtime_hours: number; ohl_first: boolean; bolognese_last: boolean; start_batch_number: number; }
+export interface ProductionCycle { enabled: boolean; start_time: string; duration_hours: number; }
 export interface WorkshopData { code: string; name: string; lines: { id: number; code: string; name: string; status: string }[]; }
 
 export interface CatalogRow {
@@ -83,9 +87,11 @@ export interface BomData {
 }
 
 export interface LineScheduleSlot {
+  production_window_start?: string | null; production_window_end?: string | null;
   capacity_date: string; day_hours: number; night_hours: number; manual_override: boolean; note: string | null;
 }
 export interface LineScheduleData {
+  production_cycle: ProductionCycle;
   line_id: number; line_name: string; workshop_code: string; schedule_code: string; schedule_label: string;
   anchor_date: string; patterns: Record<string, string>; template_id: number | null; production_day_start_hour: number;
   mail_recipients: string; csb_line_code: string; csb_t5: string; csb_t55: string;

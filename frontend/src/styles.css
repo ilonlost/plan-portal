@@ -606,3 +606,20 @@ html:has(.modal-backdrop, .drawer-backdrop), body:has(.modal-backdrop, .drawer-b
 [data-theme="dark"] .source.pf { color:#ffd382; background:#60441f; }
 .sku-card.pf-task,.cell-skus button.pf-task { border-left:3px solid #e6a32a; }
 .sku-card[draggable="true"] { cursor:grab; }.sku-card[draggable="true"]:active { cursor:grabbing; }
+/* Catalogue views share a full-width workspace; operational settings live in planning. */
+.catalog-workspace { min-width: 0; }
+.catalog-view-tabs { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.catalog-view-tabs button { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); cursor: pointer; }
+.catalog-view-tabs button.active { border-color: #c8102e; box-shadow: inset 0 -2px #c8102e; }
+.catalog-view-tabs em { font-style: normal; opacity: .65; }
+.production-cycle-editor { padding: 18px; margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; }
+.production-cycle-editor header p, .cycle-preview small { color: var(--muted); line-height: 1.6; }
+.schedule-modal .production-cycle-editor > header { display: block; padding: 0; margin-bottom: 12px; }
+.production-cycle-editor h3 { margin: 0 0 8px; font-size: 15px; }
+.schedule-modal .production-cycle-editor > header p { margin: 0; font-size: 12px; }
+.production-cycle-editor .check-label { margin: 14px 0; }
+.cycle-preview { display: grid; gap: 8px; padding: 14px; margin-top: 14px; background: rgba(63, 150, 204, .09); border-left: 3px solid #3f96cc; border-radius: 4px; }
+.cycle-preview > span { font-size: 18px; font-weight: 700; }
+.task-cycle-window { display: grid; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 11px; text-align: left; }
+.task-cycle-window small { color: var(--muted); }
+.cell-cycle-window { display: block; color: var(--muted); font-size: 9px; line-height: 1.5; margin-bottom: 6px; }

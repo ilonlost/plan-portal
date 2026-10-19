@@ -39,6 +39,7 @@ class CapabilityInput:
     workshop_code: str = ""
     daily_startup_hours: Decimal = Decimal("0")
     changeover_hours: Decimal = Decimal("0")
+    marking_day_cycle: bool = False
 
 
 @dataclass(frozen=True)
@@ -157,13 +158,18 @@ class PlanningEngine:
                 else horizon_end if demand.source_kind == "zam" else min(horizon_end, demand.due_date)
             )
             candidates: list[tuple[CapabilityInput, date, str]] = []
-            current = first_date
-            while current <= last_date:
-                for capability in options:
+            for capability in options:
+                # Configured production days end on DM, regardless of the old
+                # catalogue's AZ/day-before convention. Calendar bounds are
+                # exposed separately; all sources share the same capacity bucket.
+                cycle_day = demand.marking_date if capability.marking_day_cycle and demand.source_kind == "ohl" else None
+                current = cycle_day or first_date
+                candidate_end = cycle_day or last_date
+                while current <= candidate_end:
                     for shift in sorted(set(shifts_by_day_line.get((capability.line_id, current), [])), key=self._shift_order):
                         if capacity_by_slot.get((capability.line_id, current, shift), Decimal("0")) > 0:
                             candidates.append((capability, current, shift))
-                current += timedelta(days=1)
+                    current += timedelta(days=1)
 
             while remaining > 0:
                 available = []
@@ -227,7 +233,7 @@ class PlanningEngine:
             if remaining > 0:
                 if (demand.source_kind == "ohl" and complete_ohl) or (demand.source_kind == "zam" and complete_zam):
                     # Mandatory source volume stays visible even on a closed or overloaded shift.
-                    choices = candidates or [(options[0], demand.requested_date, "day")]
+                    choices = candidates or [(options[0], demand.marking_date if options[0].marking_day_cycle and demand.source_kind == "ohl" and demand.marking_date else demand.requested_date, "day")]
                     best, production_date, shift = min(choices, key=lambda slot: (
                         used_hours[(slot[0].line_id, slot[1], slot[2])], slot[0].line_priority,
                         self._shift_order(slot[2]), slot[0].line_id,

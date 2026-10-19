@@ -14,6 +14,7 @@ from app.models.entities import (
 )
 from app.services.planning_engine import CapabilityInput, CapacityInput, DemandInput, PlanningEngine
 from app.services.planning_rules import mono_group
+from app.services.production_cycle_service import production_cycle, window_fields
 
 
 def cleaning_suppression_key(
@@ -258,6 +259,27 @@ class PlanService:
         self.db.commit()
         return bool(demands)
 
+    def apply_production_cycle_upgrade(self) -> bool:
+        """Enable the explicitly requested sandwich cycle once; other lines opt in."""
+        key = "sandwich_production_cycle_v1"
+        if self.db.scalar(select(PortalSetting).where(PortalSetting.key == key)):
+            return False
+        line = self.db.scalar(select(ProductionLine).where(ProductionLine.workshop_code == "KC", ProductionLine.name == "Сэндвичи", ProductionLine.status == "active"))
+        if not line:
+            return False
+        if "production_cycle" not in (line.planning_settings or {}):
+            line.planning_settings = {**(line.planning_settings or {}), "production_cycle": {"enabled": True, "start_time": "18:00", "duration_hours": 24.0}}
+            line.production_day_start_hour = 18
+            self.db.flush()
+            plan = self.active_plan()
+            product_ids = set(self.db.scalars(select(LineCapability.product_id).where(LineCapability.line_id == line.id)))
+            demands = [row for row in self._latest_source_demands() if row.product_id in product_ids] if plan else []
+            if demands:
+                self.calculate(plan, demands, "production_cycle_enabled", line_id=line.id, preserve_other_lines=True)
+        self.db.add(PortalSetting(key=key, value={"applied": True}, updated_by="system"))
+        self.db.commit()
+        return True
+
     def recalculate_after_catalog_change(self, change_type: str = "catalog_updated") -> ProductionPlan | None:
         """Immediately rebuild the active plan after any catalog mutation."""
         self.db.flush()
@@ -278,7 +300,7 @@ class PlanService:
         self.db.commit()
         return plan
 
-    def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation", line_id: int | None = None, source_kind: str | None = None, update_all_loads: bool = False) -> ProductionPlan:
+    def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation", line_id: int | None = None, source_kind: str | None = None, update_all_loads: bool = False, preserve_other_lines: bool = False) -> ProductionPlan:
         from app.services.settings_service import get_planner_configuration
         placement = get_planner_configuration(self.db)["placement"]
         if source_kind is not None:
@@ -290,6 +312,14 @@ class PlanService:
             }
             for row in plan.schedule_items if row.source == "auto" and row.schedule_kind == "production"
         }
+        # Date-label changes caused by a production-cycle setting must not reset
+        # exported/completed tasks. Only use an unambiguous unchanged split.
+        stable_execution = defaultdict(list)
+        for row in plan.schedule_items:
+            if row.source == "auto" and row.schedule_kind == "production":
+                stable_execution[(row.demand_item_id, row.line_id, row.shift, Decimal(row.quantity))].append({
+                    name: getattr(row, name) for name in ("execution_status", "execution_note", "reported_by", "reported_at", "actual_quantity_kg")
+                })
         auto_sort_ranks = {
             (item.demand_item_id, item.line_id, item.production_date, item.shift): item.sort_rank
             for item in plan.schedule_items
@@ -303,14 +333,15 @@ class PlanService:
                 demand.due_date = demand.requested_date
                 demand.production_week = demand.requested_date.isocalendar().week
         if demands:
+            active_lines = list(self.db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
+            cycle_dates = [d.marking_date or d.source_plan_date for d in demands if d.marking_date or d.source_plan_date] if any(production_cycle(line)["enabled"] for line in active_lines) else []
             persistent_event_dates = [
                 item.production_date for item in plan.schedule_items
                 if item.production_date and not item.excluded and item.source != "auto" and item.schedule_kind != "production"
             ]
             plan.horizon_start = min([*(d.requested_date for d in demands), *persistent_event_dates, *([plan.horizon_start] if line_id or source_kind else [])])
-            plan.horizon_end = max([*(d.due_date for d in demands), *persistent_event_dates, *([plan.horizon_end] if line_id or source_kind else [])])
+            plan.horizon_end = max([*(d.due_date for d in demands), *cycle_dates, *persistent_event_dates, *([plan.horizon_end] if line_id or source_kind else [])])
             from app.services.line_schedule_service import ensure_line_capacities
-            active_lines = list(self.db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
             ensure_line_capacities(self.db, active_lines, plan.horizon_start, plan.horizon_end)
         capabilities = list(self.db.scalars(
             select(LineCapability).join(LineCapability.line).join(LineCapability.product).where(
@@ -369,6 +400,8 @@ class PlanService:
         # Preserve manually handled splits, including deleted quantities, across reimports.
         handled = defaultdict(lambda: Decimal("0"))
         for item in plan.schedule_items:
+            if preserve_other_lines and item.line_id is not None and item.line_id != line_id and item.demand_item:
+                handled[self.demand_key(item.demand_item)] += Decimal(item.quantity)
             if item.source == "manual" and item.demand_item and (line_id is None or item.line_id == line_id):
                 consumed = item.source_quantity if item.source_unit == "кг" and item.source_quantity is not None else item.quantity
                 handled[self.demand_key(item.demand_item)] += Decimal(consumed)
@@ -410,7 +443,7 @@ class PlanService:
                 unit_weight_kg=Decimal(item.product.unit_weight_kg) if item.product and item.product.unit_weight_kg else None,
                 units_per_box=Decimal(item.product.units_per_box) if item.product and item.product.units_per_box else None,
                 box_quantum_kg=Decimal(item.product.box_weight_kg) if item.product and item.product.box_weight_kg else None,
-                exact_date=item.exact_date, source_kind=item.source_kind, marking_date=item.marking_date,
+                exact_date=item.exact_date, source_kind=item.source_kind, marking_date=item.marking_date or (item.source_plan_date if item.source_kind == "ohl" else None),
                 warnings=tuple(item.validation_errors or []),
                 mono_group=mono_group(item.product.name if item.product else item.product_name, item.product.mono_group if item.product else None),
                 preferred_line_id=(item.raw_data or {}).get("preferred_line_id"),
@@ -423,6 +456,7 @@ class PlanService:
                 workshop_code=item.line.workshop_code,
                 daily_startup_hours=Decimal(str((item.line.planning_settings or {}).get("daily_startup_hours", 1 if "лазан" in item.line.name.casefold() else 0))),
                 changeover_hours=Decimal(str((item.line.planning_settings or {}).get("changeover_hours", 1 if "лазан" in item.line.name.casefold() else 0))),
+                marking_day_cycle=production_cycle(item.line)["enabled"],
             ) for item in capabilities if item.line.status == "active"],
             capacities=[CapacityInput(
                 line_id=item.line_id, capacity_date=item.capacity_date,
@@ -435,7 +469,8 @@ class PlanService:
         )
         for existing in list(plan.schedule_items):
             replace_source = source_kind is None or existing.schedule_kind != "production" or existing.source_kind == source_kind
-            if existing.source == "auto" and replace_source and (line_id is None or existing.line_id == line_id or existing.demand_item_id in demand_by_id):
+            outside_scope = preserve_other_lines and existing.line_id is not None and existing.line_id != line_id
+            if existing.source == "auto" and replace_source and not outside_scope and (line_id is None or existing.line_id == line_id or existing.demand_item_id in demand_by_id):
                 plan.schedule_items.remove(existing)
                 self.db.delete(existing)
         self.db.flush()
@@ -450,7 +485,9 @@ class PlanService:
                 sort_rank=auto_sort_ranks.get((item.demand_id, item.line_id, item.production_date, item.shift)),
                 required_hours=item.required_hours, status=ScheduleStatus(item.status),
                 source="auto", warnings=item.warnings,
-                **auto_execution.get((item.demand_id, item.line_id, item.production_date, item.shift, Decimal(item.quantity)), {}),
+                **auto_execution.get((item.demand_id, item.line_id, item.production_date, item.shift, Decimal(item.quantity)),
+                    stable_execution[(item.demand_id, item.line_id, item.shift, Decimal(item.quantity))][0]
+                    if len(stable_execution[(item.demand_id, item.line_id, item.shift, Decimal(item.quantity))]) == 1 else {}),
             ))
         plan.status = PlanStatus.NEEDS_REVIEW if any(item.status in {"conflict", "unscheduled"} for item in result) else PlanStatus.CALCULATED
         self.db.flush()
@@ -942,6 +979,7 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "sequence": item.sequence,
         "sort_rank": item.sort_rank,
         "production_date": item.production_date,
+        **window_fields(item.line, item.production_date),
         "line_id": item.line_id,
         "line_code": item.line.code if item.line else None,
         "line_name": item.line.name if item.line else None,
