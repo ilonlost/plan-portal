@@ -4,7 +4,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from app.core.line_catalog import line_key
-from app.models.entities import LineCapability, Product, ProductionLine
+from app.models.entities import LineCapability, Product, ProductionLine, ProductionScheduleItem
+from app.services.production_cycle_service import production_cycle
+from datetime import timedelta
 
 
 def active_line(db, line_id):
@@ -14,7 +16,7 @@ def active_line(db, line_id):
     return line
 
 
-def filter_line_preview(db, preview, line_id):
+def filter_line_preview(db, preview, line_id, start=None, end=None):
     line = active_line(db, line_id)
     if preview.template_type not in {"ohl_daily", "quarter_weekly", "maintenance_schedule"}:
         raise HTTPException(422, "Для одной линии поддерживаются стандартные файлы ОХЛ, ЗАМ и график ТО. Справочники загружайте в общем разделе.")
@@ -29,6 +31,35 @@ def filter_line_preview(db, preview, line_id):
         if preview.template_type == "maintenance_schedule" else
         row.sku in skus and (not row.line_hint or line_key(row.line_hint) == line_key(line.name))
     )]
+    if start is not None or end is not None:
+        if not start or not end or end < start or (end - start).days > 92:
+            raise HTTPException(422, "Выберите обе даты, не более 93 дней")
+        products = {row.sku: row for row in db.scalars(select(Product))}
+        selected = []
+        for row in preview.rows:
+            if not row.requested_date:
+                continue
+            if preview.template_type == "quarter_weekly":
+                if row.requested_date > end or (row.due_date or row.requested_date) < start:
+                    continue
+                row.source_plan_date = row.source_plan_date or row.requested_date
+                row.requested_date = max(row.requested_date, start)
+                row.due_date = min(row.due_date or row.requested_date, end)
+            else:
+                day = row.requested_date
+                if preview.template_type == "ohl_daily":
+                    source = row.marking_date or row.source_plan_date or day
+                    product = products.get(row.sku)
+                    day = source if production_cycle(line)["enabled"] else source - timedelta(days=int(bool(product and product.advance_status == "АЗ")))
+                if not start <= day <= end:
+                    continue
+            selected.append(row)
+        preview.rows = selected
+        note = f"Период загрузки: {start:%d.%m.%Y} — {end:%d.%m.%Y}."
+        if preview.template_type == "quarter_weekly":
+            note += " ЗАМ: полный объём выбранных недель размещается внутри этого окна, без пропорционального уменьшения."
+        if note not in preview.notes:
+            preview.notes.append(note)
     preview.reference_rows = []
     preview.total_rows = len(preview.rows)
     preview.valid_rows = sum(row.valid for row in preview.rows)
@@ -36,8 +67,16 @@ def filter_line_preview(db, preview, line_id):
     if not any(note.startswith(f"Только линия «{line.name}»:") for note in preview.notes):
         preview.notes.append(f"Только линия «{line.name}»: отобрано {len(preview.rows)} из {total} строк. Остальные линии не изменяются.")
     if not preview.valid_rows:
+        if start:
+            raise HTTPException(422, f"Для линии «{line.name}» в выбранном периоде нет корректных строк. Проверьте даты файла, период и привязку артикулов.")
         raise HTTPException(422, f"В файле нет корректных строк для линии «{line.name}». Проверьте привязку артикула и положительную скорость в справочнике.")
     return preview
+
+
+def replacement_tasks(plan, line_id, kind, start=None, end=None):
+    return [row for row in plan.schedule_items if row.line_id == line_id and row.demand_item_id
+            and row.schedule_kind == "production" and row.source_kind == kind and not row.excluded
+            and (not start or (row.production_date and start <= row.production_date <= end))]
 
 
 def demands_for_line(db, plan, demands, line_id):

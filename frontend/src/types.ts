@@ -124,6 +124,7 @@ export interface ImportRow {
   start_time: string | null; end_time: string | null;
 }
 export interface ImportPreview {
+  affected_tasks?: ScheduleItem[]; plan_version?: number;
   file_name: string; mapping_code: string; template_type: string; detected_sheet: string | null; notes: string[];
   total_rows: number; valid_rows: number; invalid_rows: number; columns: string[]; rows: ImportRow[];
 }
@@ -174,10 +175,10 @@ export interface AdminOverview {
 export interface PlannerAdministration {
   placement: { complete_ohl: boolean; complete_zam: boolean };
   active_plan: { id: number; version: number; start: string; end: string } | null;
-  users: Pick<AdminOverview["users"][number], "id" | "username" | "display_name" | "email" | "role" | "active" | "section_permissions">[];
+  users: (Pick<AdminOverview["users"][number], "id" | "username" | "display_name" | "email" | "role" | "active" | "section_permissions"> & { auth_provider?: string })[];
   recipients: Record<"production" | "warehouse" | "materials", string>;
   lines: { id: number; name: string; workshop_name: string; partial_percent: number; full_percent: number }[];
-  sources: (Pick<SourceFile, "id" | "file_name" | "template_type" | "imported_at" | "valid_rows"> & { scope_line_id?: number | null })[];
+  sources: (Pick<SourceFile, "id" | "file_name" | "template_type" | "imported_at" | "valid_rows"> & { total_rows?: number; invalid_rows?: number; scope_line_id?: number | null; scope_start?: string | null; scope_end?: string | null })[];
 }
 
 export interface DirectoryUser {

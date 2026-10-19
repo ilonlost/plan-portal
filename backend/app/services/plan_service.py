@@ -229,17 +229,14 @@ class PlanService:
             ImportedOrder.template_type.in_(("ohl_daily", "quarter_weekly")),
         ).order_by(ImportedOrder.imported_at.desc(), ImportedOrder.id.desc())))
         latest_ids: list[int] = []
-        seen: set[tuple[str, int | None]] = set()
         complete_seen: set[str] = set()
         for order in orders:
             if order.template_type in complete_seen:
                 continue
-            key = (order.template_type, order.scope_line_id)
-            if key not in seen:
-                # A removed latest file disables that source; do not resurrect an older upload.
-                if order.status != "deleted":
-                    latest_ids.append(order.id)
-                seen.add(key)
+            # Partial sources coexist. Explicit demand replacement markers define
+            # coverage, including overlapping date windows and deleted sources.
+            if order.status != "deleted":
+                latest_ids.append(order.id)
             if order.scope_line_id is None:
                 complete_seen.add(order.template_type)
         if not latest_ids:
@@ -300,7 +297,7 @@ class PlanService:
         self.db.commit()
         return plan
 
-    def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation", line_id: int | None = None, source_kind: str | None = None, update_all_loads: bool = False, preserve_other_lines: bool = False) -> ProductionPlan:
+    def calculate(self, plan: ProductionPlan, demands: list[DemandItem], change_type: str = "automatic_calculation", line_id: int | None = None, source_kind: str | None = None, update_all_loads: bool = False, preserve_other_lines: bool = False, period_start: date | None = None, period_end: date | None = None) -> ProductionPlan:
         from app.services.settings_service import get_planner_configuration
         placement = get_planner_configuration(self.db)["placement"]
         if source_kind is not None:
@@ -366,6 +363,8 @@ class PlanService:
                 continue
             if item.source != "manual" or item.excluded or item.schedule_kind != "production" or not item.product_id:
                 continue
+            if period_start and (not item.production_date or not period_start <= item.production_date <= period_end):
+                continue
             demand = demand_by_id.get(item.demand_item_id)
             if demand and demand.source_kind == "ohl":
                 previous_date = previous_requested_dates.get(demand.id)
@@ -399,7 +398,14 @@ class PlanService:
         )))
         # Preserve manually handled splits, including deleted quantities, across reimports.
         handled = defaultdict(lambda: Decimal("0"))
+        directly_handled = defaultdict(lambda: Decimal("0"))
         for item in plan.schedule_items:
+            if (item.reason or "").startswith("period_replaced:") and item.demand_item_id:
+                directly_handled[item.demand_item_id] += Decimal(item.quantity)
+                continue
+            if period_start and item.production_date and not period_start <= item.production_date <= period_end and item.demand_item:
+                directly_handled[item.demand_item_id] += Decimal(item.quantity)
+                continue
             if preserve_other_lines and item.line_id is not None and item.line_id != line_id and item.demand_item:
                 handled[self.demand_key(item.demand_item)] += Decimal(item.quantity)
             if item.source == "manual" and item.demand_item and (line_id is None or item.line_id == line_id):
@@ -410,7 +416,7 @@ class PlanService:
             key = self.demand_key(demand)
             consumed = min(Decimal(demand.quantity), handled[key])
             handled[key] -= consumed
-            remaining_quantity[demand.id] = Decimal(demand.quantity) - consumed
+            remaining_quantity[demand.id] = max(Decimal("0"), Decimal(demand.quantity) - consumed - directly_handled[demand.id])
         reserved = defaultdict(lambda: Decimal("0"))
         reserved_groups = defaultdict(set)
         manual_cleaning_days = {(row.line_id, row.production_date) for row in plan.schedule_items if row.excluded and row.reason == "manual_cleaning_day"}
@@ -418,7 +424,7 @@ class PlanService:
         for item in plan.schedule_items:
             if line_id is not None and item.line_id != line_id:
                 continue
-            frozen_production = source_kind is not None and item.schedule_kind == "production" and item.source_kind != source_kind
+            frozen_production = item.schedule_kind == "production" and ((source_kind is not None and item.source_kind != source_kind) or (period_start is not None and item.production_date is not None and not period_start <= item.production_date <= period_end))
             if (item.source != "auto" or frozen_production) and not item.excluded and item.line_id and item.production_date:
                 capability = capability_map.get((item.line_id, item.product_id))
                 if item.schedule_kind == "production" and capability:
@@ -447,6 +453,9 @@ class PlanService:
                 warnings=tuple(item.validation_errors or []),
                 mono_group=mono_group(item.product.name if item.product else item.product_name, item.product.mono_group if item.product else None),
                 preferred_line_id=(item.raw_data or {}).get("preferred_line_id"),
+                planning_start=max(filter(None, [period_start, date.fromisoformat(item.raw_data["scope_start"]) if (item.raw_data or {}).get("scope_start") else None]), default=None),
+                planning_end=min(filter(None, [period_end, date.fromisoformat(item.raw_data["scope_end"]) if (item.raw_data or {}).get("scope_end") else None]), default=None),
+                blocked_periods=tuple((date.fromisoformat(a), date.fromisoformat(b)) for a,b in (item.raw_data or {}).get("replaced_periods", [])),
             ) for item in demands if item.valid and remaining_quantity[item.id] > 0],
             capabilities=[CapabilityInput(
                 line_id=item.line_id, product_id=item.product_id, units_per_hour=Decimal(item.units_per_hour),
@@ -468,6 +477,8 @@ class PlanService:
             complete_ohl=placement["complete_ohl"], complete_zam=placement["complete_zam"],
         )
         for existing in list(plan.schedule_items):
+            if period_start and existing.production_date and not period_start <= existing.production_date <= period_end:
+                continue
             replace_source = source_kind is None or existing.schedule_kind != "production" or existing.source_kind == source_kind
             outside_scope = preserve_other_lines and existing.line_id is not None and existing.line_id != line_id
             if existing.source == "auto" and replace_source and not outside_scope and (line_id is None or existing.line_id == line_id or existing.demand_item_id in demand_by_id):
@@ -491,14 +502,14 @@ class PlanService:
             ))
         plan.status = PlanStatus.NEEDS_REVIEW if any(item.status in {"conflict", "unscheduled"} for item in result) else PlanStatus.CALCULATED
         self.db.flush()
-        self.refresh_sequence_and_cleanings(plan, line_id=line_id, source_kind=source_kind)
-        self.recalculate_load(plan, line_id=line_id, source_kind=None if update_all_loads else source_kind)
+        self.refresh_sequence_and_cleanings(plan, line_id=line_id, source_kind=source_kind, period_start=period_start, period_end=period_end)
+        self.recalculate_load(plan, line_id=line_id, source_kind=None if update_all_loads else source_kind, period_start=period_start, period_end=period_end)
         self.create_version(plan, change_type, "Автоматический расчёт по правилам конечной мощности")
         self.db.commit()
         self.db.refresh(plan)
         return plan
 
-    def recalculate_load(self, plan: ProductionPlan, line_id: int | None = None, source_kind: str | None = None) -> None:
+    def recalculate_load(self, plan: ProductionPlan, line_id: int | None = None, source_kind: str | None = None, period_start: date | None = None, period_end: date | None = None) -> None:
         from app.services.settings_service import get_planner_configuration
         placement = get_planner_configuration(self.db)["placement"]
         scope_line_id = line_id
@@ -514,6 +525,8 @@ class PlanService:
         } if dated_items else {}
         groups: dict[tuple[int, date, str], list[ProductionScheduleItem]] = defaultdict(list)
         for item in plan.schedule_items:
+            if period_start and (not item.production_date or not period_start <= item.production_date <= period_end):
+                continue
             if scope_line_id is not None and item.line_id != scope_line_id:
                 continue
             if item.line_id and item.production_date and not item.excluded:
@@ -811,12 +824,14 @@ class PlanService:
         ))
         self.db.flush()
 
-    def refresh_sequence_and_cleanings(self, plan: ProductionPlan, line_id: int | None = None, source_kind: str | None = None) -> None:
+    def refresh_sequence_and_cleanings(self, plan: ProductionPlan, line_id: int | None = None, source_kind: str | None = None, period_start: date | None = None, period_end: date | None = None) -> None:
         scope_line_id = line_id
         # A per-source upload preserves the other source's cards, including their positions.
         anchors = {row.id: row.sequence for row in plan.schedule_items
                    if source_kind is not None and (line_id is None or row.line_id == line_id) and row.schedule_kind == "production" and row.source_kind != source_kind}
         for existing in list(plan.schedule_items):
+            if period_start and (not existing.production_date or not period_start <= existing.production_date <= period_end):
+                continue
             if line_id is not None and existing.line_id != line_id:
                 continue
             if existing.source == "auto" and existing.schedule_kind in {"cleaning", "startup", "changeover", "restart"}:
@@ -828,6 +843,8 @@ class PlanService:
         grouped: dict[tuple[int, date], list[ProductionScheduleItem]] = defaultdict(list)
         unscheduled: list[ProductionScheduleItem] = []
         for item in plan.schedule_items:
+            if period_start and (not item.production_date or not period_start <= item.production_date <= period_end):
+                continue
             if line_id is not None and item.line_id != line_id:
                 continue
             if item.line_id and item.production_date and not item.excluded:
@@ -936,6 +953,8 @@ class PlanService:
         if anchors:
             scoped_groups = defaultdict(list)
             for row in plan.schedule_items:
+                if period_start and (not row.production_date or not period_start <= row.production_date <= period_end):
+                    continue
                 if scope_line_id is None or row.line_id == scope_line_id:
                     scoped_groups[(row.line_id, row.production_date)].append(row)
             for rows in scoped_groups.values():

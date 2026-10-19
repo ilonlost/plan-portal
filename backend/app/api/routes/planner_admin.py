@@ -3,15 +3,15 @@ from typing import Literal
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy import select, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.api.routes import admin
 from app.core.security import UserContext, require_planner, user_sections
 from app.db.session import get_db
 from app.models.entities import AuditEvent, ImportedOrder, ProductionLine, ProductionPlan, ProductionScheduleItem, User
-from app.services.plan_service import PlanService
+from app.services.plan_service import PlanService, schedule_item_dict
 from app.services.settings_service import get_planner_configuration, save_planner_configuration
 
 router = APIRouter(prefix="/planner-admin", tags=["planner administration"])
@@ -50,6 +50,43 @@ class PlacementUpdate(BaseModel):
     plan_version: int | None = Field(default=None, ge=1)
 
 
+class ServiceAccountCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str = Field(max_length=80)
+    display_name: str = Field(max_length=160)
+    password: SecretStr
+
+
+class ServicePasswordUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    password: SecretStr
+
+
+@router.post("/service-accounts")
+def create_service(payload: ServiceAccountCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)):
+    from app.services.service_account_service import create_service_account
+    row = create_service_account(db, payload.username, payload.display_name, payload.password.get_secret_value())
+    db.add(AuditEvent(username=user.username, action="service_account_created", entity_type="user", entity_id=str(row.id), details={"target": row.username, "role": "viewer"}))
+    db.commit()
+    return {"id": row.id, "username": row.username, "role": "viewer"}
+
+
+@router.put("/service-accounts/{user_id}/password")
+def reset_service_password(user_id: int, payload: ServicePasswordUpdate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)):
+    from app.services.service_account_service import password_hash
+    row = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if not row or row.auth_provider != "service":
+        raise HTTPException(404, "Сервисная учётная запись не найдена")
+    try:
+        row.password_hash = password_hash(payload.password.get_secret_value())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    row.session_version += 1
+    db.add(AuditEvent(username=user.username, action="service_account_password_reset", entity_type="user", entity_id=str(row.id), details={"target": row.username}))
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("")
 def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     configuration = get_planner_configuration(db)
@@ -58,6 +95,7 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
         "active_plan": {"id": plan.id, "version": plan.revision, "start": plan.horizon_start, "end": plan.horizon_end} if plan else None,
         "users": [{"id": row.id, "username": row.username, "display_name": row.display_name,
                    "email": row.email, "role": row.role, "active": row.active,
+                   "auth_provider": row.auth_provider,
                    "section_permissions": user_sections(row)}
                   for row in db.scalars(select(User).where(User.role.in_(["planner", "viewer"])).order_by(User.display_name))],
         "recipients": configuration["recipients"],
@@ -66,7 +104,8 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
                    **configuration["line_downtime"].get(str(row.id), configuration["default_downtime"])}
                   for row in db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name))],
         "sources": [{"id": row.id, "file_name": row.source_name, "template_type": row.template_type,
-                     "imported_at": row.imported_at, "valid_rows": row.valid_rows, "scope_line_id": row.scope_line_id}
+                     "imported_at": row.imported_at, "valid_rows": row.valid_rows, "total_rows": row.total_rows, "invalid_rows": row.invalid_rows,
+                     "scope_line_id": row.scope_line_id, "scope_start": row.scope_start, "scope_end": row.scope_end}
                     for row in db.scalars(select(ImportedOrder).where(ImportedOrder.status != "deleted").order_by(ImportedOrder.imported_at.desc(), ImportedOrder.id.desc()))],
     }
 
@@ -95,20 +134,23 @@ def save_placement(payload: PlacementUpdate, db: Session = Depends(get_db), user
 
 
 @router.get("/line-tasks")
-def line_tasks(line_id: int, start: date, end: date, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
+def line_tasks(start: date, end: date, line_id: int | None = None, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     from app.services.line_import_service import active_line
-    active_line(db, line_id)
+    if line_id is not None:
+        active_line(db, line_id)
     if end < start or (end - start).days > 92:
         raise HTTPException(422, "Выберите корректный диапазон не более 93 дней")
     plan = PlanService(db).active_plan()
     if not plan:
         raise HTTPException(404, "Активный план не найден")
-    count = db.scalar(select(func.count()).select_from(ProductionScheduleItem).where(
-        ProductionScheduleItem.plan_id == plan.id, ProductionScheduleItem.line_id == line_id,
+    rows = list(db.scalars(select(ProductionScheduleItem).where(
+        ProductionScheduleItem.plan_id == plan.id,
+        *([ProductionScheduleItem.line_id == line_id] if line_id is not None else []),
         ProductionScheduleItem.schedule_kind == "production", ProductionScheduleItem.excluded.is_(False),
         ProductionScheduleItem.production_date.between(start, end),
-    ))
-    return {"plan_id": plan.id, "version": plan.revision, "count": count}
+    ).options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item))
+        .order_by(ProductionScheduleItem.production_date, ProductionScheduleItem.line_id, ProductionScheduleItem.sequence)))
+    return {"plan_id": plan.id, "version": plan.revision, "count": len(rows), "items": [schedule_item_dict(row) for row in rows]}
 
 
 @router.get("/directory-users")
@@ -184,6 +226,6 @@ def delete_source(source_id: int, db: Session = Depends(get_db), user: UserConte
             from app.services.line_import_service import demands_for_line
             demands = demands_for_line(db, plan, demands, source.scope_line_id)
         kind = {"ohl_daily": "ohl", "quarter_weekly": "zam"}.get(source.template_type) if source.scope_line_id else None
-        service.calculate(plan, demands, "source_deleted", line_id=source.scope_line_id, source_kind=kind)
+        service.calculate(plan, demands, "source_deleted", line_id=source.scope_line_id, source_kind=kind, preserve_other_lines=bool(source.scope_line_id), period_start=source.scope_start, period_end=source.scope_end)
     db.commit()
     return {"ok": True, "removed_tasks": removed, "plan_recalculated": recalculate}

@@ -43,6 +43,9 @@ export const api = {
   login: (username: string, password: string) => request<{ user: UserProfile; auth_mode: string }>("/session/login", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }),
   }),
+  serviceLogin: (username: string, password: string) => request<{ user: UserProfile; auth_mode: string }>("/session/service-login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) }),
+  createServiceAccount: (data: { username: string; display_name: string; password: string }) => request<{ id: number; username: string }>("/planner-admin/service-accounts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
+  resetServicePassword: (id: number, password: string) => request<{ ok: boolean }>(`/planner-admin/service-accounts/${id}/password`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) }),
   logout: () => request<{ ok: boolean }>("/session/logout", { method: "POST" }),
   me: (signal?: AbortSignal) => request<UserProfile>("/session/me", { signal }),
   activePlan: () => optional<PlanData>("/plans/active"),
@@ -83,19 +86,19 @@ export const api = {
   }),
   createManualTask: (planId: number, data: object) => request<PlanData>(`/plans/${planId}/items`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   manualProducts: (lineId: number) => request<{ product_id: number; sku: string; name: string; speed_kg_hour: number }[]>(`/catalog/manual-products?line_id=${lineId}`),
-  previewImport: async (file: File, lineId?: number) => {
+  previewImport: async (file: File, lineId?: number, start?: string, end?: string) => {
     const data = new FormData(); data.append("file", file);
-    return request<ImportPreview>(`/imports/preview${lineId ? `?line_id=${lineId}` : ""}`, { method: "POST", body: data });
+    return request<ImportPreview>(`/imports/preview${lineId ? `?line_id=${lineId}${start ? `&start=${start}&end=${end}` : ""}` : ""}`, { method: "POST", body: data });
   },
   maintenanceTemplateUrl: () => `${API}/imports/maintenance-template.xlsx`,
-  confirmImport: (preview: ImportPreview, line_id?: number, plan_version?: number) => request<{ order_id: number; plan: PlanData | null; reference_updated?: number; maintenance_updated?: number }>("/imports/confirm", {
+  confirmImport: (preview: ImportPreview, line_id?: number, plan_version?: number, start_date?: string, end_date?: string) => request<{ order_id: number; plan: PlanData | null; reference_updated?: number; maintenance_updated?: number }>("/imports/confirm", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ preview, create_plan: true, merge_into_active: true, line_id, plan_version }),
+    body: JSON.stringify({ preview, create_plan: true, merge_into_active: true, line_id, plan_version, start_date, end_date }),
   }),
   adminOverview: () => request<AdminOverview>("/admin/overview"),
   plannerAdministration: () => request<import("./types").PlannerAdministration>("/planner-admin"),
   plannerSavePlacement: (data: { complete_ohl: boolean; complete_zam: boolean; plan_version?: number }) => request<{ ok: boolean; plan_recalculated: boolean }>("/planner-admin/placement", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
-  plannerLineTasks: (lineId: number, start: string, end: string) => request<{ plan_id: number; version: number; count: number }>(`/planner-admin/line-tasks?line_id=${lineId}&start=${start}&end=${end}`),
+  plannerLineTasks: (lineId: number | undefined, start: string, end: string) => request<{ plan_id: number; version: number; count: number; items: import("./types").ScheduleItem[] }>(`/planner-admin/line-tasks?${lineId ? `line_id=${lineId}&` : ""}start=${start}&end=${end}`),
   plannerDirectoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/planner-admin/directory-users?query=${encodeURIComponent(query)}`),
   plannerUpdateAccess: (id: number, data: { role: string; active: boolean; section_permissions: Record<string, boolean> }) => request<{ ok: boolean }>(`/planner-admin/users/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   plannerCreateAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean }) => request<{ ok: boolean }>("/planner-admin/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),

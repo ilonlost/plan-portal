@@ -260,6 +260,8 @@ def update_user_access(
     if not target:
         raise HTTPException(404, "Пользователь не найден")
     role = "master" if payload.role == target.role == "master" else _validate_portal_role(payload.role)
+    if target.auth_provider == "service" and role != "viewer":
+        raise HTTPException(422, "Сервисной учётной записи доступен только просмотр")
     if target.username.lower() == user.username.lower() and (not payload.active or role != "admin"):
         raise HTTPException(409, "Нельзя отключить себя или снять собственные права администратора")
     if target.role == "admin" and target.active and (not payload.active or role != "admin"):
@@ -270,6 +272,11 @@ def update_user_access(
     target.active = payload.active
     if payload.section_permissions is not None:
         target.section_permissions = {key: value for key, value in payload.section_permissions.items() if key in SECTION_KEYS}
+        if target.auth_provider == "service":
+            from app.services.service_account_service import SERVICE_SECTIONS
+            target.section_permissions = {key: bool(target.section_permissions.get(key)) and key in SERVICE_SECTIONS for key in SECTION_KEYS}
+    if target.auth_provider == "service" and not payload.active:
+        target.session_version += 1
     if role != "master":
         target.workshop_code = None
         target.line_name = None

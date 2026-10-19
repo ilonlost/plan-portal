@@ -39,6 +39,9 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     section_permissions: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    auth_provider: Mapped[str] = mapped_column(String(20), default="ad", server_default="ad")
+    password_hash: Mapped[str | None] = mapped_column(String(300))
+    session_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -154,6 +157,8 @@ class ImportedOrder(Base):
     mapping_code: Mapped[str] = mapped_column(String(80), default="default_v1")
     template_type: Mapped[str] = mapped_column(String(50), default="generic")
     scope_line_id: Mapped[int | None] = mapped_column(ForeignKey("production_lines.id"), index=True)
+    scope_start: Mapped[date | None] = mapped_column(Date)
+    scope_end: Mapped[date | None] = mapped_column(Date)
     total_rows: Mapped[int] = mapped_column(Integer, default=0)
     valid_rows: Mapped[int] = mapped_column(Integer, default=0)
     invalid_rows: Mapped[int] = mapped_column(Integer, default=0)

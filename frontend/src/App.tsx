@@ -13,7 +13,7 @@ import type {
 } from "./types";
 import "./styles.css";
 
-type Page = "plan" | "catalog" | "import" | "az" | "sources" | "feedback" | "fact" | "admin" | "planner-admin";
+type Page = "plan" | "catalog" | "import" | "az" | "feedback" | "fact" | "admin" | "planner-admin";
 type ViewDays = 1 | 7 | 21;
 type Theme = "dark" | "light";
 type DayLayout = "cards" | "table";
@@ -26,7 +26,7 @@ const executionLabels: Record<string, string> = {
 const today = () => new Date().toLocaleDateString("sv-SE");
 const canPlan = (user: UserProfile | null) => user?.role === "admin" || user?.role === "planner";
 const sectionVisible = (user: UserProfile, section: Page) => section === "planner-admin" ? canPlan(user) : user.role === "admin" || (section !== "admin" && (user.section_visibility?.[section] ?? section !== "fact"));
-const sectionLabels: Record<string, string> = { plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", sources: "Источники данных", feedback: "Обратная связь", fact: "Факт производства" };
+const sectionLabels: Record<string, string> = { plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", feedback: "Обратная связь", fact: "Факт производства" };
 const articleBlocked = (product: CatalogProduct) => product.catalog_status === "blocked" || /блок/i.test(product.fk_status || "");
 const articleStatus = (product: CatalogProduct) => product.catalog_status === "deleted" ? "Удалён из справочника" : articleBlocked(product) ? "Заблокирован" : !product.active ? "Отключён" : product.fk_status || "Активен";
 const portalRoles = [
@@ -77,7 +77,6 @@ export default function App() {
   const [mailOpen, setMailOpen] = useState(false);
   const [csbOpen, setCsbOpen] = useState(false);
   const [manualTaskOpen, setManualTaskOpen] = useState(false);
-  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -128,7 +127,7 @@ export default function App() {
     setLoading(true); setError(null);
     try {
       const [workshopRows, lineRows, planMatrix, catalogData] = await Promise.all([
-        api.workshops(), api.lines(), me && page === "plan" && sectionVisible(me, "plan") ? api.matrix(matrixParams()) : Promise.resolve(matrix), me && ["catalog", "sources"].includes(page) && (sectionVisible(me, "catalog") || sectionVisible(me, "sources")) ? api.catalog() : Promise.resolve(catalog),
+        api.workshops(), api.lines(), me && page === "plan" && sectionVisible(me, "plan") ? api.matrix(matrixParams()) : Promise.resolve(matrix), me && page === "catalog" && (sectionVisible(me, "catalog")) ? api.catalog() : Promise.resolve(catalog),
       ]);
       setWorkshops(workshopRows); setLines(lineRows); setMatrix(planMatrix); updateCatalog(catalogData);
       if (me?.role === "master") {
@@ -143,7 +142,7 @@ export default function App() {
     const scope = requestScope;
     const [nextMatrix, nextCatalog] = await Promise.all([
       user && page === "plan" && sectionVisible(user, "plan") ? api.matrix(matrixParams()) : Promise.resolve(matrix),
-      user && ["catalog", "sources"].includes(page) && (sectionVisible(user, "catalog") || sectionVisible(user, "sources")) ? api.catalog() : Promise.resolve(catalog),
+      user && page === "catalog" && (sectionVisible(user, "catalog")) ? api.catalog() : Promise.resolve(catalog),
     ]);
     if (scopeRef.current !== scope) return;
     setMatrix(nextMatrix); updateCatalog(nextCatalog);
@@ -162,7 +161,7 @@ export default function App() {
   }, [viewDate, viewDays, selectedWorkshop, selectedLine, page]);
 
   useEffect(() => {
-    if (!user || !["catalog", "sources"].includes(page) || !sectionVisible(user, page)) return;
+    if (!user || page !== "catalog" || !sectionVisible(user, page)) return;
     const controller = new AbortController();
     api.catalog("", controller.signal).then(value => { if (!controller.signal.aborted) updateCatalog(value); })
       .catch(reason => { if (!controller.signal.aborted) setError(message(reason)); });
@@ -192,7 +191,7 @@ export default function App() {
               if (next && current) setNotice("План обновлён: изменения синхронизированы");
             }
           }
-        } else if (["catalog", "sources"].includes(page) && sectionVisible(user, page)) {
+        } else if (page === "catalog" && sectionVisible(user, page)) {
           const next = await api.catalog("", controller.signal);
           if (!controller.signal.aborted && scopeRef.current === scope) updateCatalog(next);
         }
@@ -206,14 +205,14 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     if (!sectionVisible(user, page) || (["import", "az"].includes(page) && !canPlan(user))) {
-      const fallback = (["plan", "catalog", "sources", "feedback", "fact"] as Page[]).find(value => sectionVisible(user, value));
+      const fallback = (["plan", "catalog", "feedback", "fact"] as Page[]).find(value => sectionVisible(user, value));
       if (fallback) setPage(fallback);
     }
   }, [user, page]);
 
-  if (!user) return <Login mode={sessionMode} error={error} onLogin={async (username, password) => {
+  if (!user) return <Login mode={sessionMode} error={error} onLogin={async (username, password, service) => {
     setError(null); setLoading(true);
-    try { const result = await api.login(username, password); setUser(result.user); await loadBase(result.user); }
+    try { const result = await (service ? api.serviceLogin(username, password) : api.login(username, password)); setUser(result.user); await loadBase(result.user); }
     catch (reason) { setError(message(reason)); setLoading(false); }
   }} />;
 
@@ -231,7 +230,6 @@ export default function App() {
         {sectionVisible(user, "catalog") && <Nav active={page === "catalog"} icon="≡" label="Справочник" onClick={() => setPage("catalog")} />}
         {canPlan(user) && sectionVisible(user, "import") && <Nav active={page === "import"} icon="⇧" label="Загрузка Excel" onClick={() => setPage("import")} />}
         {canPlan(user) && sectionVisible(user, "az") && <Nav active={page === "az"} icon="АЗ" label="Подтверждение АЗ" onClick={() => setPage("az")} />}
-        {sectionVisible(user, "sources") && <Nav active={page === "sources"} icon="◫" label="Источники данных" onClick={() => setPage("sources")} />}
         {sectionVisible(user, "feedback") && <Nav active={page === "feedback"} icon="✎" label="Обратная связь" onClick={() => setPage("feedback")} />}
         {sectionVisible(user, "fact") && <Nav active={page === "fact"} icon="◷" label="Факт производства" onClick={() => setPage("fact")} />}
         {canPlan(user) && <Nav active={page === "planner-admin"} icon="⚙" label="Управление планированием" onClick={() => setPage("planner-admin")} />}
@@ -266,14 +264,12 @@ export default function App() {
           onDate={selectDate} onDays={selectDays} onPrevious={() => navigateDate(-1)} onNext={() => navigateDate(1)}
           onLayout={value => { setDayLayout(value); localStorage.setItem("plan-day-layout", value); }}
           onCreate={() => setManualTaskOpen(true)}
-          onBulkDelete={() => setBulkDeleteOpen(true)}
           onMoved={async (item, targetDate, beforeItem) => { try { await api.updateItem(matrix!.plan.id, item.id, { production_date: targetDate, line_id: item.line_id, shift: beforeItem?.shift || item.shift, before_item_id: beforeItem?.id ?? null, locked: true, comment: beforeItem ? "Изменение приоритета внутри дня" : "Перенос карточки в недельном плане" }, matrix!.plan.version); setNotice(beforeItem ? `Приоритет задания №${item.sequence} изменён` : `Задание №${item.sequence} перенесено на ${formatDate(targetDate)}`); await refreshPlan(); } catch (reason) { setError(message(reason)); } }}
           onItem={setSelectedItem} onUpload={() => setPage("import")}
           onRecalculate={async () => { try { const result = await api.recalculatePlan(); await refreshPlan(); setNotice(`План пересчитан. Неразмещённых позиций осталось: ${result.unscheduled_count}`); } catch (reason) { setError(message(reason)); } }} /></div>}
         {page === "catalog" && !catalog && <Loading />}{page === "catalog" && catalog && <CatalogView data={catalog} lines={lines} user={user} focusProductId={catalogFocusProductId} onFocusHandled={() => setCatalogFocusProductId(null)} onSaved={async text => { const [nextCatalog, nextLines] = await Promise.all([api.catalog(), api.lines()]); updateCatalog(nextCatalog); setLines(nextLines); setNotice(text); }} />}
         {page === "import" && canPlan(user) && <ProductionImport lines={lines.filter(line => line.status === "active")} onImported={async text => { setNotice(text); await refreshPlan(); setPage("plan"); }} />}
         {page === "az" && <AdvanceConfirmationView user={user} lines={lines} onApplied={async text => { setNotice(text); await refreshPlan(); }} onError={setError} />}
-        {page === "sources" && !catalog && <Loading />}{page === "sources" && catalog && <SourcesView data={catalog} />}
         {page === "feedback" && <FeedbackView user={user} onNotice={setNotice} onError={setError} />}
         {page === "fact" && sectionVisible(user, "fact") && <ProductionFactView onError={setError} />}
         {page === "planner-admin" && canPlan(user) && <PlannerAdmin username={user.username} onChanged={async () => { await refreshPlan(); setCatalog(null); }} />}
@@ -287,37 +283,21 @@ export default function App() {
     {mailOpen && matrix && <PlanMailModal planId={matrix.plan.id} start={viewDate} end={addDays(viewDate, viewDays - 1)} lines={lines} onClose={() => setMailOpen(false)} onNotice={setNotice} onError={setError} />}
     {csbOpen && <CsbDownloadModal initialDate={viewDate} onClose={() => setCsbOpen(false)} onDownloaded={async () => { setCsbOpen(false); setNotice("Файл подготовлен. Выгруженные задания отмечены в плане."); await refreshPlan(); }} />}
     {manualTaskOpen && matrix && <ManualTaskModal planId={matrix.plan.id} lines={lines} initialDate={viewDate} onClose={() => setManualTaskOpen(false)} onError={setError} onSaved={async () => { setManualTaskOpen(false); setNotice("Запись добавлена в план, загрузка пересчитана"); await refreshPlan(); }} />}
-    {bulkDeleteOpen && matrix && <BulkDeleteModal planId={matrix.plan.id} version={matrix.plan.version} initialDate={viewDate} onClose={() => setBulkDeleteOpen(false)} onError={setError} onSaved={async count => { setBulkDeleteOpen(false); setNotice(`Исключено заданий: ${count}`); await refreshPlan(); }} />}
     {helpOpen && <PlanHelpModal onClose={() => setHelpOpen(false)} />}
   </div>;
 }
 
-function Login({ mode, error, onLogin }: { mode: SessionMode | null; error: string | null; onLogin: (u: string, p: string) => Promise<void> }) {
-  if (mode?.auth_mode === "art_portal_sso") return <div className="login-page"><div className="login-brand"><span>PP</span><b>PLAN PORTAL</b></div><div className="login-card">
-    <small>ЕДИНЫЙ ВХОД</small><h1>Войдите через ART PORTAL</h1><p>Планирование производства открывается по вашей корпоративной сессии ART PORTAL. Повторный ввод логина и пароля не требуется.</p>
-    {error && <div className="inline-error">{error}</div>}
-    <a className="button primary wide" href="/">Перейти в ART PORTAL</a>
-    <footer>После входа откройте раздел «Планирование производства».</footer>
-  </div></div>;
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const submit = async (event: React.FormEvent) => { event.preventDefault(); setBusy(true); await onLogin(username, password); setBusy(false); };
-  return <div className="login-page"><div className="login-brand"><span>PP</span><b>PLAN PORTAL</b></div><form className="login-card" onSubmit={submit}>
-    <small>КОРПОРАТИВНЫЙ ДОСТУП</small><h1>Вход в систему</h1><p>Производственный план ФК, справочник линий и статусы исполнения.</p>
-    {error && <div className="inline-error">{error}</div>}
-    <label>Логин<input autoFocus autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} /></label>
-    <label>Пароль<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} /></label>
-    <button className="button primary wide" disabled={busy}>{busy ? "Входим…" : "Войти"}</button>
-    <footer>{mode?.auth_mode === "local" ? "Локальное окружение разработки" : "Авторизация через корпоративный LDAP"}</footer>
-  </form></div>;
+function Login({ mode, error, onLogin }: { mode: SessionMode | null; error: string | null; onLogin: (u: string, p: string, service?: boolean) => Promise<void> }) {
+  const [service, setService] = useState(false); const [username, setUsername] = useState(""); const [password, setPassword] = useState(""); const [busy, setBusy] = useState(false);
+  if (mode?.auth_mode === "art_portal_sso" && !service) return <div className="login-page"><div className="login-brand"><span>A</span><b>ART PORTAL</b></div><div className="login-card"><small>ЕДИНЫЙ ВХОД</small><h1>Войдите через ART PORTAL</h1><p>Корпоративный вход через AD продолжает работать.</p>{error && <div className="inline-error">{error}</div>}<a className="button primary wide" href="/">Перейти в ART PORTAL</a><button className="button secondary wide" onClick={() => setService(true)}>Вход сервисной учётной записи</button></div></div>;
+  return <div className="login-page"><div className="login-brand"><span>A</span><b>ART PORTAL</b></div><form className="login-card" onSubmit={async e => { e.preventDefault(); setBusy(true); try { await onLogin(username, password, service); } finally { setBusy(false); } }}><small>{service ? "СЕРВИСНЫЙ ДОСТУП" : "КОРПОРАТИВНЫЙ ДОСТУП"}</small><h1>{service ? "Просмотр без AD" : "Вход в систему"}</h1><p>{service ? "Сервисные учётные записи создаются планером и разрешают только просмотр." : "Производственное планирование ФК"}</p>{error && <div className="inline-error">{error}</div>}<label>Логин<input autoFocus autoComplete="username" placeholder={service ? "svc.monitor" : "Логин AD"} value={username} onChange={e => setUsername(e.target.value)} /></label><label>Пароль<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} /></label><button className="button primary wide" disabled={busy}>{busy ? "Входим…" : "Войти"}</button><button type="button" className="button secondary wide" onClick={() => { setService(!service); setPassword(""); }}>{service ? "Корпоративный вход" : "Вход сервисной учётной записи"}</button></form></div>;
 }
 
 function Nav({ active, icon, label, onClick }: { active: boolean; icon: string; label: string; onClick: () => void }) {
   return <button className={active ? "active" : ""} onClick={onClick}><i>{icon}</i>{label}</button>;
 }
 
-function PlanView({ matrix, workshops, lines, user, selectedWorkshop, selectedLine, viewDate, viewDays, dayLayout, onWorkshop, onLine, onReset, onDate, onDays, onPrevious, onNext, onLayout, onMoved, onItem, onUpload, onCreate, onBulkDelete, onRecalculate }: {
+function PlanView({ matrix, workshops, lines, user, selectedWorkshop, selectedLine, viewDate, viewDays, dayLayout, onWorkshop, onLine, onReset, onDate, onDays, onPrevious, onNext, onLayout, onMoved, onItem, onUpload, onCreate, onRecalculate }: {
   matrix: MatrixData | null; workshops: WorkshopData[]; lines: LineData[]; user: UserProfile;
   selectedWorkshop: string | null; selectedLine: number | null; viewDate: string; viewDays: ViewDays;
   dayLayout: DayLayout;
@@ -325,7 +305,7 @@ function PlanView({ matrix, workshops, lines, user, selectedWorkshop, selectedLi
   onDate: (v: string) => void; onDays: (v: ViewDays) => void; onPrevious: () => void; onNext: () => void;
   onLayout: (v: DayLayout) => void;
   onMoved: (item: ScheduleItem, targetDate: string, beforeItem?: ScheduleItem) => Promise<void>;
-  onItem: (v: ScheduleItem) => void; onUpload: () => void; onCreate: () => void; onBulkDelete: () => void; onRecalculate: () => Promise<void>;
+  onItem: (v: ScheduleItem) => void; onUpload: () => void; onCreate: () => void; onRecalculate: () => Promise<void>;
 }) {
   const toolbarRef = useRef<HTMLElement>(null);
   const [toolbarHeight, setToolbarHeight] = useState(64);
@@ -364,7 +344,7 @@ function PlanView({ matrix, workshops, lines, user, selectedWorkshop, selectedLi
   return <div className="stack plan-stack" style={{ "--plan-toolbar-height": `${toolbarHeight}px` } as React.CSSProperties}>
     {canPlan(user) && (matrix.unscheduled || []).length > 0 && <details className="card unplaced-list"><summary><span>Невозможно проработать / разместить такой объем · {matrix.unscheduled.length} позиций</span>{canPlan(user) && <button className="button secondary" disabled={recalculating} onClick={async event => { event.preventDefault(); event.stopPropagation(); setRecalculating(true); try { await onRecalculate(); } finally { setRecalculating(false); } }}>{recalculating ? "Пересчёт…" : "↻ Пересчитать и обновить"}</button>}</summary><p>План будет пересчитан по актуальному справочнику и доступной мощности. Если причины сохранятся, они останутся в списке.</p><div className="unplaced-items">{matrix.unscheduled.map(item => <button className="button secondary" key={item.id} onClick={() => onItem(item)}>{item.sku} · {number(item.quantity_kg || 0)} кг · {item.warnings.join("; ")}</button>)}</div></details>}
 
-    <section className="plan-head card"><div className="plan-title"><div className="crumbs"><button onClick={onReset}>Общий план</button>{selectedWorkshop && <><span>›</span><button onClick={() => onWorkshop(selectedWorkshop)}>{workshops.find(w => w.code === selectedWorkshop)?.name}</button></>}{currentLine && <><span>›</span><b>{currentLine.name}</b></>}</div><h2>{currentLine ? currentLine.name : selectedWorkshop ? `Цех ${workshops.find(w => w.code === selectedWorkshop)?.name}` : matrix.plan.name}</h2><p>Версия {matrix.plan.version} · SKU раскрыты непосредственно в плане</p></div>{canPlan(user) && <div className="inline-actions"><div className="status-chip">{planStatus(matrix.plan.status)}</div><button className="button secondary" onClick={onBulkDelete}>Удалить задания за период</button><button className="button secondary" onClick={onCreate}>+ Создать задание</button></div>}</section>
+    <section className="plan-head card"><div className="plan-title"><div className="crumbs"><button onClick={onReset}>Общий план</button>{selectedWorkshop && <><span>›</span><button onClick={() => onWorkshop(selectedWorkshop)}>{workshops.find(w => w.code === selectedWorkshop)?.name}</button></>}{currentLine && <><span>›</span><b>{currentLine.name}</b></>}</div><h2>{currentLine ? currentLine.name : selectedWorkshop ? `Цех ${workshops.find(w => w.code === selectedWorkshop)?.name}` : matrix.plan.name}</h2><p>Версия {matrix.plan.version} · SKU раскрыты непосредственно в плане</p></div>{canPlan(user) && <div className="inline-actions"><div className="status-chip">{planStatus(matrix.plan.status)}</div><button className="button secondary" onClick={onCreate}>+ Создать задание</button></div>}</section>
     <section ref={toolbarRef} className="date-toolbar card sticky-date-toolbar"><div className="range-buttons"><button onClick={onPrevious}>‹</button><input type="date" value={viewDate} onChange={e => onDate(e.target.value)} /><button onClick={() => onDate(today())}>Сегодня</button><button onClick={onNext}>›</button><strong>{weekNumber(viewDate)} неделя · {formatDate(viewDate)} — {formatDate(addDays(viewDate, viewDays - 1))}</strong></div><div className="toolbar-switches"><div className="view-switch">{([1, 7, 21] as ViewDays[]).map(value => <button key={value} className={viewDays === value ? "active" : ""} onClick={() => onDays(value)}>{value === 1 ? "День" : value === 7 ? "Неделя" : "3 недели"}</button>)}</div><div className="view-switch layout-switch"><button className={dayLayout === "cards" ? "active" : ""} onClick={() => onLayout("cards")}>▦ План</button><button className={dayLayout === "table" ? "active" : ""} onClick={() => onLayout("table")}>☷ Таблица</button></div></div></section>
 
     <section className="metric-grid metric-grid-five"><Metric label="Позиций в периоде" value={number(productionItems.length)} note={`${items.length - productionItems.length} тех. событий`} tone="red" /><Metric label="ОХЛ" value={`${number(productionItems.filter(i => i.source_kind === "ohl").reduce((sum, item) => sum + Number(item.quantity_kg || 0), 0))} кг`} secondaryValue={`${number(productionItems.filter(i => i.source_kind === "ohl").reduce((sum, item) => sum + Number(item.quantity_units || 0), 0))} шт.`} note="по датам источника" tone="blue" /><Metric label="ЗАМ" value={`${number(productionItems.filter(i => i.source_kind === "zam").reduce((sum, item) => sum + Number(item.quantity_kg || 0), 0))} кг`} secondaryValue={`${number(productionItems.filter(i => i.source_kind === "zam").reduce((sum, item) => sum + Number(item.quantity_units || 0), 0))} шт.`} note="в свободной мощности" tone="violet" /><Metric label="Общая загрузка" value={`${number(totalKg)} кг`} secondaryValue={`${number(totalUnits)} шт.`} note="по всем линиям периода" tone="green" /><Metric label="Загрузка" value={`${load.toFixed(1)}%`} note={`${duration(Math.max(0, capacity - planned))} свободно`} tone={load >= 98 ? "green" : "amber"} /></section>
@@ -657,8 +637,6 @@ function AdvanceConfirmationView({ user, lines, onApplied, onError }: { user: Us
   </div>;
 }
 
-function SourcesView({ data }: { data: CatalogData }) { return <div className="stack"><section className="source-intro card"><div><small>ЕДИНАЯ МОДЕЛЬ ДАННЫХ</small><h2>Журнал исходных файлов</h2><p>ОХЛ фиксирует даты, ЗАМ занимает доступную мощность, справочники дают квантовки, скорости и рецептуры.</p></div><div className="source-flow"><span>ОХЛ</span><i>+</i><span>ЗАМ</span><i>→</i><b>План</b></div></section><section className="card source-list"><header><h2>Загрузки</h2><p>Ошибочные строки не попадают в расчёт.</p></header>{data.sources.map(source => <article key={source.id}><span className="source-icon">XL</span><div><b>{source.file_name}</b><small>{templateLabel(source.template_type)} · {new Date(source.imported_at).toLocaleString("ru-RU")}</small></div><em>{source.valid_rows} / {source.total_rows}</em><strong className={source.invalid_rows ? "warn" : "good"}>{source.invalid_rows ? `${source.invalid_rows} ошибок` : "Проверено"}</strong></article>)}</section></div>; }
-
 function FeedbackView({ user, onNotice, onError }: { user: UserProfile; onNotice: (text: string) => void; onError: (text: string) => void }) {
   const isAdmin = user.role === "admin"; const [category, setCategory] = useState("suggestion"); const [subject, setSubject] = useState(""); const [body, setBody] = useState(""); const [data, setData] = useState<FeedbackData | null>(null); const [selectedId, setSelectedId] = useState<number | null>(null); const [statusFilter, setStatusFilter] = useState(""); const [query, setQuery] = useState(""); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(false); const [formError, setFormError] = useState("");
   const load = async () => { setLoading(true); try { setData(await api.feedback(isAdmin ? statusFilter : "", isAdmin ? query : "")); } catch (error) { onError(message(error)); } finally { setLoading(false); } };
@@ -758,12 +736,6 @@ function PlanHelpModal({ onClose }: { onClose: () => void }) {
   return <div className="modal-backdrop help-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) presentationOpen ? setPresentationOpen(false) : onClose(); }}>{presentationOpen ? <section className="presentation-viewer plan-presentation-viewer"><header><button onClick={() => setPresentationOpen(false)}>← К инструкции</button><span>{slide + 1} / {planHelpSlides.length}</span><button aria-label="Закрыть" onClick={onClose}>×</button></header><article><small>{current.kicker}</small><h2>{current.title}</h2><p>{current.text}</p><ul>{current.points.map(point => <li key={point}>{point}</li>)}</ul></article><footer><div>{planHelpSlides.map((_item, index) => <button key={index} aria-label={`Слайд ${index + 1}`} className={index === slide ? "active" : ""} onClick={() => setSlide(index)} />)}</div><span><button disabled={slide === 0} onClick={() => setSlide(value => value - 1)}>← Назад</button><button disabled={slide === planHelpSlides.length - 1} onClick={() => setSlide(value => value + 1)}>Далее →</button></span></footer></section> : <section className="modal help-modal"><header><div><small>БАЗА ЗНАНИЙ</small><h2>Инструкции PLAN Portal</h2><p>Короткая презентация для планера, мастера и администратора.</p></div><button onClick={onClose}>×</button></header><div className="help-downloads"><button onClick={() => { setSlide(0); setPresentationOpen(true); }}><span>▶</span><b>Презентация по функционалу</b><small>Откроется и проигрывается прямо на сайте</small></button></div><div className="help-guide-card"><h4>Коротко по ролям</h4><ul><li><b>Планер:</b> загружает данные, меняет задания, линии и графики.</li><li><b>Мастер:</b> видит свою линию и проставляет статусы исполнения.</li><li><b>Администратор:</b> настраивает права, письма, получателей и справочник.</li></ul></div><footer><button className="button secondary" onClick={onClose}>Закрыть</button></footer></section>}</div>;
 }
 
-function BulkDeleteModal({ planId, version, initialDate, onClose, onSaved, onError }: { planId: number; version: number; initialDate: string; onClose: () => void; onSaved: (count: number) => Promise<void>; onError: (v: string) => void }) {
-  const [period, setPeriod] = useState(false); const [start, setStart] = useState(initialDate); const [end, setEnd] = useState(initialDate); const [confirmation, setConfirmation] = useState(""); const [busy, setBusy] = useState(false);
-  const remove = async () => { setBusy(true); try { const result = await api.bulkDeleteItems(planId, start, period ? end : start, version); await onSaved(result.deleted_count); } catch (reason) { onError(message(reason)); } finally { setBusy(false); } };
-  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal csb-modal"><header><div><small>МАССОВОЕ ИЗМЕНЕНИЕ ПЛАНА</small><h2>Исключить задания из плана</h2><p>Исключённые строки останутся в аудите и не вернутся при автоматическом пересчёте спроса.</p></div><button onClick={onClose}>×</button></header><label className="check-label"><input type="checkbox" checked={period} onChange={event => setPeriod(event.target.checked)} /> Выбрать период дат</label><div className="form-grid"><label>Дата{period ? " с" : ""}<input type="date" value={start} onChange={event => { setStart(event.target.value); if (!period) setEnd(event.target.value); }} /></label>{period && <label>По дату включительно<input type="date" min={start} value={end} onChange={event => setEnd(event.target.value)} /></label>}</div><label>Для подтверждения введите «УДАЛИТЬ ЗАДАНИЯ»<input value={confirmation} onChange={event => setConfirmation(event.target.value)} /></label><footer><button className="button secondary" onClick={onClose}>Отмена</button><button className="button danger" disabled={busy || confirmation !== "УДАЛИТЬ ЗАДАНИЯ" || !start || (period && end < start)} onClick={() => void remove()}>{busy ? "Обновляем план…" : "Исключить задания"}</button></footer></section></div>;
-}
-
 function ManualTaskModal({ planId, lines, initialDate, onClose, onSaved, onError }: { planId: number; lines: LineData[]; initialDate: string; onClose: () => void; onSaved: () => Promise<void>; onError: (v: string) => void }) {
   const [mode, setMode] = useState<"production" | "event">("production"); const [lineId, setLineId] = useState(lines[0]?.id || 0); const [products, setProducts] = useState<{ product_id: number; sku: string; name: string; speed_kg_hour: number }[]>([]); const [productId, setProductId] = useState(""); const [productQuery, setProductQuery] = useState(""); const [productionDate, setProductionDate] = useState(initialDate); const [markingDate, setMarkingDate] = useState(initialDate); const [shift, setShift] = useState("day"); const [quantity, setQuantity] = useState(""); const [sourceKind, setSourceKind] = useState("generic"); const [eventKind, setEventKind] = useState("maintenance"); const [eventTiming, setEventTiming] = useState<"range" | "duration">("range"); const [eventDuration, setEventDuration] = useState("1"); const [eventStart, setEventStart] = useState("08:00"); const [eventEnd, setEventEnd] = useState("09:00"); const [reason, setReason] = useState(""); const [busy, setBusy] = useState(false);
   useEffect(() => { if (!lineId) return; api.manualProducts(lineId).then(rows => { setProducts(rows); setProductId(""); setProductQuery(""); }).catch(e => onError(message(e))); }, [lineId]);
@@ -817,7 +789,7 @@ function Toast({ tone, text, close }: { tone: string; text: string; close: () =>
 }
 function Loading() { return <div className="loading"><i /><p>Загружаем производственные данные…</p></div>; }
 function Empty({ title, text, action }: { title: string; text: string; action?: React.ReactNode }) { return <section className="empty"><span>◇</span><h2>{title}</h2><p>{text}</p>{action}</section>; }
-function pageTitle(page: Page) { return ({ plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", sources: "Источники данных", feedback: "Обратная связь", fact: "Факт производства", admin: "Администрирование", "planner-admin": "Управление планированием" } as const)[page]; }
+function pageTitle(page: Page) { return ({ plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", feedback: "Обратная связь", fact: "Факт производства", admin: "Администрирование", "planner-admin": "Управление планированием" } as const)[page]; }
 function eventLabel(kind: ScheduleItem["schedule_kind"], compact = false) { const labels = { cleaning: ["Технологическая мойка", "МОЙКА"], downtime: ["Простой линии", "ПРОСТОЙ"], maintenance: ["Плановое ТО", "ТО"], trial: ["Проработка", "ПРОБА"], startup: ["Запуск линии", "ЗАПУСК"], changeover: ["Перестройка линии", "ПЕРЕСТРОЙКА"], restart: ["Запуск после простоя", "СТАРТ"], gas: ["Газ", "ГАЗ"] } as const; return kind === "production" ? "Продукция" : labels[kind][compact ? 1 : 0]; }
 function templateLabel(v: string) { return ({ ohl_daily: "Недельный план ОХЛ", quarter_weekly: "Квартальный план ЗАМ", production_reference: "Актуальный справочник ПЦ/КЦ", capacity_reference: "Мощности линий", legacy_reference: "Старый план и рецептуры", maintenance_schedule: "График ТО и событий", generic: "Универсальный шаблон" } as Record<string, string>)[v] || v; }
 function planStatus(v: string) { return ({ needs_review: "Требует проверки", calculated: "Рассчитан", approved: "Утверждён", draft: "Черновик" } as Record<string, string>)[v] || v; }

@@ -1,10 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hmac
 import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from app.core.auth_service import authenticate_ldap
@@ -33,7 +33,9 @@ def _integration_authorized(request: Request) -> bool:
 
 
 def _upsert_art_user(identity: UserContext, db: Session) -> UserContext:
-    stored = db.scalar(select(User).where(User.username == identity.username))
+    stored = db.scalar(select(User).where(func.lower(User.username) == identity.username.casefold()))
+    if stored and stored.auth_provider == "service":
+        raise HTTPException(403, "Сервисная учётная запись не используется для входа через AD")
     if not stored:
         stored = User(username=identity.username, display_name=identity.display_name, email=identity.email or None, role=identity.role, active=True, ldap_groups=[])
         db.add(stored)
@@ -62,6 +64,8 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     if settings.art_portal_sso_required:
         raise HTTPException(403, "Вход выполняется через ART PORTAL")
     login_name = payload.username.strip()
+    if db.scalar(select(User.id).where(func.lower(User.username) == login_name.casefold(), User.auth_provider == "service")):
+        raise HTTPException(401, "Используйте вход для сервисной учётной записи")
     try:
         if settings.auth_mode.lower() == "ldap":
             identity = authenticate_ldap(login_name, payload.password)
@@ -117,6 +121,34 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
         ))
         db.commit()
         raise HTTPException(401, str(exc)) from exc
+
+
+@router.post("/service-login")
+def service_login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
+    from app.services.service_account_service import verify_password
+    login_name = payload.username.strip().casefold()[:80]
+    since = datetime.now(timezone.utc) - timedelta(minutes=15)
+    attempts = db.scalar(select(func.count()).select_from(AuthAuditEvent).where(
+        AuthAuditEvent.auth_method == "service", AuthAuditEvent.username == login_name,
+        AuthAuditEvent.success.is_(False), AuthAuditEvent.created_at >= since,
+    )) or 0
+    if attempts >= 8:
+        raise HTTPException(429, "Слишком много попыток. Повторите вход через 15 минут")
+    stored = db.scalar(select(User).where(func.lower(User.username) == login_name, User.auth_provider == "service"))
+    valid = len(payload.password) <= 256 and verify_password(payload.password, stored.password_hash if stored else "pbkdf2_sha256$600000$invalid$invalid")
+    success = bool(valid and stored and stored.active and stored.role == "viewer")
+    db.add(AuthAuditEvent(username=login_name, success=success, auth_method="service",
+        ip_address=request.client.host if request.client else None, user_agent=request.headers.get("user-agent"),
+        failure_reason=None if success else "Неверный логин или пароль"))
+    if not success:
+        db.commit()
+        raise HTTPException(401, "Неверный логин или пароль")
+    stored.last_login_at = datetime.now(timezone.utc)
+    context = UserContext(stored.username, stored.display_name, "viewer", stored.email or "", auth_method="service", session_version=stored.session_version)
+    db.commit()
+    response.set_cookie(settings.session_cookie_name, create_session_token(context), max_age=settings.session_max_age_seconds,
+        httponly=True, secure=settings.session_cookie_secure, samesite=settings.session_cookie_samesite.lower(), path="/")
+    return {"user": _user_dict(context, db), "auth_mode": "service"}
 
 
 @router.post("/art-portal")

@@ -1,46 +1,31 @@
 import { useState } from "react";
 import { api } from "./api";
 import { ProductionImport } from "./ProductionImport";
-import type { PlannerAdministration } from "./types";
+import { TaskPreviewTable } from "./TaskPreviewTable";
+import type { PlannerAdministration, ScheduleItem } from "./types";
 
 export function LineTaskManagement({ data, onChanged }: { data: PlannerAdministration; onChanged: () => Promise<void> }) {
-  const [lineId, setLineId] = useState("");
-  const [mode, setMode] = useState("delete");
-  const [start, setStart] = useState(data.active_plan?.start || new Date().toLocaleDateString("sv-SE"));
-  const [end, setEnd] = useState(data.active_plan?.end || start);
-  const [preview, setPreview] = useState<{ plan_id: number; version: number; count: number } | null>(null);
+  const [lineId, setLineId] = useState(""); const [mode, setMode] = useState("delete");
+  const [start, setStart] = useState(new Date().toLocaleDateString("sv-SE")); const [end, setEnd] = useState(start);
+  const [wholeFile, setWholeFile] = useState(false);
+  const [preview, setPreview] = useState<{ plan_id: number; version: number; count: number; items: ScheduleItem[] } | null>(null);
   const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [notice, setNotice] = useState("");
   const reset = () => { setPreview(null); setError(""); setNotice(""); };
   const line = data.lines.find(row => row.id === Number(lineId));
-  const inspect = async () => {
-    setBusy(true); reset();
-    try { setPreview(await api.plannerLineTasks(Number(lineId), start, end)); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось проверить задания"); }
-    finally { setBusy(false); }
-  };
-  const remove = async () => {
-    if (!preview || !line) return;
-    setBusy(true); setError("");
-    try {
-      const result = await api.bulkDeleteItems(preview.plan_id, start, end, preview.version, line.id);
-      setPreview(null); setNotice(`Линия «${line.name}»: исключено заданий — ${result.deleted_count}`); await onChanged();
-    } catch (reason) { setPreview(null); setError(reason instanceof Error ? reason.message : "Не удалось удалить задания"); }
-    finally { setBusy(false); }
-  };
-  return <div className="stack">
-    <section className="card admin-panel"><header><h2>Задания по линии</h2><p>Массовое удаление за день или период и загрузка обычных файлов на одну производственную линию.</p></header>
-      {!data.active_plan ? <p>Сначала загрузите общий производственный план.</p> : <>
-        <div className="form-grid"><label className="full">Производственная линия<select disabled={busy} value={lineId} onChange={event => { setLineId(event.target.value); reset(); }}><option value="">Выберите линию</option>{data.lines.map(row => <option key={row.id} value={row.id}>{row.workshop_name} · {row.name}</option>)}</select></label></div>
-        <div className="inline-actions"><button disabled={busy} className={`button ${mode === "delete" ? "primary" : "secondary"}`} onClick={() => { setMode("delete"); reset(); }}>Удалить задания</button><button disabled={busy} className={`button ${mode === "import" ? "primary" : "secondary"}`} onClick={() => { setMode("import"); reset(); }}>Загрузить файл на линию</button></div>
-        {line && mode === "delete" && <>
-          <p>Удаляются производственные задания выбранной линии, включая созданные вручную. ТО и ручные мойки сохраняются. Для одного дня укажите одинаковые даты.</p>
-          <div className="form-grid"><label>С<input disabled={busy} type="date" value={start} onChange={event => { setStart(event.target.value); reset(); }} /></label><label>По<input disabled={busy} type="date" min={start} value={end} onChange={event => { setEnd(event.target.value); reset(); }} /></label></div>
-          <button disabled={busy || !start || !end || end < start} className="button secondary" onClick={() => void inspect()}>Показать количество заданий</button>
-          {preview && <div className="card admin-panel" role="status"><p>Линия «{line.name}» · {start.split("-").reverse().join(".")} — {end.split("-").reverse().join(".")}</p><p><b>{preview.count ? `Будет исключено заданий: ${preview.count}` : "За этот период заданий нет"}</b></p>{preview.count > 0 && <button disabled={busy} className="button danger" onClick={() => void remove()}>Подтвердить удаление {preview.count} заданий</button>}</div>}
-        </>}
-      </>}
-      {error && <p className="inline-error" role="alert">{error}</p>}{notice && <p className="good" role="status">{notice}</p>}
-    </section>
-    {data.active_plan && line && mode === "import" && <ProductionImport key={line.id} fixedLineId={line.id} lines={data.lines} onImported={async text => { setNotice(text); await onChanged(); }} />}
+  const valid = !!start && !!end && end >= start && (new Date(end).getTime() - new Date(start).getTime()) / 86400000 <= 92;
+  const inspect = async () => { setBusy(true); reset(); try { setPreview(await api.plannerLineTasks(line?.id, start, end)); } catch (reason) { setError(String(reason instanceof Error ? reason.message : reason)); } finally { setBusy(false); } };
+  const remove = async () => { if (!preview) return; setBusy(true); setError(""); try { const result = await api.bulkDeleteItems(preview.plan_id, start, end, preview.version, line?.id); setPreview(null); setNotice(`Исключено заданий: ${result.deleted_count}`); await onChanged(); } catch (reason) { setPreview(null); setError(String(reason instanceof Error ? reason.message : reason)); } finally { setBusy(false); } };
+  return <div className="stack"><section className="card admin-panel"><header><h2>Удаление и прогрузка заданий</h2><p>Выберите область, проверьте список и подтвердите действие. Изменение фильтров сбрасывает предпросмотр.</p></header>
+    <div className="inline-actions"><button className={`button ${mode === "delete" ? "primary" : "secondary"}`} disabled={busy} onClick={() => { setMode("delete"); reset(); }}>Удаление</button><button className={`button ${mode === "import" ? "primary" : "secondary"}`} disabled={busy} onClick={() => { setMode("import"); reset(); }}>Прогрузка из файла</button></div>
+    <div className="form-grid"><label className="full">Линия<select disabled={busy} value={lineId} onChange={e => { setLineId(e.target.value); reset(); }}><option value="">{mode === "delete" ? "Все линии" : "Выберите одну линию"}</option>{data.lines.map(row => <option value={row.id} key={row.id}>{row.workshop_name} · {row.name}</option>)}</select></label>
+      {mode === "import" && <label className="check-label full"><input type="checkbox" checked={wholeFile} disabled={busy} onChange={e => { setWholeFile(e.target.checked); reset(); }} />Все даты файла на выбранной линии</label>}
+      {(mode === "delete" || !wholeFile) && <><label>С<input type="date" disabled={busy} value={start} onChange={e => { setStart(e.target.value); reset(); }} /></label><label>По<input type="date" disabled={busy} min={start} value={end} onChange={e => { setEnd(e.target.value); reset(); }} /></label></>}
+    </div>
+    {mode === "delete" && <><p>Исключаются производственные задания, включая ручные. ТО и ручные мойки сохраняются. Для одного дня укажите одинаковые даты.</p><button className="button secondary" disabled={busy || !valid || !data.active_plan} onClick={() => void inspect()}>Показать задания к удалению</button></>}
+    {!data.active_plan && <p>Сначала загрузите общий производственный план.</p>}
+    {error && <p className="inline-error" role="alert">{error}</p>}{notice && <p className="good" role="status">{notice}</p>}
+  </section>
+    {preview && mode === "delete" && <><TaskPreviewTable key={`${preview.version}-${lineId}-${start}-${end}`} items={preview.items} title={`К удалению: ${line?.name || "Все линии"} · ${start} — ${end}`} />{preview.count > 0 && <button disabled={busy} className="button danger" onClick={() => void remove()}>Подтвердить исключение {preview.count} заданий</button>}</>}
+    {data.active_plan && line && mode === "import" && (wholeFile || valid) && <ProductionImport key={`${line.id}-${wholeFile}-${start}-${end}`} fixedLineId={line.id} startDate={wholeFile ? undefined : start} endDate={wholeFile ? undefined : end} lines={data.lines} onImported={async text => { setNotice(text); await onChanged(); }} />}
   </div>;
 }

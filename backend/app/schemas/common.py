@@ -195,6 +195,8 @@ class ImportRow(BaseModel):
 
 
 class ImportPreview(BaseModel):
+    affected_tasks: list[dict] = Field(default_factory=list)
+    plan_version: int | None = None
     reference_rows: list[ImportRow] = Field(default_factory=list)
     file_name: str
     mapping_code: str
@@ -214,3 +216,5 @@ class ImportConfirmRequest(BaseModel):
     merge_into_active: bool = True
     line_id: int | None = Field(default=None, gt=0)
     plan_version: int | None = Field(default=None, ge=1)
+    start_date: date | None = None
+    end_date: date | None = None

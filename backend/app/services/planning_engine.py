@@ -26,6 +26,9 @@ class DemandInput:
     warnings: tuple[str, ...] = ()
     mono_group: str = ""
     preferred_line_id: int | None = None
+    planning_start: date | None = None
+    planning_end: date | None = None
+    blocked_periods: tuple[tuple[date, date], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -163,10 +166,10 @@ class PlanningEngine:
                 # catalogue's AZ/day-before convention. Calendar bounds are
                 # exposed separately; all sources share the same capacity bucket.
                 cycle_day = demand.marking_date if capability.marking_day_cycle and demand.source_kind == "ohl" else None
-                current = cycle_day or first_date
-                candidate_end = cycle_day or last_date
+                current = max(cycle_day or first_date, demand.planning_start or date.min)
+                candidate_end = min(cycle_day or last_date, demand.planning_end or date.max)
                 while current <= candidate_end:
-                    for shift in sorted(set(shifts_by_day_line.get((capability.line_id, current), [])), key=self._shift_order):
+                    for shift in ([] if any(a <= current <= b for a,b in demand.blocked_periods) else sorted(set(shifts_by_day_line.get((capability.line_id, current), [])), key=self._shift_order)):
                         if capacity_by_slot.get((capability.line_id, current, shift), Decimal("0")) > 0:
                             candidates.append((capability, current, shift))
                     current += timedelta(days=1)
@@ -231,9 +234,13 @@ class PlanningEngine:
                 ))
 
             if remaining > 0:
-                if (demand.source_kind == "ohl" and complete_ohl) or (demand.source_kind == "zam" and complete_zam):
+                forced_day = max(demand.marking_date if options[0].marking_day_cycle and demand.source_kind == "ohl" and demand.marking_date else first_date, demand.planning_start or date.min)
+                forced_end = min(last_date if demand.source_kind != "ohl" else forced_day, demand.planning_end or date.max)
+                while forced_day <= forced_end and any(a <= forced_day <= b for a,b in demand.blocked_periods):
+                    forced_day += timedelta(days=1)
+                if (candidates or forced_day <= forced_end) and ((demand.source_kind == "ohl" and complete_ohl) or (demand.source_kind == "zam" and complete_zam)):
                     # Mandatory source volume stays visible even on a closed or overloaded shift.
-                    choices = candidates or [(options[0], demand.marking_date if options[0].marking_day_cycle and demand.source_kind == "ohl" and demand.marking_date else demand.requested_date, "day")]
+                    choices = candidates or [(options[0], forced_day, "day")]
                     best, production_date, shift = min(choices, key=lambda slot: (
                         used_hours[(slot[0].line_id, slot[1], slot[2])], slot[0].line_priority,
                         self._shift_order(slot[2]), slot[0].line_id,
