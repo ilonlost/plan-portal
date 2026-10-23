@@ -40,7 +40,7 @@ def build_plan_xlsx(items: list[dict], audience: str) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "План"
-    headers = ["Дата производства", "Дата маркировки", "Дата отгрузки", "Цех", "Линия", "№", "SKU", "Продукция", "Источник", "Смена", "Штуки", "Кг", "Короба", "Время, ч", "Меркурий", "Начало производственных суток", "Конец производственных суток"]
+    headers = ["Дата производства", "Дата маркировки", "Дата отгрузки", "Цех", "Линия", "№", "SKU", "Продукция", "Источник", "Смена", "Штуки", "Кг", "Короба", "Время, ч", "Меркурий", "Начало производственных суток", "Конец производственных суток", "Начало задания", "Конец задания", "Отгрузка до"]
     sheet.append(headers)
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
@@ -53,8 +53,9 @@ def build_plan_xlsx(items: list[dict], audience: str) -> bytes:
             float(item.get("quantity_units") or 0), float(item.get("quantity_kg") or 0), float(item.get("box_count") or 0),
             float(item.get("required_hours") or 0), item.get("mercury") or "—",
             item.get("production_window_start"), item.get("production_window_end"),
+            item.get("task_start_at"), item.get("task_end_at"), item.get("shipping_time"),
         ])
-    widths = [18, 18, 18, 13, 24, 7, 15, 48, 12, 12, 14, 14, 12, 12, 14, 28, 28]
+    widths = [18, 18, 18, 13, 24, 7, 15, 48, 12, 12, 14, 14, 12, 12, 14, 28, 28, 28, 28, 14]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + index)].width = width
     sheet.freeze_panes = "A2"
@@ -63,10 +64,18 @@ def build_plan_xlsx(items: list[dict], audience: str) -> bytes:
 
 
 def _cycle_caption(item: dict) -> str:
+    task_start, task_end = item.get("task_start_at"), item.get("task_end_at")
+    execution = f'<br><small>Выполнение: {escape(task_start.strftime("%d.%m.%Y %H:%M"))} — {escape(task_end.strftime("%d.%m.%Y %H:%M"))}</small>' if task_start and task_end else ""
     start, end = item.get("production_window_start"), item.get("production_window_end")
     if not start or not end:
-        return ""
-    return f'<br><small>Производственные сутки: {escape(start.strftime("%d.%m.%Y %H:%M"))} — {escape(end.strftime("%d.%m.%Y %H:%M"))}</small>'
+        return execution
+    return execution + f'<br><small>Производственные сутки: {escape(start.strftime("%d.%m.%Y %H:%M"))} — {escape(end.strftime("%d.%m.%Y %H:%M"))}</small>'
+
+
+def _dispatch_caption(item):
+    value = _date(_shipping_date(item))
+    deadline = item.get("shipping_time")
+    return value + (f" до {str(deadline)[:5]}" if deadline else "")
 
 
 def _date(value: object) -> str:
@@ -80,11 +89,11 @@ def _date(value: object) -> str:
 
 
 def _shipping_date(item: dict) -> object | None:
-    if item.get("source_kind") == "zam":
-        return item.get("production_date")
     value = item.get("shipping_date")
     if value:
         return value
+    if item.get("source_kind") == "zam":
+        return item.get("production_date")
     value = item.get("marking_date")
     if not value:
         return None
@@ -123,7 +132,7 @@ def build_plan_email_html(
                 continue
             production_day = item.get("production_date")
             shipping_day = _shipping_date(item) or production_day
-            key = (_date(production_day), _date(shipping_day), str(item.get("sku") or ""), str(item.get("product_name") or ""))
+            key = (_date(production_day), _dispatch_caption(item) if _shipping_date(item) else _date(shipping_day), str(item.get("sku") or ""), str(item.get("product_name") or ""))
             quantity, boxes, units, mercury = grouped.get(key, (0.0, 0.0, 0.0, "—"))
             grouped[key] = (quantity + float(item.get("quantity_kg") or 0), boxes + float(item.get("box_count") or 0), units + float(item.get("quantity_units") or 0), item.get("mercury") or mercury)
         if audience == "warehouse":
@@ -146,7 +155,7 @@ def build_plan_email_html(
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">№{int(row.get("sequence") or 0)}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">{escape(str(row.get("sku") or "—"))}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1">{escape(str(row.get("product_name") or "—"))}{_cycle_caption(row)}</td>'
-                f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape(_date(_shipping_date(row)))}</td>'
+                f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape(_dispatch_caption(row))}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape("День" if row.get("shift") == "day" else "Ночь")}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("quantity_units") or 0):,.0f} шт.</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("quantity_kg") or 0):,.2f} кг</td>'

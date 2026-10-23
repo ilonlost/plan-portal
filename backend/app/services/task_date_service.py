@@ -1,5 +1,5 @@
 """One date policy for source imports, placement, cards and exported plans."""
-from datetime import timedelta
+from datetime import time, timedelta
 
 from app.core.line_catalog import line_key
 from app.services.production_cycle_service import production_cycle
@@ -32,6 +32,8 @@ def ohl_production_date(marking_date, line, product):
 def shipping_date(item):
     if item.schedule_kind != "production":
         return None
+    if item.shipping_date_override:
+        return item.shipping_date_override
     if item.source_kind == "zam" or is_bulka(item.line):
         return item.production_date or item.marking_date
     marking = item.marking_date or (item.demand_item.source_plan_date if item.demand_item else None)
@@ -41,3 +43,9 @@ def shipping_date(item):
     scheduled = item.product and (item.product.advance_status or "").strip().casefold() == "по графику"
     offset = 1 if uses_sandwich_window(item.line) or not scheduled else 0
     return marking - timedelta(days=offset)
+
+
+def shipping_time(item):
+    if item.schedule_kind != "production":
+        return None
+    return item.shipping_time_override or (time(19) if uses_sandwich_window(item.line) else None)

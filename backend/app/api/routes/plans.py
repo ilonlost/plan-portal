@@ -21,6 +21,7 @@ from app.services.notification_service import build_plan_email_html, build_plan_
 from app.services.settings_service import get_mail_configuration
 from app.services.line_schedule_service import shift_hours
 from app.services.production_cycle_service import window_fields
+from app.services.task_timeline_service import bind_task_timeline
 
 router = APIRouter(prefix="/plans", tags=["plans"])
 
@@ -128,6 +129,7 @@ def active_plan_matrix(
         ProductionScheduleItem.production_date <= end,
         ProductionScheduleItem.excluded.is_(False),
     ).options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item)))) if line_ids else []
+    bind_task_timeline(items)
     capacities = list(db.scalars(select(LineCapacity).where(
         LineCapacity.line_id.in_(line_ids), LineCapacity.capacity_date >= start, LineCapacity.capacity_date <= end,
     ))) if line_ids else []
@@ -311,6 +313,7 @@ def export_plan(plan_id: int, db: Session = Depends(get_db), user: UserContext =
         joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item),
     )))
     exporter = ExcelExportService()
+    bind_task_timeline(items)
     content = exporter.build([schedule_item_dict(item) for item in items])
     return StreamingResponse(
         BytesIO(content), media_type=exporter.media_type,
@@ -352,6 +355,7 @@ def email_plan(
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(422, "В шаблоне темы разрешены только {start}, {end} и {plan}") from exc
+    bind_task_timeline(items)
     html = build_plan_email_html(configuration, plan.name, start, end, [schedule_item_dict(item) for item in items], payload.audience)
     subject = {"production": "Производство", "warehouse": "Склад", "materials": "Сырьевой отдел"}[payload.audience] + " · " + subject
     line_recipients = [value.strip() for item in items if item.line and item.line.mail_recipients for value in item.line.mail_recipients.replace(";", ",").replace("\n", ",").split(",") if value.strip()]

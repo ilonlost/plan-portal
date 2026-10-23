@@ -5,12 +5,18 @@ export interface UserProfile {
   email: string; workshop_code: string | null; line_name: string | null;
   access_label: string; auth_mode: string;
   section_visibility?: Record<string, boolean>;
+  can_comment?: boolean;
 }
 
 export interface SessionMode { auth_mode: string; }
 
 export interface ScheduleItem {
   production_window_start?: string | null; production_window_end?: string | null;
+  task_start_at?: string | null; task_end_at?: string | null;
+  calendar_production_start?: string | null; calendar_production_end?: string | null;
+  shift_segments?: {shift: string; start_at: string; end_at: string}[];
+  outside_production_window?: boolean;
+  shipping_time?: string | null; shipping_date_overridden?: boolean;
   id: number; sequence: number; production_date: string | null; marking_date: string | null; shipping_date: string | null; line_id: number | null;
   line_code: string | null; line_name: string | null; workshop_code: string | null; workshop_name: string | null;
   product_id: number | null; product_name: string; sku: string; quantity: number; required_hours: number;

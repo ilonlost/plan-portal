@@ -293,6 +293,8 @@ class ProductionScheduleItem(Base):
     actual_quantity_kg: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
     source_kind: Mapped[str] = mapped_column(String(30), default="generic", index=True)
     marking_date: Mapped[date | None] = mapped_column(Date)
+    shipping_date_override: Mapped[date | None] = mapped_column(Date)
+    shipping_time_override: Mapped[time | None] = mapped_column(Time)
     execution_status: Mapped[str] = mapped_column(String(30), default="not_started")
     execution_note: Mapped[str | None] = mapped_column(Text)
     reported_by: Mapped[str | None] = mapped_column(String(120))

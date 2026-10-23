@@ -632,3 +632,12 @@ html:has(.modal-backdrop, .drawer-backdrop), body:has(.modal-backdrop, .drawer-b
 .service-account-form .full { grid-column: 1 / -1; }
 .service-password-reset { padding: 20px; border-top: 1px solid var(--line); display: grid; gap: 12px; }
 .access-details { min-width: 0; }
+
+.user-card { grid-template-columns: 35px minmax(0, 1fr) 25px; max-width:100%; box-sizing:border-box; }
+.user-card > div { min-width:0; overflow:hidden; }
+.user-card small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.user-card button { width:25px; min-width:0; padding:0; }
+.task-shift-marks { display:inline-flex; gap:3px; align-items:center; }
+.task-shift-segments { display:flex; flex-wrap:wrap; gap:4px 8px; font-size:10px; }
+.task-shift-segments > span { display:inline-flex; align-items:center; gap:4px; }
+.task-time-caption { color:var(--muted); white-space:normal; }

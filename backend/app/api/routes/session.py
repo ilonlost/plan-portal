@@ -51,6 +51,7 @@ def _user_dict(user: UserContext, db: Session | None = None) -> dict:
     result = {
         "username": user.username, "display_name": user.display_name, "role": user.role, "email": user.email,
         "workshop_code": user.workshop_code, "line_name": user.line_name,
+        "can_comment": user.auth_method != "service",
         "access_label": {"admin": "Администратор", "planner": "Планирование", "master": "Мастер линии", "viewer": "Просмотр"}.get(user.role, user.role),
     }
     if db is not None:

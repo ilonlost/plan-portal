@@ -15,7 +15,8 @@ from app.models.entities import (
 from app.services.planning_engine import CapabilityInput, CapacityInput, DemandInput, PlanningEngine
 from app.services.planning_rules import mono_group
 from app.services.production_cycle_service import production_cycle, window_fields
-from app.services.task_date_service import is_advance, is_bulka, uses_sandwich_window, ohl_day_offset, ohl_production_date, shipping_date
+from app.services.task_date_service import is_advance, is_bulka, uses_sandwich_window, ohl_day_offset, ohl_production_date, shipping_date, shipping_time
+from app.services.task_timeline_service import bind_task_timeline, task_timeline_fields
 
 
 def cleaning_suppression_key(
@@ -610,6 +611,11 @@ class PlanService:
                 setattr(item, field, values[field])
         if "marking_date" in values:
             item.marking_date = values["marking_date"]
+        if item.schedule_kind == "production":
+            if "shipping_date" in values:
+                item.shipping_date_override = values["shipping_date"]
+            if "shipping_time" in values:
+                item.shipping_time_override = values["shipping_time"]
         if item.source_kind == "zam" or (item.schedule_kind == "production" and is_bulka(self.db.get(ProductionLine, item.line_id))):
             item.marking_date = item.production_date
         if item.line_id and item.production_date and any(key in values for key in ("before_item_id", "sequence", "duration_minutes")):
@@ -918,9 +924,10 @@ class PlanService:
             productions = [item for item in items if item.schedule_kind == "production"]
             events = [item for item in items if item.schedule_kind != "production" and item.source != "auto"]
             productions.sort(key=lambda item: (
+                0 if item.sort_rank is not None else 1,
+                Decimal(item.sort_rank) if item.sort_rank is not None else Decimal("999999"),
                 source_rank.get(item.source_kind, 2),
                 0 if item.shift == "day" else 1,
-                Decimal(item.sort_rank) if item.sort_rank is not None else Decimal("999999"),
                 1 if settings["bolognese_last"] and item.product_id in products and "болоньез" in products[item.product_id].name.casefold() else 0,
                 mono_group(products[item.product_id].name, products[item.product_id].mono_group) if item.product_id in products else "",
                 item.sequence, item.id or 0,
@@ -1044,6 +1051,7 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "sequence": item.sequence,
         "sort_rank": item.sort_rank,
         "production_date": item.production_date,
+        **task_timeline_fields(item),
         **window_fields(item.line, item.production_date),
         "line_id": item.line_id,
         "line_code": item.line.code if item.line else None,
@@ -1070,6 +1078,8 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "source_kind": item.source_kind,
         "marking_date": item.production_date if item.source_kind == "zam" or is_bulka(item.line) else item.marking_date,
         "shipping_date": shipping_date(item),
+        "shipping_time": shipping_time(item),
+        "shipping_date_overridden": bool(item.shipping_date_override or item.shipping_time_override),
         "execution_status": item.execution_status,
         "execution_note": item.execution_note,
         "reported_by": item.reported_by,
@@ -1095,6 +1105,7 @@ def plan_dict(db: Session, plan: ProductionPlan, allowed_line_name: str | None =
     ))
     if allowed_line_name:
         items = [item for item in items if item.line and item.line.name == allowed_line_name]
+    bind_task_timeline(items)
     statuses = defaultdict(int)
     for item in items:
         statuses[item.status.value] += 1

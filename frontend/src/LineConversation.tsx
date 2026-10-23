@@ -7,7 +7,7 @@ export function LineConversation({ lineId, lineName, date, user, comments, onSav
   const [open, setOpen] = useState(false); const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
   const [sent, setSent] = useState<LineCommentEntry[]>([]); const endRef = useRef<HTMLDivElement>(null); const triggerRef = useRef<HTMLButtonElement>(null); const modalRef = useRef<HTMLElement>(null);
   const messages = useMemo(() => [...new Map([...comments, ...sent].map(row => [row.id, row])).values()].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.split("-")[0].localeCompare(b.id.split("-")[0]) || Number(a.id.split("-")[1]) - Number(b.id.split("-")[1])), [comments, sent]);
-  const mayWrite = user.role !== "viewer" && (user.role !== "master" || user.line_name === lineName);
+  const mayWrite = (user.can_comment ?? user.role !== "viewer") && (user.role !== "master" || (user.line_name || "").trim().toLocaleLowerCase() === lineName.trim().toLocaleLowerCase());
   useEffect(() => { if (open) endRef.current?.scrollIntoView({ block: "nearest" }); }, [open, messages.length]);
   useEffect(() => {
     if (!open) return;

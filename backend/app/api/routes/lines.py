@@ -125,9 +125,10 @@ def save_line_comment(
     line = db.get(ProductionLine, line_id)
     if not line:
         raise HTTPException(404, "Линия не найдена")
-    if user.role not in {"admin", "planner", "master"}:
+    if user.auth_method == "service" or user.role not in {"admin", "planner", "master", "viewer"}:
         raise HTTPException(403, "Недостаточно прав для комментария")
-    if user.role == "master" and (user.line_name != line.name or (user.workshop_code and user.workshop_code != line.workshop_code)):
+    from app.core.line_catalog import line_key
+    if user.role == "master" and (line_key(user.line_name or "") != line_key(line.name) or (user.workshop_code and user.workshop_code != line.workshop_code)):
         raise HTTPException(403, "Мастер может комментировать только свою линию")
     clean = payload.text.strip()
     if not clean:

@@ -1010,8 +1010,8 @@ def test_line_conversation_obeys_writer_permissions_and_date_scope(client, db):
     assert client.post(f"/lines/{line.id}/comments/2026-10-18", json={"text": "Сообщение мастера"}).status_code == 200
     assert client.post(f"/lines/{other.id}/comments/2026-10-18", json={"text": "Чужая линия"}).status_code == 403
     actor.role = "viewer"; db.commit()
-    assert client.post(f"/lines/{line.id}/comments/2026-10-18", json={"text": "Просмотр"}).status_code == 403
-    assert len(client.get("/lines/insights?start=2026-10-18&end=2026-10-18").json()["comments"]) == 1
+    assert client.post(f"/lines/{line.id}/comments/2026-10-18", json={"text": "Просмотр"}).status_code == 200
+    assert len(client.get("/lines/insights?start=2026-10-18&end=2026-10-18").json()["comments"]) == 2
     assert not client.get("/lines/insights?start=2026-10-19&end=2026-10-19").json()["comments"]
 
 
