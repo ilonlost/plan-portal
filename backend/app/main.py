@@ -13,7 +13,7 @@ from app.services.plan_service import PlanService
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title=settings.app_name, version="0.2.12", docs_url="/api/docs", openapi_url="/api/openapi.json")
+app = FastAPI(title=settings.app_name, version="0.2.13", docs_url="/api/docs", openapi_url="/api/openapi.json")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -66,5 +66,7 @@ def correct_legacy_ohl_source_units() -> None:
             logger.warning("Активный план пересчитан: весь объём ЗАМ размещён с отображением перегрузки")
         if service.apply_production_cycle_upgrade():
             logger.warning("Для сэндвичей настроены производственные сутки 18:00–18:00 по ДМ")
+        if service.apply_task_date_rules_upgrade():
+            logger.warning("Даты ОХЛ пересчитаны от ДМ; для Булки ДП, ДМ и отгрузка равны")
     finally:
         db.close()

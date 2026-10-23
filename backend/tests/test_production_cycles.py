@@ -44,17 +44,17 @@ def test_invalid_cycle(bad):
         validate_cycle({**CYCLE, **bad})
 
 
-def test_same_dm_uses_shared_capacity_after_ohl():
+def test_ohl_offset_uses_dp_bucket_while_zam_keeps_its_day():
     dm = date(2026, 10, 19)
-    cap = CapabilityInput(1, 1, Decimal(100), marking_day_cycle=True)
+    cap = CapabilityInput(1, 1, Decimal(100), ohl_day_offset=1)
     demands = [DemandInput(1, 1, "OHL", Decimal(150), date(2026, 10, 18), date(2026, 10, 18),
                            source_kind="ohl", marking_date=dm),
                DemandInput(2, 1, "ZAM", Decimal(100), dm, dm, source_kind="zam")]
-    slots = [CapacityInput(1, dm, Decimal(2))]
+    slots = [CapacityInput(1, date(2026, 10, 18), Decimal(2)), CapacityInput(1, dm, Decimal(2))]
     result = PlanningEngine().plan(demands, [cap], slots, dm, complete_zam=False)
-    assert sum(row.quantity for row in result if row.source_kind == "ohl" and row.production_date == dm) == 150
-    assert sum(row.quantity for row in result if row.source_kind == "zam" and row.production_date == dm) == 50
-    assert sum(row.quantity for row in result if row.source_kind == "zam" and row.production_date is None) == 50
+    assert sum(row.quantity for row in result if row.source_kind == "ohl" and row.production_date == date(2026, 10, 18)) == 150
+    assert sum(row.quantity for row in result if row.source_kind == "zam" and row.production_date == dm) == 100
+    assert sum(row.quantity for row in result if row.source_kind == "zam" and row.production_date is None) == 0
     full = PlanningEngine().plan(demands, [cap], slots, dm, complete_zam=True)
     assert sum(row.quantity for row in full if row.source_kind == "zam" and row.production_date == dm) == 100
     assert all(row.marking_date == row.production_date for row in full if row.source_kind == "zam")
@@ -77,11 +77,12 @@ def test_settings_save_rebuilds_cycle_and_preserves_other_lines(client, db, monk
     assert response.status_code == 200, response.text
     assert snapshot(plan, other) == protected
     item = next(row for row in plan.schedule_items if row.demand_item_id == first.id and row.schedule_kind == "production")
-    assert item.production_date == first.marking_date == date(2026, 9, 9)
+    assert item.production_date == date(2026, 9, 8)
+    assert first.marking_date == date(2026, 9, 9)
     assert (item.execution_status, item.execution_note) == ("exported", "keep me")
     serialized = schedule_item_dict(item)
-    assert serialized["production_window_start"] == datetime(2026, 9, 8, 18)
-    assert serialized["production_window_end"] == datetime(2026, 9, 9, 18)
+    assert serialized["production_window_start"] == datetime(2026, 9, 7, 18)
+    assert serialized["production_window_end"] == datetime(2026, 9, 8, 18)
     got = client.get(f"/lines/{target}/schedule?start=2026-09-09").json()
     assert got["production_cycle"] == CYCLE
     assert got["slots"][0]["production_window_start"] == "2026-09-08T18:00:00"
@@ -90,7 +91,7 @@ def test_settings_save_rebuilds_cycle_and_preserves_other_lines(client, db, monk
         book = load_workbook(BytesIO(content))
         sheet = book["План выгрузки"] if "План выгрузки" in book.sheetnames else book.active
         headings = [cell.value for cell in sheet[1]]
-        assert sheet.cell(2, headings.index("Начало производственных суток") + 1).value == datetime(2026, 9, 8, 18)
+        assert sheet.cell(2, headings.index("Начало производственных суток") + 1).value == datetime(2026, 9, 7, 18)
     # A stale editor cannot overwrite the newer plan.
     assert client.put(f"/lines/{target}/schedule", json=payload).status_code == 409
     payload["plan_version"] = plan.revision

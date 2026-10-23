@@ -25,7 +25,7 @@ from app.services.line_schedule_service import ensure_line_capacities
 from app.services.plan_service import PlanService, plan_dict, schedule_item_dict
 from app.services.notification_service import send_notification
 from app.services.line_import_service import active_line, filter_line_preview, demands_for_line, replacement_tasks
-from app.services.production_cycle_service import production_cycle
+from app.services.task_date_service import ohl_production_date
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 
@@ -232,7 +232,7 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
         if row.line_hint and not any(line_key(line.name) == line_key(row.line_hint) for line in db.scalars(select(ProductionLine).where(ProductionLine.status == "active"))):
             row.warnings = [*row.warnings, f"Неизвестная линия «{row.line_hint}»: проверьте справочник"]
         source_date = row.source_plan_date or row.requested_date
-        production_date = source_date - timedelta(days=1) if source_kind == "ohl" and product.advance_status == "АЗ" else source_date
+        production_date = ohl_production_date(row.marking_date or source_date, db.get(ProductionLine, payload.line_id) if payload.line_id else None, product) if source_kind == "ohl" else source_date
         demand = DemandItem(
             order_id=order.id, product_id=product.id, source_row=row.row_number, sku=row.sku,
             product_name=row.product_name or product.name, quantity=row.quantity,
@@ -265,8 +265,8 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
                     continue
                 outside = [r for r in scoped_plan.schedule_items if r.demand_item_id == old.id and not r.excluded and r.production_date and not payload.start_date <= r.production_date <= payload.end_date]
                 source_day = old.marking_date or old.source_plan_date or old.requested_date
-                if source_kind == "ohl" and not production_cycle(line)["enabled"] and old.product and old.product.advance_status == "АЗ":
-                    source_day -= timedelta(days=1)
+                if source_kind == "ohl":
+                    source_day = ohl_production_date(source_day, line, old.product)
                 if not outside and (any(r.demand_item_id == old.id for r in affected) or payload.start_date <= source_day <= payload.end_date):
                     fully_replaced.add(old.id)
                 elif any(r.demand_item_id == old.id for r in affected):

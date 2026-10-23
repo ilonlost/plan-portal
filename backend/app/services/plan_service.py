@@ -15,6 +15,7 @@ from app.models.entities import (
 from app.services.planning_engine import CapabilityInput, CapacityInput, DemandInput, PlanningEngine
 from app.services.planning_rules import mono_group
 from app.services.production_cycle_service import production_cycle, window_fields
+from app.services.task_date_service import is_advance, is_bulka, uses_sandwich_window, ohl_day_offset, ohl_production_date, shipping_date
 
 
 def cleaning_suppression_key(
@@ -277,6 +278,27 @@ class PlanService:
         self.db.commit()
         return True
 
+    def apply_task_date_rules_upgrade(self) -> bool:
+        key = "task_date_rules_20261023_v1"
+        if self.db.scalar(select(PortalSetting).where(PortalSetting.key == key)):
+            return False
+        plan = self.active_plan()
+        demands = self._latest_source_demands() if plan else []
+        if plan:
+            for item in plan.schedule_items:
+                if item.excluded or item.schedule_kind != "production":
+                    continue
+                if is_bulka(item.line):
+                    if item.source_kind == "ohl" and item.marking_date:
+                        item.production_date = item.marking_date
+                    item.marking_date = item.production_date
+                elif uses_sandwich_window(item.line) and item.source_kind == "ohl" and item.marking_date:
+                    item.production_date = ohl_production_date(item.marking_date, item.line, item.product)
+            self.calculate(plan, demands, "task_date_rules_updated", source_kind="ohl", update_all_loads=True)
+        self.db.add(PortalSetting(key=key, value={"applied": True}, updated_by="system"))
+        self.db.commit()
+        return bool(plan)
+
     def recalculate_after_catalog_change(self, change_type: str = "catalog_updated") -> ProductionPlan | None:
         """Immediately rebuild the active plan after any catalog mutation."""
         self.db.flush()
@@ -322,11 +344,22 @@ class PlanService:
             for item in plan.schedule_items
             if item.source == "auto" and item.schedule_kind == "production" and item.sort_rank is not None
         }
+        date_lines = defaultdict(list)
+        for cap in self.db.scalars(select(LineCapability).join(LineCapability.line).where(ProductionLine.status == "active", LineCapability.units_per_hour > 0).options(joinedload(LineCapability.line))):
+            date_lines[cap.product_id].append(cap.line)
         for demand in demands:
-            if demand.source_kind == "ohl" and demand.source_plan_date and demand.product:
-                demand.advance_production = demand.product.advance_status == "АЗ"
-                override_date = (demand.raw_data or {}).get("az_override_production_date")
-                demand.requested_date = date.fromisoformat(override_date) if override_date else demand.source_plan_date - timedelta(days=int(demand.advance_production))
+            if demand.source_kind == "ohl" and (demand.marking_date or demand.source_plan_date) and demand.product:
+                demand.advance_production = is_advance(demand.product)
+                raw = dict(demand.raw_data or {})
+                candidates = sorted(date_lines[demand.product_id], key=lambda row: (row.priority, row.id))
+                target = next((row for row in candidates if row.id == raw.get("preferred_line_id", line_id)), candidates[0] if candidates else None)
+                override_date = raw.get("az_override_production_date")
+                if override_date and (("az_override_advance_status" in raw and raw["az_override_advance_status"] != demand.product.advance_status) or ("az_override_advance_status" not in raw and change_type in {"catalog_updated", "reference_catalog_updated", "task_date_rules_updated"})):
+                    raw.pop("az_override_production_date", None)
+                    demand.raw_data = raw
+                    override_date = None
+                special = is_bulka(target) or uses_sandwich_window(target)
+                demand.requested_date = date.fromisoformat(override_date) if override_date and not special else ohl_production_date(demand.marking_date or demand.source_plan_date, target, demand.product)
                 demand.due_date = demand.requested_date
                 demand.production_week = demand.requested_date.isocalendar().week
         if demands:
@@ -380,6 +413,8 @@ class PlanService:
                     capability = next((row for row in options if row.line_id == preferred_line), options[0])
                     item.line_id = capability.line_id
             if capability:
+                if is_bulka(capability.line):
+                    item.marking_date = item.production_date
                 self._sync_manual_item_quantity(item, capability)
         mapped_product_ids = {capability.product_id for capability in capabilities}
         missing_capability_warning = "Артикул отсутствует в справочнике мощностей: он будет добавлен в список нераспределённых"
@@ -465,7 +500,7 @@ class PlanService:
                 workshop_code=item.line.workshop_code,
                 daily_startup_hours=Decimal(str((item.line.planning_settings or {}).get("daily_startup_hours", 1 if "лазан" in item.line.name.casefold() else 0))),
                 changeover_hours=Decimal(str((item.line.planning_settings or {}).get("changeover_hours", 1 if "лазан" in item.line.name.casefold() else 0))),
-                marking_day_cycle=production_cycle(item.line)["enabled"],
+                ohl_day_offset=ohl_day_offset(item.line, item.product) if uses_sandwich_window(item.line) or is_bulka(item.line) else None,
             ) for item in capabilities if item.line.status == "active"],
             capacities=[CapacityInput(
                 line_id=item.line_id, capacity_date=item.capacity_date,
@@ -575,7 +610,7 @@ class PlanService:
                 setattr(item, field, values[field])
         if "marking_date" in values:
             item.marking_date = values["marking_date"]
-        if item.source_kind == "zam":
+        if item.source_kind == "zam" or (item.schedule_kind == "production" and is_bulka(self.db.get(ProductionLine, item.line_id))):
             item.marking_date = item.production_date
         if item.line_id and item.production_date and any(key in values for key in ("before_item_id", "sequence", "duration_minutes")):
             self._preserve_pc_day_order(plan, item.line_id, item.production_date)
@@ -699,7 +734,8 @@ class PlanService:
         required_hours = self._production_duration(quantity, Decimal(capability.units_per_hour))
         item = ProductionScheduleItem(
             plan_id=plan.id, product_id=product.id, line_id=line.id,
-            production_date=values["production_date"], marking_date=values["production_date"] if values.get("source_kind") == "zam" else values.get("marking_date") or values["production_date"],
+            production_date=ohl_production_date(values.get("marking_date") or values["production_date"], line, product) if values.get("source_kind") == "ohl" and uses_sandwich_window(line) else values["production_date"],
+            marking_date=values["production_date"] if values.get("source_kind") == "zam" or is_bulka(line) else values.get("marking_date") or values["production_date"],
             shift=values.get("shift", "day"), sequence=len(plan.schedule_items) + 1,
             quantity=quantity, source_quantity=quantity, source_unit="кг", quantity_kg=quantity,
             box_count=boxes, batch_count=batches, required_hours=required_hours, duration_hours=required_hours,
@@ -715,6 +751,11 @@ class PlanService:
         return plan
 
     def create_event(self, plan: ProductionPlan, values: dict) -> ProductionPlan:
+        line = self.db.get(ProductionLine, values["line_id"])
+        if not line or line.status != "active":
+            raise ValueError("Выберите действующую производственную линию")
+        if values.get("shift", "day") not in {"day", "night"}:
+            raise ValueError("Выберите дневную или ночную смену")
         kind = values["schedule_kind"]
         if kind not in {"cleaning", "downtime", "maintenance", "trial", "gas", "startup", "changeover"}:
             raise ValueError("Неизвестный тип события линии")
@@ -732,19 +773,24 @@ class PlanService:
             duration_hours = Decimal(str(values.get("duration_hours") or 0))
         if duration_hours <= 0 or duration_hours > 24:
             raise ValueError("Интервал события должен быть больше 0 и не больше 24 часов")
+        reason = (values.get("reason") or "").strip() or {"cleaning": "Мойка линии", "maintenance": "Плановое ТО", "trial": "Проработка", "gas": "Газ", "startup": "Запуск линии", "changeover": "Перестройка линии", "downtime": "Простой"}[kind]
         event = ProductionScheduleItem(
             plan_id=plan.id, product_id=None, line_id=values["line_id"],
             production_date=values["production_date"], shift=values.get("shift", "day"),
             sequence=len(plan.schedule_items) + 1, quantity=Decimal("0"), quantity_kg=Decimal("0"),
             required_hours=duration_hours, duration_hours=duration_hours, start_time=start_time, end_time=end_time,
-            schedule_kind=kind, reason=values["reason"], source="manual", locked=True,
+            schedule_kind=kind, reason=reason, source="manual", locked=True,
             status=ScheduleStatus.PLANNED,
         )
         plan.schedule_items.append(event)
+        plan.horizon_start = min(plan.horizon_start, event.production_date)
+        plan.horizon_end = max(plan.horizon_end, event.production_date)
+        from app.services.line_schedule_service import ensure_line_capacities
+        ensure_line_capacities(self.db, [line], event.production_date, event.production_date)
         self.db.flush()
         self.refresh_sequence_and_cleanings(plan)
         self.recalculate_load(plan)
-        self.create_version(plan, f"manual_{kind}", f"{kind}: {values['reason']}")
+        self.create_version(plan, f"manual_{kind}", f"{kind}: {reason}")
         self.db.commit()
         return plan
 
@@ -1005,7 +1051,7 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "workshop_code": item.line.workshop_code if item.line else None,
         "workshop_name": item.line.workshop_name if item.line else None,
         "product_id": item.product_id,
-        "product_name": item.product.name if item.product else ({"cleaning": "Мойка линии", "downtime": "Простой", "maintenance": "ТО", "trial": "Проработка", "startup": "Запуск линии", "changeover": "Переход", "restart": "Запуск после простоя"}.get(item.schedule_kind, "Служебное событие")),
+        "product_name": item.product.name if item.product else ({"cleaning": "Мойка линии", "downtime": "Простой", "maintenance": "ТО", "trial": "Проработка", "gas": "Газ", "startup": "Запуск линии", "changeover": "Переход", "restart": "Запуск после простоя"}.get(item.schedule_kind, "Служебное событие")),
         "sku": item.product.sku if item.product else "—",
         "quantity": item.quantity,
         "source_quantity": item.source_quantity,
@@ -1022,14 +1068,8 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "reason": item.reason,
         "actual_quantity_kg": item.actual_quantity_kg,
         "source_kind": item.source_kind,
-        "marking_date": item.production_date if item.source_kind == "zam" else item.marking_date,
-        "shipping_date": item.production_date if item.source_kind == "zam" else (
-            item.marking_date
-            or (item.demand_item.due_date if item.demand_item and item.demand_item.source_kind == "ohl" else None)
-        ) - timedelta(days=1) if (
-            item.marking_date
-            or (item.demand_item.due_date if item.demand_item and item.demand_item.source_kind == "ohl" else None)
-        ) else None,
+        "marking_date": item.production_date if item.source_kind == "zam" or is_bulka(item.line) else item.marking_date,
+        "shipping_date": shipping_date(item),
         "execution_status": item.execution_status,
         "execution_note": item.execution_note,
         "reported_by": item.reported_by,

@@ -133,7 +133,7 @@ class ScheduleEventCreate(BaseModel):
     start_time: time | None = None
     end_time: time | None = None
     duration_hours: Decimal | None = Field(default=None, gt=0, le=24)
-    reason: str = Field(min_length=2, max_length=500)
+    reason: str = Field(default="", max_length=500)
 
 
 class PlanApprovalRequest(BaseModel):

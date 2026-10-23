@@ -183,7 +183,7 @@ def update_item(plan_id: int, item_id: int, payload: ScheduleItemUpdate, db: Ses
 def create_manual_task(plan_id: int, payload: ManualTaskCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     if payload.shift not in {"day", "night"}:
         raise HTTPException(422, "Смена должна быть «day» или «night»")
-    if payload.source_kind not in {"ohl", "zam", "generic"}:
+    if payload.source_kind not in {"ohl", "zam", "generic", "pf"}:
         raise HTTPException(422, "Неизвестный источник задания")
     plan = db.get(ProductionPlan, plan_id)
     if not plan:

@@ -705,7 +705,7 @@ def test_shipping_date_stays_fixed_when_production_item_moves(client, db):
     PlanService(db).calculate(plan, [demand])
     item = next(row for row in plan.schedule_items if row.schedule_kind == "production")
     marking_date = item.marking_date
-    shipping_date = marking_date - timedelta(days=1)
+    shipping_date = marking_date  # По графику: отгрузка равна ДМ.
     next_day = item.production_date + timedelta(days=1)
     client.patch(
         f"/plans/{plan.id}/items/{item.id}",

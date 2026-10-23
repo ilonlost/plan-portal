@@ -122,8 +122,8 @@ def _resolve_row(db: Session, row_number: int, sku: str, quantity: Decimal | Non
     if actual is None or actual < 0:
         errors.append("Некорректный фактический объём")
         actual = Decimal("0")
-    advance = (product.advance_status or "").strip().upper() == "АЗ" if product else False
-    production_date = marking_date - timedelta(days=1) if advance else production_date or marking_date
+    from app.services.task_date_service import ohl_production_date
+    production_date = ohl_production_date(marking_date, line, product)
     return {
         "row_number": row_number, "sku": sku, "product_name": product.name if product else "Не найдено",
         "product_id": product.id if product else None, "line_id": line.id if line else None,
@@ -236,6 +236,9 @@ def _apply_confirmation(
         capability = db.scalar(select(LineCapability).where(LineCapability.product_id == product.id, LineCapability.line_id == row.line_id)) if line else None
         if not line or line.status != "active" or not capability:
             raise HTTPException(422, f"Строка {row.row_number}: выбранная линия не связана с артикулом {row.sku}")
+        from app.services.task_date_service import is_bulka, uses_sandwich_window, ohl_production_date
+        if is_bulka(line) or uses_sandwich_window(line):
+            row.production_date = ohl_production_date(row.marking_date, line, product)
         matches = _plan_matches(db, product.id, row.marking_date)
         previous = sum((Decimal(item.quantity_kg or item.quantity or 0) for item in matches), Decimal("0"))
         demands = list(db.scalars(select(DemandItem).where(
@@ -268,7 +271,7 @@ def _apply_confirmation(
             demand.valid = True
             demand.raw_data = {
                 **(demand.raw_data or {}), "preferred_line_id": line.id,
-                "az_override_production_date": row.production_date.isoformat(), "advance_confirmation_batch_id": batch.id,
+                "az_override_production_date": row.production_date.isoformat(), "az_override_advance_status": product.advance_status, "advance_confirmation_batch_id": batch.id,
             }
         history = AdvanceConfirmationItem(
             batch=batch, source_row=row.row_number, product=product, line=line, sku=row.sku,

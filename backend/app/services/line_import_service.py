@@ -5,8 +5,7 @@ from sqlalchemy.orm import joinedload
 
 from app.core.line_catalog import line_key
 from app.models.entities import LineCapability, Product, ProductionLine, ProductionScheduleItem
-from app.services.production_cycle_service import production_cycle
-from datetime import timedelta
+from app.services.task_date_service import ohl_production_date
 
 
 def active_line(db, line_id):
@@ -50,7 +49,7 @@ def filter_line_preview(db, preview, line_id, start=None, end=None):
                 if preview.template_type == "ohl_daily":
                     source = row.marking_date or row.source_plan_date or day
                     product = products.get(row.sku)
-                    day = source if production_cycle(line)["enabled"] else source - timedelta(days=int(bool(product and product.advance_status == "АЗ")))
+                    day = ohl_production_date(source, line, product)
                 if not start <= day <= end:
                     continue
             selected.append(row)

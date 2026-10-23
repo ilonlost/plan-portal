@@ -81,10 +81,10 @@ export const api = {
   updateExecution: (planId: number, itemId: number, status: string, note?: string, version?: number) => request<PlanData>(`/plans/${planId}/items/${itemId}/execution-status`, {
     method: "PATCH", headers: { "Content-Type": "application/json", ...(version == null ? {} : { "If-Match": String(version) }) }, body: JSON.stringify({ status, note }),
   }),
-  createEvent: (planId: number, data: object) => request<PlanData>(`/plans/${planId}/events`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+  createEvent: (planId: number, data: object, version: number) => request<PlanData>(`/plans/${planId}/events`, {
+    method: "POST", headers: { "Content-Type": "application/json", "If-Match": String(version) }, body: JSON.stringify(data),
   }),
-  createManualTask: (planId: number, data: object) => request<PlanData>(`/plans/${planId}/items`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
+  createManualTask: (planId: number, data: object, version: number) => request<PlanData>(`/plans/${planId}/items`, { method: "POST", headers: { "Content-Type": "application/json", "If-Match": String(version) }, body: JSON.stringify(data) }),
   manualProducts: (lineId: number) => request<{ product_id: number; sku: string; name: string; speed_kg_hour: number }[]>(`/catalog/manual-products?line_id=${lineId}`),
   previewImport: async (file: File, lineId?: number, start?: string, end?: string) => {
     const data = new FormData(); data.append("file", file);

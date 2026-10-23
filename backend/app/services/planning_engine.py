@@ -42,7 +42,7 @@ class CapabilityInput:
     workshop_code: str = ""
     daily_startup_hours: Decimal = Decimal("0")
     changeover_hours: Decimal = Decimal("0")
-    marking_day_cycle: bool = False
+    ohl_day_offset: int | None = None
 
 
 @dataclass(frozen=True)
@@ -162,10 +162,8 @@ class PlanningEngine:
             )
             candidates: list[tuple[CapabilityInput, date, str]] = []
             for capability in options:
-                # Configured production days end on DM, regardless of the old
-                # catalogue's AZ/day-before convention. Calendar bounds are
-                # exposed separately; all sources share the same capacity bucket.
-                cycle_day = demand.marking_date if capability.marking_day_cycle and demand.source_kind == "ohl" else None
+                # A cycle describes clock bounds, not an override of DP/DM rules.
+                cycle_day = demand.marking_date - timedelta(days=capability.ohl_day_offset) if capability.ohl_day_offset is not None and demand.marking_date and demand.source_kind == "ohl" else None
                 current = max(cycle_day or first_date, demand.planning_start or date.min)
                 candidate_end = min(cycle_day or last_date, demand.planning_end or date.max)
                 while current <= candidate_end:
@@ -234,7 +232,7 @@ class PlanningEngine:
                 ))
 
             if remaining > 0:
-                forced_day = max(demand.marking_date if options[0].marking_day_cycle and demand.source_kind == "ohl" and demand.marking_date else first_date, demand.planning_start or date.min)
+                forced_day = max(demand.marking_date - timedelta(days=options[0].ohl_day_offset) if options[0].ohl_day_offset is not None and demand.source_kind == "ohl" and demand.marking_date else first_date, demand.planning_start or date.min)
                 forced_end = min(last_date if demand.source_kind != "ohl" else forced_day, demand.planning_end or date.max)
                 while forced_day <= forced_end and any(a <= forced_day <= b for a,b in demand.blocked_periods):
                     forced_day += timedelta(days=1)
