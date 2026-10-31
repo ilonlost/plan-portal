@@ -12,6 +12,7 @@ from app.core.security import UserContext, require_planner, user_sections
 from app.db.session import get_db
 from app.models.entities import AuditEvent, ImportedOrder, ProductionLine, ProductionPlan, ProductionScheduleItem, User
 from app.services.plan_service import PlanService, schedule_item_dict
+from app.services.task_deletion_service import deletion_scope
 from app.services.settings_service import get_planner_configuration, save_planner_configuration
 
 router = APIRouter(prefix="/planner-admin", tags=["planner administration"])
@@ -134,7 +135,7 @@ def save_placement(payload: PlacementUpdate, db: Session = Depends(get_db), user
 
 
 @router.get("/line-tasks")
-def line_tasks(start: date, end: date, line_id: int | None = None, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
+def line_tasks(start: date, end: date, line_id: int | None = None, db: Session = Depends(get_db), user: UserContext = Depends(require_planner), include_manual: bool = False) -> dict:
     from app.services.line_import_service import active_line
     if line_id is not None:
         active_line(db, line_id)
@@ -144,10 +145,7 @@ def line_tasks(start: date, end: date, line_id: int | None = None, db: Session =
     if not plan:
         raise HTTPException(404, "Активный план не найден")
     rows = list(db.scalars(select(ProductionScheduleItem).where(
-        ProductionScheduleItem.plan_id == plan.id,
-        *([ProductionScheduleItem.line_id == line_id] if line_id is not None else []),
-        ProductionScheduleItem.schedule_kind == "production", ProductionScheduleItem.excluded.is_(False),
-        ProductionScheduleItem.production_date.between(start, end),
+        *deletion_scope(plan.id, start, end, line_id, include_manual),
     ).options(joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item))
         .order_by(ProductionScheduleItem.production_date, ProductionScheduleItem.line_id, ProductionScheduleItem.sequence)))
     return {"plan_id": plan.id, "version": plan.revision, "count": len(rows), "items": [schedule_item_dict(row) for row in rows]}

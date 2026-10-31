@@ -77,7 +77,7 @@ export const api = {
     method: "PATCH", headers: { "Content-Type": "application/json", ...(version == null ? {} : { "If-Match": String(version) }) }, body: JSON.stringify(data),
   }),
   deleteItem: (planId: number, itemId: number, version: number) => request<PlanData>(`/plans/${planId}/items/${itemId}`, { method: "DELETE", headers: { "If-Match": String(version) } }),
-  bulkDeleteItems: (planId: number, start_date: string, end_date: string, version: number, line_id?: number) => request<{ ok: boolean; deleted_count: number }>(`/plans/${planId}/bulk-delete-items`, { method: "POST", headers: { "Content-Type": "application/json", "If-Match": String(version) }, body: JSON.stringify({ start_date, end_date, line_id }) }),
+  bulkDeleteItems: (planId: number, start_date: string, end_date: string, version: number, line_id?: number, include_manual = false) => request<{ ok: boolean; deleted_count: number }>(`/plans/${planId}/bulk-delete-items`, { method: "POST", headers: { "Content-Type": "application/json", "If-Match": String(version) }, body: JSON.stringify({ start_date, end_date, line_id, include_manual }) }),
   updateExecution: (planId: number, itemId: number, status: string, note?: string, version?: number) => request<PlanData>(`/plans/${planId}/items/${itemId}/execution-status`, {
     method: "PATCH", headers: { "Content-Type": "application/json", ...(version == null ? {} : { "If-Match": String(version) }) }, body: JSON.stringify({ status, note }),
   }),
@@ -98,7 +98,7 @@ export const api = {
   adminOverview: () => request<AdminOverview>("/admin/overview"),
   plannerAdministration: () => request<import("./types").PlannerAdministration>("/planner-admin"),
   plannerSavePlacement: (data: { complete_ohl: boolean; complete_zam: boolean; plan_version?: number }) => request<{ ok: boolean; plan_recalculated: boolean }>("/planner-admin/placement", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
-  plannerLineTasks: (lineId: number | undefined, start: string, end: string) => request<{ plan_id: number; version: number; count: number; items: import("./types").ScheduleItem[] }>(`/planner-admin/line-tasks?${lineId ? `line_id=${lineId}&` : ""}start=${start}&end=${end}`),
+  plannerLineTasks: (lineId: number | undefined, start: string, end: string, includeManual = false) => request<{ plan_id: number; version: number; count: number; items: import("./types").ScheduleItem[] }>(`/planner-admin/line-tasks?${lineId ? `line_id=${lineId}&` : ""}start=${start}&end=${end}&include_manual=${includeManual}`),
   plannerDirectoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/planner-admin/directory-users?query=${encodeURIComponent(query)}`),
   plannerUpdateAccess: (id: number, data: { role: string; active: boolean; section_permissions: Record<string, boolean> }) => request<{ ok: boolean }>(`/planner-admin/users/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   plannerCreateAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean }) => request<{ ok: boolean }>("/planner-admin/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
