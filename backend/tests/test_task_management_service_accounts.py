@@ -116,3 +116,35 @@ def test_service_attempts_limited_and_ad_identity_not_overwritten(client, db):
     client.cookies.clear()
     for _ in range(8): assert client.post('/session/service-login',json={'username':data['username'],'password':'wrong'}).status_code==401
     assert client.post('/session/service-login',json={'username':data['username'],'password':data['password']}).status_code==429
+
+
+def test_planner_cannot_create_service_account_or_reset_password(client, db):
+    data = {'username': 'svc.protected', 'display_name': 'Screen', 'password': 'test-password-12345'}
+    created = client.post('/planner-admin/service-accounts', json=data)
+    assert created.status_code == 200
+    account = db.get(User, created.json()['id'])
+    original_hash, original_version = account.password_hash, account.session_version
+    db.add(User(username='planner.test', display_name='Planner', role='planner'))
+    db.commit()
+    client.cookies.set(settings.session_cookie_name, create_session_token(UserContext('planner.test', 'Planner', 'planner')))
+    assert client.get('/planner-admin').status_code == 200
+    assert client.post('/planner-admin/service-accounts', json={**data, 'username': 'svc.denied'}).status_code == 403
+    assert client.put(f'/planner-admin/service-accounts/{account.id}/password', json={'password': data['password'] + 'changed'}).status_code == 403
+    db.refresh(account)
+    assert (account.password_hash, account.session_version) == (original_hash, original_version)
+    assert db.scalar(select(User).where(User.username == 'svc.denied')) is None
+
+
+def test_directory_photo_requires_planning_access(client, db, monkeypatch):
+    from app.core import auth_service
+    content = b'\xff\xd8\xfftest-photo'
+    monkeypatch.setattr(auth_service, 'directory_user_photo', lambda name: (content, 'image/jpeg') if name == 'photo.user' else None)
+    response = client.get('/planner-admin/directory-photo/photo.user')
+    assert response.status_code == 200 and response.content == content
+    assert response.headers['content-type'] == 'image/jpeg'
+    assert 'private' in response.headers['cache-control']
+    assert client.get('/planner-admin/directory-photo/missing').status_code == 204
+    db.add(User(username='viewer.test', display_name='Viewer', role='viewer'))
+    db.commit()
+    client.cookies.set(settings.session_cookie_name, create_session_token(UserContext('viewer.test', 'Viewer', 'viewer')))
+    assert client.get('/planner-admin/directory-photo/photo.user').status_code == 403

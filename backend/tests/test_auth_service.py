@@ -86,3 +86,33 @@ def test_directory_search_requires_ldap_service_account(monkeypatch) -> None:
         assert "LDAP_BIND_DN" in str(exc)
     else:
         raise AssertionError("Expected LDAP service-account validation error")
+
+
+def test_directory_photo_is_exact_cached_and_missing_safe(monkeypatch):
+    from types import SimpleNamespace
+    auth_service._photo_cache.clear()
+    monkeypatch.setattr(settings, 'auth_mode', 'ldap')
+    monkeypatch.setattr(settings, 'ldap_base_dn', 'DC=test')
+    monkeypatch.setattr(settings, 'ldap_bind_dn', 'service')
+    monkeypatch.setattr(settings, 'ldap_bind_password', 'secret')
+    calls = []
+    class Connection:
+        entries = [SimpleNamespace(thumbnailPhoto=SimpleNamespace(value=b'\xff\xd8\xffphoto'))]
+        def search(self, *args, **kwargs):
+            calls.append((args, kwargs))
+        def unbind(self):
+            calls.append('unbind')
+    monkeypatch.setattr(auth_service, '_connect', lambda *args: Connection())
+    assert auth_service.directory_user_photo('User*') == (b'\xff\xd8\xffphoto', 'image/jpeg')
+    assert auth_service.directory_user_photo('USER*') == (b'\xff\xd8\xffphoto', 'image/jpeg')
+    assert len(calls) == 2 and calls[-1] == 'unbind'
+    assert '(sAMAccountName=user\\2a)' in calls[0][0][1]
+    assert calls[0][1]['attributes'] == ['thumbnailPhoto']
+    Connection.entries = []
+    assert auth_service.directory_user_photo('missing') is None
+    assert auth_service.directory_user_photo('missing') is None
+    assert len(calls) == 4
+    Connection.entries = [SimpleNamespace(thumbnailPhoto=SimpleNamespace(value=b'<svg>unsafe</svg>'))]
+    assert auth_service.directory_user_photo('unsafe') is None
+    assert auth_service.directory_user_photo('svc.screen') is None
+    auth_service._photo_cache.clear()

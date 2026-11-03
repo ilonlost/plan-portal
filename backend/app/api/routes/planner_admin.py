@@ -2,13 +2,13 @@
 from typing import Literal
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.routes import admin
-from app.core.security import UserContext, require_planner, user_sections
+from app.core.security import UserContext, require_admin, require_planner, user_sections
 from app.db.session import get_db
 from app.models.entities import AuditEvent, ImportedOrder, ProductionLine, ProductionPlan, ProductionScheduleItem, User
 from app.services.plan_service import PlanService, schedule_item_dict
@@ -64,7 +64,7 @@ class ServicePasswordUpdate(BaseModel):
 
 
 @router.post("/service-accounts")
-def create_service(payload: ServiceAccountCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)):
+def create_service(payload: ServiceAccountCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_admin)):
     from app.services.service_account_service import create_service_account
     row = create_service_account(db, payload.username, payload.display_name, payload.password.get_secret_value())
     db.add(AuditEvent(username=user.username, action="service_account_created", entity_type="user", entity_id=str(row.id), details={"target": row.username, "role": "viewer"}))
@@ -73,7 +73,7 @@ def create_service(payload: ServiceAccountCreate, db: Session = Depends(get_db),
 
 
 @router.put("/service-accounts/{user_id}/password")
-def reset_service_password(user_id: int, payload: ServicePasswordUpdate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)):
+def reset_service_password(user_id: int, payload: ServicePasswordUpdate, db: Session = Depends(get_db), user: UserContext = Depends(require_admin)):
     from app.services.service_account_service import password_hash
     row = db.scalar(select(User).where(User.id == user_id).with_for_update())
     if not row or row.auth_provider != "service":
@@ -154,6 +154,16 @@ def line_tasks(start: date, end: date, line_id: int | None = None, db: Session =
 @router.get("/directory-users")
 def directory_users(query: str = Query(min_length=2, max_length=120), user: UserContext = Depends(require_planner)) -> dict:
     return admin.directory_users(query=query, user=user)
+
+
+@router.get("/directory-photo/{username}")
+def directory_photo(username: str, user: UserContext = Depends(require_planner)) -> Response:
+    from app.core.auth_service import directory_user_photo
+    photo = directory_user_photo(username)
+    if not photo:
+        return Response(status_code=204, headers={"Cache-Control": "private, max-age=300"})
+    content, media_type = photo
+    return Response(content, media_type=media_type, headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"})
 
 
 @router.post("/users")

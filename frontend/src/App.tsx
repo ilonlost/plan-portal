@@ -273,7 +273,7 @@ export default function App() {
         {page === "az" && <AdvanceConfirmationView user={user} lines={lines} onApplied={async text => { setNotice(text); await refreshPlan(); }} onError={setError} />}
         {page === "feedback" && <FeedbackView user={user} onNotice={setNotice} onError={setError} />}
         {page === "fact" && sectionVisible(user, "fact") && <ProductionFactView onError={setError} />}
-        {page === "planner-admin" && canPlan(user) && <PlannerAdmin username={user.username} onChanged={async () => { await refreshPlan(); setCatalog(null); }} />}
+        {page === "planner-admin" && canPlan(user) && <PlannerAdmin username={user.username} isAdmin={user.role === "admin"} onChanged={async () => { await refreshPlan(); setCatalog(null); }} />}
         {page === "admin" && user.role === "admin" && <AdminView onDeleted={async text => { setNotice(text); setMatrix(null); setPage("import"); await loadBase(user); }} onError={setError} />}
       </>}</div>
     </main>

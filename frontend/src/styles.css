@@ -585,6 +585,18 @@ html:has(.modal-backdrop, .drawer-backdrop), body:has(.modal-backdrop, .drawer-b
 .planner-downtime-table { width:100%; }
 .planner-downtime-table input { width:100%; min-width:80px; max-width:140px; }
 .planner-administration .access-create .directory-picker { position:relative; min-width:0; }
+.planner-administration .access-manager { min-width:0; overflow:visible; }
+.planner-administration .access-manager > header { flex-wrap:wrap; }
+.planner-administration .access-manager > header > div { flex:1 1 300px; min-width:0; }
+.planner-administration .access-create:not(.service-account-form) { grid-template-columns:minmax(0,2fr) minmax(120px,1fr) auto; }
+.planner-administration .directory-results button { grid-template-columns:36px minmax(0,1fr); align-items:center; }
+.planner-administration .directory-results b,.planner-administration .directory-results small { white-space:normal; overflow-wrap:anywhere; overflow:visible; text-overflow:clip; }
+.directory-avatar { display:inline-grid; position:relative; place-items:center; width:34px; height:34px; flex-shrink:0; overflow:hidden; border-radius:50%; background:var(--red); color:#fff; font-size:11px; font-weight:700; }
+.directory-avatar img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+.planner-administration .access-users button { display:grid; grid-template-columns:34px minmax(0,1fr); align-items:center; gap:10px; width:100%; }
+.access-user-text { min-width:0; overflow-wrap:anywhere; }
+.planner-administration .access-users { min-width:0; }
+@media(max-width:1100px) { .planner-administration .access-create:not(.service-account-form) { grid-template-columns:minmax(0,1fr) auto; } .planner-administration .directory-picker { grid-column:1 / -1; } }
 @media(max-width:800px) { .planner-administration .section-shell { grid-template-columns:1fr; } .planner-administration .section-nav { position:static; } .planner-source-list article { align-items:flex-start; flex-direction:column; } }
 .metric .metric-values { display:flex; align-items:baseline; flex-wrap:wrap; column-gap:14px; row-gap:3px; }
 .metric-values em { font-style:normal; white-space:nowrap; }

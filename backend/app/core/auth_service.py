@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ssl
+import time
+from threading import Lock
 
 from ldap3 import ALL, SUBTREE, Connection, Server, Tls
 from ldap3.core.exceptions import LDAPBindError, LDAPException
@@ -159,6 +161,49 @@ def search_ldap_users(query: str) -> list[DirectoryUser]:
         raise ValueError("Не удалось выполнить поиск в Active Directory") from exc
     finally:
         connection.unbind()
+
+
+_photo_cache: dict[str, tuple[float, tuple[bytes, str] | None]] = {}
+_photo_lock = Lock()
+
+
+def directory_user_photo(username: str) -> tuple[bytes, str] | None:
+    """Fetch one AD thumbnail on demand, with bounded positive/negative caching."""
+    clean = username.strip().casefold()
+    if not clean or len(clean) > 120 or clean.startswith("svc."):
+        return None
+    if not (settings.auth_mode.lower() == "ldap" and settings.ldap_base_dn and settings.ldap_bind_dn and settings.ldap_bind_password):
+        return None
+    with _photo_lock:
+        cached = _photo_cache.get(clean)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+    photo = None
+    connection = None
+    try:
+        connection = _connect(settings.ldap_bind_dn, settings.ldap_bind_password)
+        escaped = escape_filter_chars(clean)
+        connection.search(settings.ldap_base_dn,
+            f"(&(objectCategory=person)(objectClass=user)(|(sAMAccountName={escaped})(userPrincipalName={escaped})))",
+            search_scope=SUBTREE, attributes=["thumbnailPhoto"], size_limit=1)
+        if connection.entries:
+            attribute = getattr(connection.entries[0], "thumbnailPhoto", None)
+            content = getattr(attribute, "value", attribute)
+            if isinstance(content, bytes) and len(content) <= 512 * 1024:
+                if content.startswith(b"\xff\xd8\xff"):
+                    photo = (content, "image/jpeg")
+                elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+                    photo = (content, "image/png")
+    except (LDAPException, OSError, ValueError):
+        pass  # Missing/unavailable photo must not prevent assigning access.
+    finally:
+        if connection is not None:
+            connection.unbind()
+    with _photo_lock:
+        if len(_photo_cache) >= 256:
+            _photo_cache.pop(next(iter(_photo_cache)))
+        _photo_cache[clean] = (time.monotonic() + (3600 if photo else 300), photo)
+    return photo
 
 
 def _role(username: str, groups: list[str]) -> str:

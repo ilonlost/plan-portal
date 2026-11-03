@@ -38,6 +38,7 @@ async function optional<T>(path: string, options: RequestInit = {}): Promise<T |
 }
 
 export const api = {
+  directoryPhotoUrl: (username: string) => `${API}/planner-admin/directory-photo/${encodeURIComponent(username)}`,
   tailBuffers: (start: string, end: string, center: string, search: string, offset: number) => request<import("./types").TailBufferData>(`/production-fact/tail-buffers?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&center=${encodeURIComponent(center)}&search=${encodeURIComponent(search)}&offset=${offset}`),
   sessionMode: () => request<SessionMode>("/session/mode"),
   login: (username: string, password: string) => request<{ user: UserProfile; auth_mode: string }>("/session/login", {
