@@ -86,6 +86,7 @@ export const api = {
     method: "POST", headers: { "Content-Type": "application/json", "If-Match": String(version) }, body: JSON.stringify(data),
   }),
   createManualTask: (planId: number, data: object, version: number) => request<PlanData>(`/plans/${planId}/items`, { method: "POST", headers: { "Content-Type": "application/json", "If-Match": String(version) }, body: JSON.stringify(data) }),
+  previewPF: (planId: number, data: object) => request<import("./PFExpansion").PFPreview>(`/plans/${planId}/pf-preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   manualProducts: (lineId: number) => request<{ product_id: number; sku: string; name: string; speed_kg_hour: number }[]>(`/catalog/manual-products?line_id=${lineId}`),
   previewImport: async (file: File, lineId?: number, start?: string, end?: string) => {
     const data = new FormData(); data.append("file", file);

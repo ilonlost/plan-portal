@@ -653,3 +653,9 @@ html:has(.modal-backdrop, .drawer-backdrop), body:has(.modal-backdrop, .drawer-b
 .task-shift-segments { display:flex; flex-wrap:wrap; gap:4px 8px; font-size:10px; }
 .task-shift-segments > span { display:inline-flex; align-items:center; gap:4px; }
 .task-time-caption { color:var(--muted); white-space:normal; }
+.pf-expansion { border-top:1px solid var(--line); padding-top:12px; margin-top:8px; min-width:0; font-size:10px; line-height:1.5; }
+.pf-expansion h3 { margin:0 0 8px; font-size:12px; }
+.pf-expansion > p, .pf-expansion > small { color:var(--muted); }
+.pf-expansion fieldset { min-width:0; margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:6px; }
+.pf-expansion legend { font-weight:700; padding:0 5px; }
+.pf-expansion fieldset > p { overflow-wrap:anywhere; }

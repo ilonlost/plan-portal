@@ -11,6 +11,7 @@ export interface UserProfile {
 export interface SessionMode { auth_mode: string; }
 
 export interface ScheduleItem {
+  parent_task_id?: number | null;
   production_window_start?: string | null; production_window_end?: string | null;
   task_start_at?: string | null; task_end_at?: string | null;
   calendar_production_start?: string | null; calendar_production_end?: string | null;

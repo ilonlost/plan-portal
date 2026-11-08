@@ -46,6 +46,13 @@ class PlanEmailRequest(BaseModel):
     line_ids: list[int] = Field(default_factory=list)
 
 
+class PFTaskOptions(BaseModel):
+    sku: str
+    line_id: int | None = Field(default=None, gt=0)
+    production_date: date | None = None
+    speed_kg_hour: Decimal | None = Field(default=None, gt=0, le=1000000)
+
+
 class ManualTaskCreate(BaseModel):
     product_id: int
     line_id: int
@@ -54,6 +61,8 @@ class ManualTaskCreate(BaseModel):
     shift: str = "day"
     quantity: Decimal = Field(gt=0)
     source_kind: Literal["ohl", "zam", "generic", "pf"] = "generic"
+    expand_pf: bool = False
+    pf_tasks: list[PFTaskOptions] = Field(default_factory=list, max_length=100)
 
 
 class BulkDeleteRequest(BaseModel):
@@ -181,6 +190,18 @@ def update_item(plan_id: int, item_id: int, payload: ScheduleItemUpdate, db: Ses
     db.commit()
     send_notification(db, "schedule_item_updated", f"PLAN Portal: задание изменено · {item.product.name if item.product else item.schedule_kind}", f"Пользователь {user.display_name} изменил задание {item.id} в плане «{plan.name}».\nЛиния: {item.line.name if item.line else '—'}; дата: {item.production_date or 'не назначена'}.")
     return plan_dict(db, plan)
+
+
+@router.post("/{plan_id}/pf-preview")
+def preview_pf_tasks(plan_id: int, payload: ManualTaskCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
+    from app.services.pf_service import preview_expansion
+
+    if not db.get(ProductionPlan, plan_id):
+        raise HTTPException(404, "План не найден")
+    try:
+        return preview_expansion(db, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.post("/{plan_id}/items", dependencies=[Depends(writable_plan)])

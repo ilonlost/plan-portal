@@ -113,6 +113,10 @@ def _duration(value: object) -> str:
     return f"{remainder} мин"
 
 
+def _product_caption(item: dict) -> str:
+    return ("ПФ · " if item.get("source_kind") == "pf" else "") + str(item.get("product_name") or "—")
+
+
 def build_plan_email_html(
     configuration: dict,
     plan_name: str,
@@ -132,7 +136,7 @@ def build_plan_email_html(
                 continue
             production_day = item.get("production_date")
             shipping_day = _shipping_date(item) or production_day
-            key = (_date(production_day), _dispatch_caption(item) if _shipping_date(item) else _date(shipping_day), str(item.get("sku") or ""), str(item.get("product_name") or ""))
+            key = (_date(production_day), _dispatch_caption(item) if _shipping_date(item) else _date(shipping_day), str(item.get("sku") or ""), _product_caption(item))
             quantity, boxes, units, mercury = grouped.get(key, (0.0, 0.0, 0.0, "—"))
             grouped[key] = (quantity + float(item.get("quantity_kg") or 0), boxes + float(item.get("box_count") or 0), units + float(item.get("quantity_units") or 0), item.get("mercury") or mercury)
         if audience == "warehouse":
@@ -154,7 +158,7 @@ def build_plan_email_html(
                 '<tr>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">№{int(row.get("sequence") or 0)}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">{escape(str(row.get("sku") or "—"))}</td>'
-                f'<td style="padding:8px;border-bottom:1px solid #eceef1">{escape(str(row.get("product_name") or "—"))}{_cycle_caption(row)}</td>'
+                f'<td style="padding:8px;border-bottom:1px solid #eceef1">{escape(_product_caption(row))}{_cycle_caption(row)}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape(_dispatch_caption(row))}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape("День" if row.get("shift") == "day" else "Ночь")}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("quantity_units") or 0):,.0f} шт.</td>'
