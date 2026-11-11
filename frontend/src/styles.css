@@ -659,6 +659,19 @@ html:has(.modal-backdrop, .drawer-backdrop), body:has(.modal-backdrop, .drawer-b
 .pf-expansion fieldset { min-width:0; margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:6px; }
 .pf-expansion legend { font-weight:700; padding:0 5px; }
 .pf-expansion fieldset > p { overflow-wrap:anywhere; }
+.pf-mappings { min-width:0; }
+.pf-mapping-table { max-height:440px; overflow:auto; margin:12px 0; }
+.pf-mapping-table table { width:100%; }
+.pf-mapping-table th { position:sticky; top:0; background:var(--surface-alt); z-index:1; }
+.pf-mapping-table td { vertical-align:top; white-space:normal; min-width:85px; }
+.pf-mapping-table td:first-child { min-width:170px; }
+.pf-mapping-table td > div { margin-bottom:8px; }
+.pf-mapping-table small { display:block; max-width:260px; overflow-wrap:anywhere; }
+.pf-mapping-selected td { background:var(--surface-alt); }
+.pf-mapping-editor > fieldset { border:0; padding:0; min-width:0; }
+.pf-mapping-item { margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:6px; min-width:0; }
+.pf-mapping-item legend { font-weight:700; font-size:11px; }
+.pf-mapping-editor small { color:var(--muted); font-weight:400; }
 .inspection { min-width:0; }
 .inspection-filters { display:flex; flex-wrap:wrap; align-items:end; gap:12px; padding:16px; border-bottom:1px solid var(--line); }
 .inspection-filters label { display:grid; gap:6px; flex:1 1 145px; min-width:0; font-size:12px; }

@@ -41,6 +41,8 @@ def rules_for(sku: str) -> list[dict]:
 
 
 def _target_line(rule: dict, lines: list[ProductionLine]) -> ProductionLine | None:
+    if "line_id" in rule:
+        return next((line for line in lines if line.id == rule["line_id"]), None)
     if rule["kind"] == "pf":
         target = {"5700": ("PC", "Слойка"), "5710": ("PC", "Булка"),
                   "5720": ("PC", "Хлеба"), "5730": ("PC", "Ручная зона ПЦ")}.get(rule["pf_cost_center"])
@@ -53,6 +55,7 @@ def _target_line(rule: dict, lines: list[ProductionLine]) -> ProductionLine | No
 
 def preview_expansion(db: Session, values: dict) -> dict:
     from app.services.plan_service import PlanService
+    from app.services.pf_mapping_service import effective_mapping, mapping_revision
 
     product = db.get(Product, values["product_id"])
     line = db.get(ProductionLine, values["line_id"])
@@ -65,13 +68,16 @@ def preview_expansion(db: Session, values: dict) -> dict:
     production_date = values["production_date"]
     if values.get("source_kind") == "ohl" and uses_sandwich_window(line):
         production_date = ohl_production_date(values.get("marking_date") or production_date, line, product)
-    rules = rules_for(product.sku) if values.get("source_kind") != "pf" else []
+    mapping = effective_mapping(db, product.sku, line.id)
+    revision = mapping_revision(mapping)
+    if values.get("pf_mapping_revision") and values["pf_mapping_revision"] != revision:
+        raise ValueError("Связи ГП → ПФ изменены. Выключите и снова включите раскрутку для обновления предпросмотра")
+    rules = [row for row in mapping["items"] if row.get("enabled", True)] if values.get("source_kind") != "pf" else []
     overrides_list = values.get("pf_tasks") or []
     overrides = {row["sku"]: row for row in overrides_list}
     if len(overrides) != len(overrides_list) or set(overrides) - {rule["sku"] for rule in rules}:
         raise ValueError("Состав ПФ изменён. Обновите предпросмотр")
     lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
-    speeds = [row for row in source_data()["speeds"] if row["gp_sku"] == product.sku]
     rows = []
     for rule in rules:
         override = overrides.get(rule["sku"], {})
@@ -84,10 +90,11 @@ def preview_expansion(db: Session, values: dict) -> dict:
             candidates = [row for row in lines if any(c.line_id == row.id for c in capabilities)]
             target = candidates[0] if len(candidates) == 1 else None
         child_cap = next((c for c in capabilities if target and c.line_id == target.id), None)
-        example = next((row for row in speeds if row["pf_sku"] == rule["sku"]), None)
         speed = override.get("speed_kg_hour")
         if speed is None:
-            speed = example["pf_speed"] if example else child_cap.units_per_hour if child_cap else None
+            speed = rule.get("speed_kg_hour")
+        if speed is None:
+            speed = child_cap.units_per_hour if child_cap else None
         speed = Decimal(str(speed)) if speed is not None else None
         child_date = override.get("production_date") or production_date - timedelta(days=rule["lead_days"])
         if isinstance(child_date, str):
@@ -105,11 +112,12 @@ def preview_expansion(db: Session, values: dict) -> dict:
                      "line_id": target.id if target else None, "line_name": target.name if target else None,
                      "quantity_kg": quantity, "production_date": child_date, "speed_kg_hour": speed,
                      "required_hours": PlanService._production_duration(quantity, speed) if speed and speed.is_finite() and speed > 0 else None,
-                     "note": rule["note"], "date_defaulted": rule["date_defaulted"], "errors": errors})
-    gp_speed = Decimal(str(speeds[0]["gp_speed"])) if rules and speeds else Decimal(cap.units_per_hour)
+                     "note": rule["note"], "date_defaulted": rule.get("date_defaulted", False), "errors": errors})
+    has_gp_speed = bool(rules and mapping.get("gp_speed_kg_hour"))
+    gp_speed = Decimal(str(mapping["gp_speed_kg_hour"])) if has_gp_speed else Decimal(cap.units_per_hour)
     return {"items": rows, "quantity_kg": quantity, "production_date": production_date,
             "gp_speed_kg_hour": gp_speed, "gp_required_hours": PlanService._production_duration(quantity, gp_speed),
-            "gp_speed_override": bool(rules and speeds)}
+            "gp_speed_override": has_gp_speed, "mapping_revision": revision}
 
 
 def append_expansion(db: Session, plan, parent: ProductionScheduleItem, preview: dict) -> None:

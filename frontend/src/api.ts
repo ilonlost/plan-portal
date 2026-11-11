@@ -103,6 +103,8 @@ export const api = {
   }),
   adminOverview: () => request<AdminOverview>("/admin/overview"),
   plannerAdministration: () => request<import("./types").PlannerAdministration>("/planner-admin"),
+  pfMappings: () => request<import("./PFMappings").PFMappingCatalog>("/planner-admin/pf-mappings"),
+  savePFMapping: (data: import("./PFMappings").PFMapping) => request<import("./PFMappings").PFMapping>("/planner-admin/pf-mappings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   plannerSavePlacement: (data: { complete_ohl: boolean; complete_zam: boolean; plan_version?: number }) => request<{ ok: boolean; plan_recalculated: boolean }>("/planner-admin/placement", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   plannerLineTasks: (lineId: number | undefined, start: string, end: string, includeManual = false) => request<{ plan_id: number; version: number; count: number; items: import("./types").ScheduleItem[] }>(`/planner-admin/line-tasks?${lineId ? `line_id=${lineId}&` : ""}start=${start}&end=${end}&include_manual=${includeManual}`),
   plannerDirectoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/planner-admin/directory-users?query=${encodeURIComponent(query)}`),

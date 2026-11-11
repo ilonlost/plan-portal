@@ -9,10 +9,11 @@ interface PFRow extends PFTaskOptions {
   name: string; quantity_kg: number; date_defaulted: boolean; note: string | null; errors: string[];
 }
 export interface PFPreview {
+  mapping_revision?: string;
   items: PFRow[]; production_date: string; quantity_kg: number;
   gp_speed_kg_hour: number; gp_required_hours: number; gp_speed_override: boolean;
 }
-export interface PFSelection { key: string; ready: boolean; items: PFTaskOptions[]; }
+export interface PFSelection { key: string; ready: boolean; items: PFTaskOptions[]; mapping_revision?: string; }
 
 export function PFExpansion({ planId, requestKey, lines, onChange }: {
   planId: number; requestKey: string; lines: LineData[]; onChange: (selection: PFSelection) => void;
@@ -36,14 +37,14 @@ export function PFExpansion({ planId, requestKey, lines, onChange }: {
   }, [planId, requestKey, onChange]);
   useEffect(() => {
     const ready = loadedKey === requestKey && !loading && !!preview && !error && rows.every(row => !!row.line_id && Number(row.speed_kg_hour) > 0 && !!row.production_date && row.production_date <= preview.production_date && !row.errors.some(value => value.includes("заблокирован")));
-    onChange({ key: requestKey, ready, items: rows.map(({ sku, line_id, production_date, speed_kg_hour }) => ({ sku, line_id, production_date, speed_kg_hour })) });
+    onChange({ key: requestKey, ready, mapping_revision: preview?.mapping_revision, items: rows.map(({ sku, line_id, production_date, speed_kg_hour }) => ({ sku, line_id, production_date, speed_kg_hour })) });
   }, [rows, loading, loadedKey, preview, error, requestKey, onChange]);
   const update = (sku: string, values: Partial<PFRow>) => setRows(current => current.map(row => row.sku === sku ? { ...row, ...values } : row));
   return <section className="pf-expansion full" aria-label="Задания ПФ">
     <h3>Связанные задания ПФ</h3>
     <p>Каждый ПФ — 1:1 к итоговому объёму ГП. ПФ занимает общую мощность выбранной линии. Срок «1–2 дня» — за 2 дня.</p>
     {loading ? <p role="status">Расчёт ПФ…</p> : error ? <p className="inline-error" role="alert">{error}</p> : <>
-      {preview?.gp_speed_override && <p>Упаковка ГП: {Number(preview.gp_speed_kg_hour).toLocaleString("ru-RU")} кг/ч · {Number(preview.gp_required_hours).toLocaleString("ru-RU")} ч (по таблице).</p>}
+      {preview?.gp_speed_override && <p>Этап ГП: {Number(preview.gp_speed_kg_hour).toLocaleString("ru-RU")} кг/ч · {Number(preview.gp_required_hours).toLocaleString("ru-RU")} ч (по настройкам связей).</p>}
       {!rows.length && <p>Для этого артикула связей ПФ в списке нет. Будет создано только ГП.</p>}
       {rows.map(row => <fieldset key={row.sku}>
         <legend>ПФ · {row.sku}</legend><p>{row.name}</p>
