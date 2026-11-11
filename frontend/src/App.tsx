@@ -5,6 +5,7 @@ import { matchesCatalogText, normalizeCatalogSearch } from "./catalogSearch";
 import { TailBuffers } from "./TailBuffers";
 import { ProductionImport } from "./ProductionImport";
 import { PlannerAdmin } from "./PlannerAdmin";
+import { AuditLog, DatabaseExplorer } from "./AdminInspection";
 import { LineConversation } from "./LineConversation";
 import { PFExpansion, type PFSelection } from "./PFExpansion";
 import { TechnicalEventEditor } from "./TechnicalEventEditor";
@@ -663,19 +664,20 @@ function ProductionFactView({ onError }: { onError: (text: string) => void }) {
   return <TailBuffers onError={onError} />;
 }
 
-function AdminView({ onDeleted, onError }: { onDeleted: (t: string) => Promise<void>; onError: (t: string) => void }) {
-  const [data, setData] = useState<AdminOverview | null>(null); const [confirmation, setConfirmation] = useState(""); const [busy, setBusy] = useState(false); const [tab, setTab] = useState<"overview" | "access" | "sections" | "mail" | "audit">("overview");
+export function AdminView({ onDeleted, onError }: { onDeleted: (t: string) => Promise<void>; onError: (t: string) => void }) {
+  const [data, setData] = useState<AdminOverview | null>(null); const [confirmation, setConfirmation] = useState(""); const [busy, setBusy] = useState(false); const [tab, setTab] = useState<"overview" | "access" | "sections" | "mail" | "audit" | "database">("overview");
   useEffect(() => { api.adminOverview().then(setData).catch(e => onError(message(e))); }, []);
   if (!data) return <Loading />;
   const reload = async () => setData(await api.adminOverview());
   const remove = async () => { setBusy(true); try { const result = await api.deletePlanData(confirmation); await onDeleted(`Удалено планов: ${result.plans_deleted}, заданий: ${result.schedule_items_deleted}. Справочник сохранён.`); } catch (e) { onError(message(e)); } finally { setBusy(false); } };
-  const sections = [["overview", "Обзор"], ["access", "Пользователи и права"], ["sections", "Простои"], ["mail", "Письма"], ["audit", "Аудит"]] as const;
-  return <div className="stack"><section className="metric-grid"><Metric label="Планы" value={number(data.counts.plans)} note={data.active_plan?.name || "нет активного"} tone="red" /><Metric label="Задания" value={number(data.counts.schedule_items)} note="производственные позиции" tone="blue" /><Metric label="LDAP" value={data.ldap.configured ? "Настроен" : "Локальный"} note={data.ldap.status} tone="green" /><Metric label="Почта" value={data.email.enabled ? "Включена" : "Выключена"} note={data.email.host} tone="amber" /></section><div className="section-shell"><aside className="section-nav card"><small>АДМИНИСТРИРОВАНИЕ</small>{sections.map(([value, label]) => <button key={value} className={tab === value ? "active" : ""} onClick={() => setTab(value)}><span>{label}</span></button>)}</aside><div className="section-content">
+  const sections = [["overview", "Обзор"], ["access", "Пользователи и права"], ["sections", "Простои"], ["mail", "Письма"], ["audit", "Журнал изменений"], ["database", "База данных"]] as const;
+  return <div className="stack admin-view"><section className="metric-grid"><Metric label="Планы" value={number(data.counts.plans)} note={data.active_plan?.name || "нет активного"} tone="red" /><Metric label="Задания" value={number(data.counts.schedule_items)} note="производственные позиции" tone="blue" /><Metric label="LDAP" value={data.ldap.configured ? "Настроен" : "Локальный"} note={data.ldap.status} tone="green" /><Metric label="Почта" value={data.email.enabled ? "Включена" : "Выключена"} note={data.email.host} tone="amber" /></section><div className="section-shell"><aside className="section-nav card"><small>АДМИНИСТРИРОВАНИЕ</small>{sections.map(([value, label]) => <button key={value} className={tab === value ? "active" : ""} onClick={() => setTab(value)}><span>{label}</span></button>)}</aside><div className="section-content">
     {tab === "overview" && <section className="admin-grid"><article className="card admin-panel"><header><small>УПРАВЛЕНИЕ ДАННЫМИ</small><h2>Очистить весь производственный план</h2><p>Удалятся планы, задания и файлы спроса ОХЛ/ЗАМ. Справочник SKU, мощности, замесы и рецептуры сохранится.</p></header><label>Введите «УДАЛИТЬ ПЛАН»<input value={confirmation} onChange={e => setConfirmation(e.target.value)} /></label><button className="button danger" disabled={busy || confirmation !== "УДАЛИТЬ ПЛАН"} onClick={() => void remove()}>Удалить весь план</button></article><article className="card admin-panel"><header><small>ИНТЕГРАЦИИ</small><h2>Готовность контуров</h2></header><div className="settings-list"><span><b>LDAP / AD</b><em>{data.ldap.status}</em></span><span><b>Почтовые уведомления</b><em>{data.email.enabled ? "включены" : "отключены"}</em></span><span><b>CSB</b><em>{data.csb.test_mode ? "тестовый режим" : "настроен"}</em></span></div></article></section>}
     {tab === "access" && <AccessManager data={data} onSaved={reload} onError={onError} />}
     {tab === "sections" && <PortalSettings data={data} onSaved={reload} onError={onError} />}
     {tab === "mail" && <div className="stack"><MailSettings data={data} onSaved={reload} onError={onError} /><section className="card audit-card"><header><h2>Журнал отправки</h2><p>Последние попытки доставки и причина сбоя.</p></header><div className="table-scroll"><table><thead><tr><th>Дата</th><th>Событие</th><th>Получатели</th><th>Тема</th><th>Результат</th></tr></thead><tbody>{data.recent_notifications.map(row => <tr key={row.id}><td>{new Date(row.created_at).toLocaleString("ru-RU")}</td><td>{row.event_type}</td><td>{row.recipients.join(", ") || "—"}</td><td>{row.subject}</td><td><span className={`mail-status ${row.status}`}>{row.status}</span>{row.error && <small>{row.error}</small>}</td></tr>)}</tbody></table></div></section></div>}
-    {tab === "audit" && <section className="card audit-card"><header><h2>Журнал аудита</h2><p>Изменения прав, плана, статусов и настроек.</p></header><div className="table-scroll"><table><thead><tr><th>Дата</th><th>Пользователь</th><th>Действие</th><th>Объект</th></tr></thead><tbody>{data.recent_audit.map(row => <tr key={row.id}><td>{new Date(row.created_at).toLocaleString("ru-RU")}</td><td><b>{row.username}</b></td><td>{auditLabel(row.action)}</td><td>{row.entity_type} {row.entity_id || ""}</td></tr>)}</tbody></table></div></section>}
+    {tab === "audit" && <AuditLog />}
+    {tab === "database" && <DatabaseExplorer />}
   </div></div></div>;
 }
 

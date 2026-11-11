@@ -197,6 +197,7 @@ class ImportRow(BaseModel):
 
 
 class ImportPreview(BaseModel):
+    catalog_issues: list[dict] = Field(default_factory=list)
     affected_tasks: list[dict] = Field(default_factory=list)
     plan_version: int | None = None
     reference_rows: list[ImportRow] = Field(default_factory=list)

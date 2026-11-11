@@ -20,9 +20,12 @@ from app.models.entities import (
 from app.services.notification_service import build_plan_email_html, resolve_plan_recipients, send_notification, smtp_diagnostics
 from app.services.plan_service import schedule_item_dict
 from app.services.settings_service import get_mail_configuration, get_portal_configuration, save_mail_configuration, save_portal_configuration
+from app.api.routes.admin_inspection import router as inspection_router
+from app.services.admin_inspection_service import redact_details
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+router.include_router(inspection_router)
 
 
 @router.get("/mail-diagnostics")
@@ -60,7 +63,7 @@ def _audit_dict(row: AuditEvent) -> dict:
     return {
         "id": row.id, "username": row.username, "action": row.action,
         "entity_type": row.entity_type, "entity_id": row.entity_id,
-        "details": row.details, "created_at": row.created_at,
+        "details": redact_details(row.details), "created_at": row.created_at,
     }
 
 

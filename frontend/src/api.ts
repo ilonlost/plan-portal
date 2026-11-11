@@ -38,6 +38,10 @@ async function optional<T>(path: string, options: RequestInit = {}): Promise<T |
 }
 
 export const api = {
+  auditLog: (params: string, signal?: AbortSignal) => request<import("./AdminInspection").InspectionPage<import("./types").AuditRow>>(`/admin/audit-log?${params}`, { signal }),
+  auditFilters: (signal?: AbortSignal) => request<{ actions: string[]; users: string[]; entities: string[] }>("/admin/audit-log/filters", { signal }),
+  databaseTables: (signal?: AbortSignal) => request<{ read_only: boolean; tables: import("./AdminInspection").DatabaseTable[] }>("/admin/database", { signal }),
+  databaseRows: (table: string, params: string, signal?: AbortSignal) => request<import("./AdminInspection").InspectionPage<Record<string, unknown>>>(`/admin/database/${encodeURIComponent(table)}?${params}`, { signal }),
   directoryPhotoUrl: (username: string) => `${API}/planner-admin/directory-photo/${encodeURIComponent(username)}`,
   tailBuffers: (start: string, end: string, center: string, search: string, offset: number) => request<import("./types").TailBufferData>(`/production-fact/tail-buffers?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&center=${encodeURIComponent(center)}&search=${encodeURIComponent(search)}&offset=${offset}`),
   sessionMode: () => request<SessionMode>("/session/mode"),

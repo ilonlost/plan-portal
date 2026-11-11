@@ -426,7 +426,7 @@ class PlanService:
             if demand.product_id in mapped_product_ids and demand.validation_errors:
                 demand.validation_errors = [
                     warning for warning in demand.validation_errors
-                    if warning != missing_capability_warning
+                    if warning != missing_capability_warning and not warning.startswith("Справочник: ")
                 ]
         capacities = list(self.db.scalars(select(LineCapacity).where(
             LineCapacity.capacity_date >= plan.horizon_start,
