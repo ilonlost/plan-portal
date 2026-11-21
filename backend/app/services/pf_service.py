@@ -55,7 +55,7 @@ def _target_line(rule: dict, lines: list[ProductionLine]) -> ProductionLine | No
     return next((line for line in lines if target == (line.workshop_code, line.name)), None)
 
 
-def preview_expansion(db: Session, values: dict) -> dict:
+def preview_expansion(db: Session, values: dict, *, scheduled: bool = False) -> dict:
     from app.services.plan_service import PlanService
     from app.services.pf_mapping_service import effective_mapping, mapping_revision
 
@@ -66,9 +66,11 @@ def preview_expansion(db: Session, values: dict) -> dict:
     cap = db.scalar(select(LineCapability).where(LineCapability.product_id == product.id, LineCapability.line_id == line.id))
     if not cap or cap.units_per_hour <= 0:
         raise ValueError("Для выбранного SKU не задана скорость на этой линии")
-    quantity = PlanService._round_quantity_for_product(Decimal(values["quantity"]), product, cap)
+    quantity = Decimal(values["quantity"])
+    if not scheduled:
+        quantity = PlanService._round_quantity_for_product(quantity, product, cap)
     production_date = values["production_date"]
-    if values.get("source_kind") == "ohl" and uses_sandwich_window(line):
+    if not scheduled and values.get("source_kind") == "ohl" and uses_sandwich_window(line):
         production_date = ohl_production_date(values.get("marking_date") or production_date, line, product)
     mapping = effective_mapping(db, product.sku, line.id)
     revision = mapping_revision(mapping)

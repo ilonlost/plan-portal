@@ -400,6 +400,7 @@ class PlanService:
             if period_start and (not item.production_date or not period_start <= item.production_date <= period_end):
                 continue
             demand = demand_by_id.get(item.demand_item_id)
+            previous_task_date, previous_quantity = item.production_date, item.quantity_kg
             if demand and demand.source_kind == "ohl":
                 previous_date = previous_requested_dates.get(demand.id)
                 if previous_date and previous_date != demand.requested_date and item.production_date:
@@ -417,6 +418,12 @@ class PlanService:
                 if is_bulka(capability.line):
                     item.marking_date = item.production_date
                 self._sync_manual_item_quantity(item, capability)
+            if (item.pf_details or {}).get("import_expansion") and (
+                previous_task_date != item.production_date or previous_quantity != item.quantity_kg
+            ):
+                from app.services.pf_service import sync_children, ensure_task_calendar
+                sync_children(plan, item, previous_task_date, previous_quantity != item.quantity_kg)
+                ensure_task_calendar(self.db, plan)
         mapped_product_ids = {capability.product_id for capability in capabilities}
         missing_capability_warning = "Артикул отсутствует в справочнике мощностей: он будет добавлен в список нераспределённых"
         for demand in demands:

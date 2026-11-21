@@ -134,10 +134,17 @@ export interface ImportRow {
   start_time: string | null; end_time: string | null;
 }
 export interface ImportPreview {
+  pf_matches?: Record<string, string>;
   catalog_issues?: { sku: string; product_name: string; line_hint: string | null; reason: string; row_numbers: number[] }[];
   affected_tasks?: ScheduleItem[]; plan_version?: number;
   file_name: string; mapping_code: string; template_type: string; detected_sheet: string | null; notes: string[];
   total_rows: number; valid_rows: number; invalid_rows: number; columns: string[]; rows: ImportRow[];
+}
+
+export interface ImportPFOffer {
+  plan_id: number; order_id: number; version: number;
+  candidates: { task_id: number; sku: string; name: string; line_name: string; production_date: string;
+    shift: string; quantity_kg: number; components: Record<string, string> }[];
 }
 
 export interface AdvanceConfirmationRow {

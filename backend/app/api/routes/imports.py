@@ -27,6 +27,7 @@ from app.services.plan_service import PlanService, plan_dict, schedule_item_dict
 from app.services.notification_service import send_notification
 from app.services.line_import_service import active_line, filter_line_preview, demands_for_line, replacement_tasks
 from app.services.task_date_service import ohl_production_date
+from app.services.import_pf_service import component_index, components_for, import_pf_offer, remove_import_tasks
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 
@@ -113,8 +114,18 @@ async def preview_import(file: UploadFile = File(...), user: UserContext = Depen
             if plan:
                 kind = {"ohl_daily": "ohl", "quarter_weekly": "zam"}.get(preview.template_type)
                 rows = replacement_tasks(plan, line_id, kind, start, end) if kind else [r for r in plan.schedule_items if r.line_id == line_id and r.source == "maintenance_import" and not r.excluded and (not start or r.production_date and start <= r.production_date <= end)]
+                expanded_ids = {row.id for row in rows if (row.pf_details or {}).get("import_expansion")}
+                if expanded_ids:
+                    rows.extend(row for row in plan.schedule_items if row.parent_task_id in expanded_ids and not row.excluded)
+                    preview.notes.append("В список замены включены ПФ для заменяемых заданий ГП, в том числе на других линиях.")
                 preview.affected_tasks = [schedule_item_dict(row) for row in rows]
                 preview.plan_version = plan.revision
+        if preview.template_type in {"ohl_daily", "quarter_weekly", "generic"}:
+            index = component_index(db)
+            eligible = {sku for (sku, _), components in index.items() if components}
+            preview.pf_matches = {row.sku: row.product_name or row.sku for row in preview.rows
+                                  if row.valid and row.sku in eligible and
+                                  (not isinstance(line_id, int) or components_for(index, row.sku, line_id))}
         return preview
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -260,6 +271,7 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
             raise HTTPException(422, "В файле нет заданий с количеством и корректными датами для выбранной линии")
         # Retain original quantities and source history, but supersede only this line/type.
         replaced_ids = {demand.id for demand in previous_demands if demand.source_kind == source_kind}
+        pf_lines = set()
         if payload.start_date:
             line = db.get(ProductionLine, payload.line_id)
             affected = replacement_tasks(scoped_plan, payload.line_id, source_kind, payload.start_date, payload.end_date)
@@ -281,26 +293,40 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
                     old.raw_data = {**(old.raw_data or {}), "replaced_periods": periods}
             for item in affected:
                 if item.demand_item_id not in fully_replaced:
+                    if (item.pf_details or {}).get("import_expansion"):
+                        from app.services.pf_service import sync_children
+                        if item.execution_status not in (None, "not_started"):
+                            raise HTTPException(409, "Задание ГП уже передано в работу")
+                        pf_lines.update(row.line_id for row in scoped_plan.schedule_items if row.parent_task_id == item.id)
+                        item.excluded = True
+                        try:
+                            sync_children(scoped_plan, item, item.production_date, False)
+                        except ValueError as exc:
+                            raise HTTPException(409, str(exc)) from exc
                     item.excluded = True; item.source = "manual"; item.locked = True
                     item.reason = f"period_replaced:{order.id}"
             replaced_ids = fully_replaced
         for demand in previous_demands:
             if demand.id in replaced_ids:
                 demand.raw_data = {**(demand.raw_data or {}), "replaced_by_line_id": payload.line_id}
-        for item in list(scoped_plan.schedule_items):
+        to_replace = []
+        for item in scoped_plan.schedule_items:
             in_window = not payload.start_date or (item.demand_item_id in replaced_ids and (not item.production_date or payload.start_date <= item.production_date <= payload.end_date))
             if item.schedule_kind == "production" and item.demand_item_id and item.source_kind == source_kind and in_window and (item.line_id == payload.line_id or item.demand_item_id in replaced_ids):
-                scoped_plan.schedule_items.remove(item)
-                db.delete(item)
-        db.flush()
+                to_replace.append(item)
+        pf_lines.update(remove_import_tasks(db, scoped_plan, to_replace))
         service = PlanService(db)
+        for pf_line in pf_lines:
+            service.refresh_sequence_and_cleanings(scoped_plan, line_id=pf_line)
+            service.recalculate_load(scoped_plan, line_id=pf_line)
         effective = demands_for_line(db, scoped_plan, service._latest_source_demands(), payload.line_id)
         service.calculate(scoped_plan, effective, f"line_import_{source_kind}", line_id=payload.line_id, source_kind=source_kind, preserve_other_lines=True, period_start=payload.start_date, period_end=payload.end_date)
         db.add(AuditEvent(username=user.username, action="plan_imported", entity_type="production_plan", entity_id=str(scoped_plan.id), details={"line_id": payload.line_id, "source_kind": source_kind, "file_name": preview.file_name, "rows": len(demands), "replaced_demands": len(replaced_ids)}))
         db.commit()
         line = db.get(ProductionLine, payload.line_id)
         send_notification(db, "plan_imported_line", f"PLAN Portal: обновлена линия {line.name}", f"Пользователь {user.display_name} загрузил {preview.file_name} только на линию «{line.name}». Строк: {len(demands)}.")
-        return {"order_id": order.id, "plan": plan_dict(db, scoped_plan), "imported_rows": len(demands), "line_id": payload.line_id}
+        return {"order_id": order.id, "plan": plan_dict(db, scoped_plan), "imported_rows": len(demands),
+                "line_id": payload.line_id, "pf_offer": import_pf_offer(db, scoped_plan, order.id)}
     if not payload.create_plan:
         db.add(AuditEvent(
             username=user.username, action="demand_imported", entity_type="imported_order",
@@ -320,6 +346,8 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
         db.add(plan)
         db.flush()
     else:
+        remove_import_tasks(db, plan, [row for row in plan.schedule_items if row.source_kind == source_kind
+                                      and (row.pf_details or {}).get("import_expansion")])
         plan.horizon_start = horizon_start
         plan.horizon_end = horizon_end
     PlanService(db).calculate(plan, all_demands, f"import_{source_kind}")
@@ -332,7 +360,7 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
         db, "plan_imported", f"PLAN Portal: обновлён план {plan.name}",
         f"Пользователь {user.display_name} загрузил файл {preview.file_name}.\nИсточник: {source_kind.upper()}.\nСтрок: {len(demands)}.",
     )
-    return {"order_id": order.id, "plan": plan_dict(db, plan)}
+    return {"order_id": order.id, "plan": plan_dict(db, plan), "pf_offer": import_pf_offer(db, plan, order.id)}
 
 
 def _upsert_product(db: Session, product_by_sku: dict[str, Product], row, overwrite: bool = True) -> Product:

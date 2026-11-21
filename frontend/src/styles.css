@@ -718,4 +718,18 @@ html:has(.modal-backdrop, .drawer-backdrop), body:has(.modal-backdrop, .drawer-b
 .eol-fact td small { display:block; margin-top:4px; }
 .eol-pagination { display:flex; align-items:center; justify-content:space-between; padding:18px; gap:14px; }
 .eol-empty,.eol-pending { padding:28px; }
+.import-pf-matches { margin:16px; padding:14px 18px; background:var(--surface-soft); border-left:3px solid var(--red); }
+.import-pf-matches h3,.import-pf-matches ul { margin:0; }
+.import-pf-matches ul { padding:10px 0 0 18px; }
+.import-pf-review > p,.import-pf-review > .inline-error { margin:14px 18px; }
+.import-pf-fields { border:0; padding:0; margin:0; min-width:0; }
+.import-pf-fields > .table-scroll { max-height:none; }
+.import-pf-fields > label { margin:16px 18px; }
+.import-pf-fields td { vertical-align:top; }
+.import-pf-fields td .check-label { align-items:flex-start; white-space:normal; margin:0; }
+.import-pf-fields input[type=checkbox] { flex:none; }
+.import-pf-fields .pf-expansion { margin:0; padding:12px 16px; border:0; background:var(--surface-soft); font-size:13px; }
+.import-pf-fields .pf-expansion .form-grid { grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); }
+.import-pf-fields .pf-expansion .form-grid .full { grid-column:auto; }
+.import-pf-review footer { flex-wrap:wrap; }
 @media (max-width:1150px) { .eol-summary-grid { grid-template-columns:1fr; } }

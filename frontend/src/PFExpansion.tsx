@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import type { LineData } from "./types";
 
 export interface PFTaskOptions {
   sku: string; line_id: number | null; production_date: string; speed_kg_hour: number | null;
@@ -16,8 +15,9 @@ export interface PFPreview {
 }
 export interface PFSelection { key: string; ready: boolean; items: PFTaskOptions[]; mapping_revision?: string; calculation_revision?: string; }
 
-export function PFExpansion({ planId, requestKey, lines, onChange }: {
-  planId: number; requestKey: string; lines: LineData[]; onChange: (selection: PFSelection) => void;
+export function PFExpansion({ planId, requestKey, lines, orderId, onChange }: {
+  planId: number; requestKey: string; orderId?: number;
+  lines: { id: number; name: string; workshop_name?: string; status?: string }[]; onChange: (selection: PFSelection) => void;
 }) {
   const [preview, setPreview] = useState<PFPreview | null>(null);
   const [rows, setRows] = useState<PFRow[]>([]);
@@ -30,15 +30,16 @@ export function PFExpansion({ planId, requestKey, lines, onChange }: {
     setLoading(true); setError("");
     onChange({ key: requestKey, ready: false, items: [] });
     const timer = window.setTimeout(() => {
-      api.previewPF(planId, JSON.parse(requestKey)).then(data => {
+      const result = orderId ? api.previewImportPF(planId, orderId, Number(requestKey)) : api.previewPF(planId, JSON.parse(requestKey));
+      result.then(data => {
         if (!current) return;
         setPreview(data); setRows(data.items); setLoadedKey(requestKey); setLoading(false);
       }).catch(reason => { if (current) { setError(reason instanceof Error ? reason.message : String(reason)); setLoading(false); setPreview(null); } });
     }, 250);
     return () => { current = false; window.clearTimeout(timer); };
-  }, [planId, requestKey, onChange, retry]);
+  }, [planId, requestKey, orderId, onChange, retry]);
   useEffect(() => {
-    const ready = loadedKey === requestKey && !loading && !!preview && !error && rows.every(row => !!row.line_id && Number(row.speed_kg_hour) > 0 && !!row.production_date && row.production_date <= preview.production_date && !row.errors.some(value => value.includes("заблокирован")));
+    const ready = loadedKey === requestKey && !loading && !!preview && !error && rows.every(row => !!row.line_id && Number(row.speed_kg_hour) > 0 && Number(row.speed_kg_hour) <= 1000000 && !!row.production_date && row.production_date <= preview.production_date && !row.errors.some(value => value.includes("заблокирован")));
     onChange({ key: requestKey, ready, mapping_revision: preview?.mapping_revision, calculation_revision: preview?.calculation_revision, items: rows.map(({ sku, line_id, production_date, speed_kg_hour }) => ({ sku, line_id, production_date, speed_kg_hour })) });
   }, [rows, loading, loadedKey, preview, error, requestKey, onChange]);
   const update = (sku: string, values: Partial<PFRow>) => setRows(current => current.map(row => row.sku === sku ? { ...row, ...values } : row));
@@ -53,7 +54,7 @@ export function PFExpansion({ planId, requestKey, lines, onChange }: {
       {rows.map(row => <fieldset key={row.sku}>
         <legend>ПФ · {row.sku}</legend><p>{row.name}</p>
         <div className="form-grid">
-          <label className="full">Линия ПФ<select value={row.line_id || ""} onChange={event => update(row.sku, { line_id: Number(event.target.value) || null, speed_kg_hour: null })}><option value="">Выберите линию</option>{lines.filter(line => line.status === "active").map(line => <option key={line.id} value={line.id}>{line.workshop_name} · {line.name}</option>)}</select></label>
+          <label className="full">Линия ПФ<select value={row.line_id || ""} onChange={event => update(row.sku, { line_id: Number(event.target.value) || null, speed_kg_hour: null })}><option value="">Выберите линию</option>{lines.filter(line => (!line.status || line.status === "active")).map(line => <option key={line.id} value={line.id}>{line.workshop_name} · {line.name}</option>)}</select></label>
           <label>Дата ПФ<input type="date" max={preview?.production_date} value={row.production_date} onChange={event => update(row.sku, { production_date: event.target.value })} /></label>
           <label>Скорость ПФ, кг/ч<input type="number" min="0.01" max="1000000" step="0.01" value={row.speed_kg_hour ?? ""} onChange={event => update(row.sku, { speed_kg_hour: event.target.value ? Number(event.target.value) : null })} /></label>
         </div>

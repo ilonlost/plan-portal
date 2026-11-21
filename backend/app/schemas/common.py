@@ -199,6 +199,7 @@ class ImportRow(BaseModel):
 
 
 class ImportPreview(BaseModel):
+    pf_matches: dict[str, str] = Field(default_factory=dict)
     catalog_issues: list[dict] = Field(default_factory=list)
     affected_tasks: list[dict] = Field(default_factory=list)
     plan_version: int | None = None

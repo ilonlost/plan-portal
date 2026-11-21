@@ -3,6 +3,8 @@ import type {
   LineScheduleData, MailConfiguration, MailRule, PlanData, ProductionFactData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 import type { SourceAttributesData } from "./catalogAttributes";
+import type { ImportPFOffer } from "./types";
+import type { PFPreview, PFTaskOptions } from "./PFExpansion";
 
 export type LineAttendance = { date: string; status: "ok" | "unavailable"; counts: Record<number, number | null> };
 export type CsbBatch = {run_id: number; jobs: {t63: number; sku: string; state: string; order_number: string | null; detail: string | null}[]};
@@ -106,7 +108,12 @@ export const api = {
     return request<ImportPreview>(`/imports/preview${lineId ? `?line_id=${lineId}${start ? `&start=${start}&end=${end}` : ""}` : ""}`, { method: "POST", body: data });
   },
   maintenanceTemplateUrl: () => `${API}/imports/maintenance-template.xlsx`,
-  confirmImport: (preview: ImportPreview, line_id?: number, plan_version?: number, start_date?: string, end_date?: string) => request<{ order_id: number; plan: PlanData | null; reference_updated?: number; maintenance_updated?: number }>("/imports/confirm", {
+  importPFOffer: (plan: number, order: number) => request<ImportPFOffer>(`/plans/${plan}/imports/${order}/pf`),
+  previewImportPF: (plan: number, order: number, task: number) => request<PFPreview>(`/plans/${plan}/imports/${order}/pf/${task}`),
+  expandImportPF: (offer: ImportPFOffer, selections: { task_id: number; pf_tasks: PFTaskOptions[]; pf_mapping_revision?: string; pf_calculation_revision?: string }[]) =>
+    request<{ created: number }>(`/plans/${offer.plan_id}/imports/${offer.order_id}/pf`, { method: "POST",
+      headers: { "Content-Type": "application/json", "If-Match": String(offer.version) }, body: JSON.stringify(selections) }),
+  confirmImport: (preview: ImportPreview, line_id?: number, plan_version?: number, start_date?: string, end_date?: string) => request<{ order_id: number; plan: PlanData | null; pf_offer?: ImportPFOffer; reference_updated?: number; maintenance_updated?: number }>("/imports/confirm", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ preview, create_plan: true, merge_into_active: true, line_id, plan_version, start_date, end_date }),
   }),

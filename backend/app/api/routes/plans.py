@@ -67,6 +67,74 @@ class ManualTaskCreate(BaseModel):
     pf_calculation_revision: str | None = Field(default=None, max_length=64)
 
 
+class ImportPFSelection(BaseModel):
+    task_id: int = Field(gt=0)
+    pf_tasks: list[PFTaskOptions] = Field(min_length=1, max_length=100)
+    pf_mapping_revision: str = Field(min_length=64, max_length=64)
+    pf_calculation_revision: str = Field(min_length=64, max_length=64)
+
+
+@router.get("/{plan_id}/imports/{order_id}/pf")
+def imported_pf_candidates(plan_id: int, order_id: int, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)):
+    from app.services.import_pf_service import import_pf_offer
+    plan = db.get(ProductionPlan, plan_id)
+    if not plan or not plan.active:
+        raise HTTPException(409, "Этот план больше не активен")
+    return import_pf_offer(db, plan, order_id)
+
+
+@router.get("/{plan_id}/imports/{order_id}/pf/{task_id}")
+def preview_imported_pf(plan_id: int, order_id: int, task_id: int, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)):
+    from app.services.import_pf_service import imported_parents, preview_parent
+    plan = db.get(ProductionPlan, plan_id)
+    parent = imported_parents(db, plan, order_id, [task_id]).get(task_id) if plan and plan.active else None
+    if not parent:
+        raise HTTPException(409, "Список заданий изменился. Обновите список.")
+    try:
+        return preview_parent(db, parent)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/{plan_id}/imports/{order_id}/pf")
+def expand_imported_pf(order_id: int, selections: list[ImportPFSelection], plan: ProductionPlan = Depends(writable_plan),
+                       db: Session = Depends(get_db), user: UserContext = Depends(require_planner)):
+    from app.services.import_pf_service import imported_parents, preview_parent
+    from app.services.pf_service import append_expansion, ensure_task_calendar
+    if not plan.active:
+        raise HTTPException(409, "Этот план больше не активен")
+    ids = {item.task_id for item in selections}
+    parents = imported_parents(db, plan, order_id, ids)
+    if not ids or len(ids) != len(selections) or not ids <= parents.keys():
+        raise HTTPException(409, "Список заданий изменился. Обновите список.")
+    count = 0
+    try:
+        for item in selections:
+            parent = parents[item.task_id]
+            preview = preview_parent(db, parent, item.model_dump())
+            if {row["sku"] for row in preview["items"]} != {row.sku for row in item.pf_tasks}:
+                raise ValueError("Изменился состав ПФ. Обновите список.")
+            append_expansion(db, plan, parent, preview)
+            # Keep approved splits stable through recalculation, retaining their demand provenance.
+            parent.source = "manual"
+            parent.locked = True
+            parent.pf_details = {**(parent.pf_details or {}), "import_expansion": True}
+            count += len(preview["items"])
+        ensure_task_calendar(db, plan)
+        db.flush()
+        service = PlanService(db)
+        service.refresh_sequence_and_cleanings(plan)
+        service.recalculate_load(plan)
+        service.create_version(plan, "import_pf_expansion", f"Создано заданий ПФ по файлу: {count}")
+        db.add(AuditEvent(username=user.username, action="import_pf_expansion", entity_type="imported_order",
+                          entity_id=str(order_id), details={"parent_ids": sorted(ids), "created": count}))
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, f"{parent.product.sku}: {exc}") from exc
+    return {"created": count}
+
+
 class BulkDeleteRequest(BaseModel):
     start_date: date
     end_date: date

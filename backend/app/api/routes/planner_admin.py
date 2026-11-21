@@ -238,17 +238,20 @@ def delete_source(source_id: int, db: Session = Depends(get_db), user: UserConte
     source.status = "deleted"
     removed = 0
     if plan:
+        from app.services.import_pf_service import remove_import_tasks
         demand_ids = {row.id for row in source.items}
-        for item in list(plan.schedule_items):
-            if item.demand_item_id in demand_ids:
-                plan.schedule_items.remove(item)
-                db.delete(item)
-                removed += 1
+        parents = [item for item in plan.schedule_items if item.demand_item_id in demand_ids]
+        removed = len(parents)
+        pf_lines = remove_import_tasks(db, plan, parents)
     db.add(AuditEvent(username=user.username, action="source_deleted", entity_type="imported_order", entity_id=str(source_id), details={"file_name": source.source_name, "removed_tasks": removed}))
     db.flush()
     recalculate = plan is not None and (source.template_type in {"ohl_daily", "quarter_weekly"} or removed > 0)
     if recalculate:
         service = PlanService(db)
+        if source.scope_line_id:
+            for pf_line in pf_lines:
+                service.refresh_sequence_and_cleanings(plan, line_id=pf_line)
+                service.recalculate_load(plan, line_id=pf_line)
         demands = service._latest_source_demands()
         if source.scope_line_id:
             from app.services.line_import_service import demands_for_line
