@@ -157,7 +157,7 @@ flowchart LR
 | Excel | openpyxl, поддержка XLSX/XLSM; VBA не исполняется |
 | Авторизация | LDAP через ldap3, подписанная сессионная cookie |
 | Доставка почты | smtplib; HTML и XLSX-вложение |
-| Развёртывание | Docker Compose: ppp-postgres, ppp-backend, ppp-frontend |
+| Развёртывание | Docker Compose для ppp-backend и ppp-frontend. PostgreSQL 16 на выделенном сервере |
 
 Frontend обращается к `/api` на том же адресе через Nginx. В разработке можно задать `VITE_API_URL`. Отдельного брокера задач или фонового планировщика нет: расчёт, импорт и отправка писем выполняются обработчиками запросов. Интерфейс периодически опрашивает сервер: план/справочник и права — примерно раз в 10 секунд, простои — раз в 30 секунд.
 
@@ -402,7 +402,7 @@ Vite доступен на `http://127.0.0.1:5173`, `/api` проксирует�
 | Группа | Основные параметры и назначение |
 |---|---|
 | Публикация | APP_BIND, APP_PORT, APP_URL, CORS_ORIGINS |
-| БД портала | POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD; DATABASE_URL при прямом запуске |
+| БД портала | DATABASE_URL с параметрами проверки TLS |
 | Сессии | APP_ENV, AUTH_MODE, SESSION_SECRET, SESSION_COOKIE_NAME, SESSION_MAX_AGE_SECONDS, SESSION_COOKIE_SECURE, SESSION_COOKIE_SAMESITE |
 | LDAP | LDAP_SERVER_URL или LDAP_SERVER/PORT/USE_SSL, LDAP_START_TLS, LDAP_TIMEOUT, LDAP_BASE_DN, LDAP_BIND_DN/PASSWORD, LDAP_USER_FILTER, LDAP_LOGIN_FORMAT/BIND_FORMAT, LDAP_UPN_SUFFIX/NETBIOS_DOMAIN/DOMAIN |
 | AD-поиск и первый admin | LDAP_USER_ATTRIBUTES, LDAP_SEARCH_LIMIT, LDAP_ADMIN_GROUP_DN, PORTAL_ADMIN_LOGINS |
@@ -511,7 +511,7 @@ TXT-выгрузка CSB реализована и требует заполне
 
 На действующем сервере не заменяйте `.env` примером и не удаляйте Docker volumes. Сначала убедитесь, что нет незакоммиченных правок на сервере, и создайте backup вне репозитория.
 
-Пример Bash; пользователь и имя БД читаются из окружения контейнера:
+Перед обновлением сделайте дамп на выделенном сервере PostgreSQL по инструкции в `INSTALL.md`. На сервере приложения сохраните настройки и версию:
 
 ```bash
 cd /opt/plan-portal
@@ -520,8 +520,6 @@ mkdir -p "$backup_dir"
 chmod 700 "$backup_dir"
 cp .env "$backup_dir/.env"
 chmod 600 "$backup_dir/.env"
-docker compose exec -T ppp-postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$backup_dir/portal.dump"
-test -s "$backup_dir/portal.dump"
 git rev-parse HEAD > "$backup_dir/revision.txt"
 # Отдельно сохраняйте том ppp-files, шаблоны и CA при их изменении.
 git pull --ff-only origin main
@@ -534,7 +532,7 @@ curl -f http://127.0.0.1:15500/api/health
 
 `git pull` только обновляет файлы; он не пересобирает и не перезапускает приложение. При ограниченном выходе в Интернет подготовьте зависимости/образы на доступном хосте и перенесите их, сохранив версию исходников. Не запускайте сборку, которая оставит сервис остановленным до получения зависимостей.
 
-Имена томов задаются Compose-проектом: `production-planning-portal_ppp-postgres-data` и `production-planning-portal_ppp-files`. Переименование проекта/тома может выглядеть как пустая база, хотя прежние данные ещё существуют.
+Файлы приложения хранятся в томе `production-planning-portal_ppp-files`. Рабочая база `plan_portal` размещена на `10.10.66.107:5432` и подключается через `DATABASE_URL`.
 
 Остановка с сохранением томов: `docker compose down`. Команда `down -v` удаляет постоянные данные и для обновления не используется.
 

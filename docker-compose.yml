@@ -1,28 +1,12 @@
 name: production-planning-portal
 
 services:
-  ppp-postgres:
-    image: postgres:16-alpine
-    container_name: ppp-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-production_planning}
-      POSTGRES_USER: ${POSTGRES_USER:-planner}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_planner_password}
-    volumes:
-      - ppp-postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-
   ppp-backend:
     build: ./backend
     container_name: ppp-backend
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-planner}:${POSTGRES_PASSWORD:-local_planner_password}@ppp-postgres:5432/${POSTGRES_DB:-production_planning}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL for the PostgreSQL server}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:15500,http://127.0.0.1:15500}
       APP_URL: ${APP_URL:-http://127.0.0.1:15500}
       APP_ENV: ${APP_ENV:-production}
@@ -99,9 +83,6 @@ services:
       - ppp-files:/app/data
       - ./certs:/app/certs:ro
       - ./templates:/app/templates:ro
-    depends_on:
-      ppp-postgres:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
       interval: 10s
@@ -128,5 +109,4 @@ services:
       retries: 10
 
 volumes:
-  ppp-postgres-data:
   ppp-files:
