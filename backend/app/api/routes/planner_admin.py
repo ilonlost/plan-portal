@@ -14,8 +14,28 @@ from app.models.entities import AuditEvent, ImportedOrder, ProductionLine, Produ
 from app.services.plan_service import PlanService, schedule_item_dict
 from app.services.task_deletion_service import deletion_scope
 from app.services.settings_service import get_planner_configuration, save_planner_configuration
+from app.schemas.pf_mapping import PFMappingUpdate
 
 router = APIRouter(prefix="/planner-admin", tags=["planner administration"])
+
+
+@router.get("/pf-mappings")
+def pf_mappings(db: Session = Depends(get_db), user: UserContext = Depends(require_planner)):
+    from app.services.pf_mapping_service import mapping_catalog
+    return mapping_catalog(db)
+
+
+@router.put("/pf-mappings")
+def update_pf_mapping(payload: PFMappingUpdate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)):
+    from sqlalchemy.exc import IntegrityError
+    from app.services.pf_mapping_service import save_mapping
+    try:
+        result = save_mapping(db, payload, user.username)
+        db.commit()
+        return result
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "Связи уже сохранены другим планером. Обновите список") from exc
 
 
 class AccessUpdate(BaseModel):

@@ -6,11 +6,15 @@ export interface UserProfile {
   access_label: string; auth_mode: string;
   section_visibility?: Record<string, boolean>;
   can_comment?: boolean;
+  can_record_attendance?: boolean;
 }
 
 export interface SessionMode { auth_mode: string; }
 
 export interface ScheduleItem {
+  csb_task_number?: number | null;
+  csb_order_number?: string | null;
+  parent_task_id?: number | null;
   production_window_start?: string | null; production_window_end?: string | null;
   task_start_at?: string | null; task_end_at?: string | null;
   calendar_production_start?: string | null; calendar_production_end?: string | null;
@@ -61,7 +65,7 @@ export interface LineData {
   planning_settings: PlanningSettings;
 }
 export interface PlanningSettings { daily_startup_hours: number; changeover_hours: number; restart_after_downtime_hours: number; ohl_first: boolean; bolognese_last: boolean; start_batch_number: number; }
-export interface ProductionCycle { enabled: boolean; start_time: string; duration_hours: number; }
+export interface ProductionCycle { enabled: boolean; start_time: string; end_time?: string; duration_hours: number; rollover_time?: string; }
 export interface WorkshopData { code: string; name: string; lines: { id: number; code: string; name: string; status: string }[]; }
 
 export interface CatalogRow {
@@ -130,6 +134,7 @@ export interface ImportRow {
   start_time: string | null; end_time: string | null;
 }
 export interface ImportPreview {
+  catalog_issues?: { sku: string; product_name: string; line_hint: string | null; reason: string; row_numbers: number[] }[];
   affected_tasks?: ScheduleItem[]; plan_version?: number;
   file_name: string; mapping_code: string; template_type: string; detected_sheet: string | null; notes: string[];
   total_rows: number; valid_rows: number; invalid_rows: number; columns: string[]; rows: ImportRow[];
@@ -164,6 +169,7 @@ export interface IntegrationRow {
   test_mode: boolean; item_count: number; response: Record<string, unknown>; created_by: string; created_at: string;
 }
 export interface AdminOverview {
+  mail_actions: MailAction[];
   counts: { plans: number; schedule_items: number; products: number; lines: number };
   active_plan: { id: number; name: string; status: string } | null;
   ldap: { status: string; configured: boolean };
@@ -173,9 +179,23 @@ export interface AdminOverview {
   downtime: { configured: boolean };
   smtp_password_configured: boolean;
   csb: { test_mode: boolean; configured: boolean };
-  users: { section_permissions: Record<string, boolean>; id: number; username: string; display_name: string; email: string | null; role: string; workshop_code: string | null; line_name: string | null; active: boolean; last_login_at: string | null }[];
-  lines: { id: number; workshop_code: string; workshop_name: string; name: string }[];
+  users: { can_record_attendance?: boolean; section_permissions: Record<string, boolean>; id: number; username: string; display_name: string; email: string | null; role: string; auth_provider?: string; workshop_code: string | null; line_name: string | null; active: boolean; last_login_at: string | null }[];
+  lines: { id: number; workshop_code: string; workshop_name: string; name: string; mail_recipients?: string | null }[];
   recent_audit: AuditRow[]; recent_notifications: NotificationRow[]; recent_integrations: IntegrationRow[];
+}
+
+export interface MailRule {
+  mode: "inherit" | "custom" | "off";
+  recipients: string;
+}
+
+export interface MailAction {
+  key: string;
+  group: "planning" | "production_management" | "it" | "manual";
+  title: string;
+  content: string;
+  inherited: string[];
+  rule: MailRule;
 }
 
 export interface PlannerAdministration {
@@ -227,7 +247,16 @@ export interface LineCommentEntry {
   author_username: string; created_at: string; updated_at: string;
 }
 
+export interface LineActualAttendance {
+  line_id: number;
+  date: string;
+  headcount: number;
+  author_name: string;
+  updated_at: string;
+}
+
 export interface LineInsights {
+  actual_attendance?: LineActualAttendance[];
   issues?: { id: string; line_id: number | null; line_name: string; message: string; start_at?: string; end_at?: string }[];
   source_status: "connected" | "not_configured" | "unavailable" | "hidden";
   partial_downtime_percent: number | null; full_downtime_percent: number | null;

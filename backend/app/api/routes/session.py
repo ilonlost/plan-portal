@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth_service import authenticate_ldap
 from app.core.config import settings
-from app.core.security import LOCAL_USER_MARKER, UserContext, configured_local_users, create_session_token, current_user, parse_art_portal_handoff, user_sections
+from app.core.security import LOCAL_USER_MARKER, UserContext, configured_local_users, create_session_token, current_user, parse_art_portal_handoff, user_sections, user_can_record_attendance
 from app.db.session import get_db
 from app.models.entities import AuthAuditEvent, User
 
@@ -39,6 +39,11 @@ def _upsert_art_user(identity: UserContext, db: Session) -> UserContext:
     if not stored:
         stored = User(username=identity.username, display_name=identity.display_name, email=identity.email or None, role=identity.role, active=True, ldap_groups=[])
         db.add(stored)
+    elif stored.role == "master":
+        if not stored.active:
+            raise HTTPException(403, "Учётная запись отключена администратором")
+        stored.display_name = identity.display_name
+        stored.email = identity.email or stored.email
     else:
         stored.display_name, stored.email, stored.role, stored.active = identity.display_name, identity.email or stored.email, identity.role, True
     stored.last_login_at = datetime.now(timezone.utc)
@@ -52,11 +57,13 @@ def _user_dict(user: UserContext, db: Session | None = None) -> dict:
         "username": user.username, "display_name": user.display_name, "role": user.role, "email": user.email,
         "workshop_code": user.workshop_code, "line_name": user.line_name,
         "can_comment": user.auth_method != "service",
+        "can_record_attendance": user.can_record_attendance,
         "access_label": {"admin": "Администратор", "planner": "Планирование", "master": "Мастер линии", "viewer": "Просмотр"}.get(user.role, user.role),
     }
     if db is not None:
         stored = db.scalar(select(User).where(User.username == user.username))
         result["section_visibility"] = user_sections(stored) if stored else {}
+        result["can_record_attendance"] = user_can_record_attendance(stored) if stored else False
     return result
 
 

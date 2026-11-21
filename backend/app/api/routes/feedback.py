@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from io import BytesIO
 
@@ -12,7 +11,6 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.security import UserContext, current_user, require_admin
 from app.db.session import get_db
 from app.models.entities import AuditEvent, FeedbackEntry, FeedbackEvent
@@ -57,10 +55,6 @@ def _event_dict(row: FeedbackEvent) -> dict:
         "id": row.id, "feedback_id": row.feedback_id, "action": row.action, "description": row.description,
         "actor_username": row.actor_username, "actor_name": row.actor_name, "created_at": row.created_at,
     }
-
-
-def _extra_recipients() -> list[str]:
-    return [value.strip() for value in re.split(r"[;,]", settings.feedback_emails) if value.strip()]
 
 
 def _validate_create(payload: FeedbackCreate) -> tuple[str, str, str]:
@@ -219,7 +213,6 @@ def create_feedback(
     try:
         notification = send_notification(
             db, "feedback_created", f"PLAN Portal: обратная связь — {subject}", notification_text,
-            extra_recipients=_extra_recipients(),
         )
         entry.notification_status = notification.status
         entry.notification_error = notification.error

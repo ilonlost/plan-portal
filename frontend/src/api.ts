@@ -1,7 +1,11 @@
 import type {
   AdminOverview, AdvanceConfirmationBatch, AdvanceConfirmationPreview, BomData, CatalogData, CsbRun, DirectoryUser, FeedbackData, FeedbackEntry, ImportPreview, LineData, MatrixData,
-  LineScheduleData, MailConfiguration, PlanData, ProductionFactData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
+  LineScheduleData, MailConfiguration, MailRule, PlanData, ProductionFactData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
 } from "./types";
+import type { SourceAttributesData } from "./catalogAttributes";
+
+export type LineAttendance = { date: string; status: "ok" | "unavailable"; counts: Record<number, number | null> };
+export type CsbBatch = {run_id: number; jobs: {t63: number; sku: string; state: string; order_number: string | null; detail: string | null}[]};
 
 const API = import.meta.env.VITE_API_URL || "/api";
 const planVersions = new Map<number, number>();
@@ -38,6 +42,14 @@ async function optional<T>(path: string, options: RequestInit = {}): Promise<T |
 }
 
 export const api = {
+  productionEol: (params: string, signal?: AbortSignal) => request<import("./ProductionFact").ProductionReport>(`/production-fact/report?${params}`, { signal }),
+  productionEolExportUrl: (params: string) => `${API}/production-fact/report/export.xlsx?${params}`,
+  shipmentFact: (params: string, signal?: AbortSignal) => request<import("./ProductionFact").ProductionReport>(`/production-fact/shipment/report?${params}`, { signal }),
+  shipmentFactExportUrl: (params: string) => `${API}/production-fact/shipment/report/export.xlsx?${params}`,
+  auditLog: (params: string, signal?: AbortSignal) => request<import("./AdminInspection").InspectionPage<import("./types").AuditRow>>(`/admin/audit-log?${params}`, { signal }),
+  auditFilters: (signal?: AbortSignal) => request<{ actions: string[]; users: string[]; entities: string[] }>("/admin/audit-log/filters", { signal }),
+  databaseTables: (signal?: AbortSignal) => request<{ read_only: boolean; tables: import("./AdminInspection").DatabaseTable[] }>("/admin/database", { signal }),
+  databaseRows: (table: string, params: string, signal?: AbortSignal) => request<import("./AdminInspection").InspectionPage<Record<string, unknown>>>(`/admin/database/${encodeURIComponent(table)}?${params}`, { signal }),
   directoryPhotoUrl: (username: string) => `${API}/planner-admin/directory-photo/${encodeURIComponent(username)}`,
   tailBuffers: (start: string, end: string, center: string, search: string, offset: number) => request<import("./types").TailBufferData>(`/production-fact/tail-buffers?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&center=${encodeURIComponent(center)}&search=${encodeURIComponent(search)}&offset=${offset}`),
   sessionMode: () => request<SessionMode>("/session/mode"),
@@ -54,6 +66,7 @@ export const api = {
   planRevision: (signal?: AbortSignal) => optional<{ id: number; version: number }>("/plans/active/revision", { signal }),
   recalculatePlan: () => request<{ ok: boolean; plan_recalculated: boolean; plan_id: number; version: number; unscheduled_count: number }>("/plans/active/recalculate", { method: "POST" }),
   lines: () => request<LineData[]>("/lines"),
+  lineAttendance: (signal: AbortSignal) => request<LineAttendance>("/lines/attendance/today", { signal }),
   lineSchedule: (lineId: number, start: string, days = 14) => request<LineScheduleData>(`/lines/${lineId}/schedule?start=${encodeURIComponent(start)}&days=${days}`),
   updateLineSchedule: (lineId: number, data: { schedule_code: string; anchor_date: string; template_id?: number | null; mail_recipients?: string; csb_line_code?: string; csb_t5?: string; csb_t55?: string; planning_settings: object; production_cycle: import("./types").ProductionCycle; plan_version?: number; slots: { capacity_date: string; day_hours: number; night_hours: number; note?: string | null }[] }) => request<{ ok: boolean; plan_recalculated: boolean }>(`/lines/${lineId}/schedule`, {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
@@ -86,6 +99,7 @@ export const api = {
     method: "POST", headers: { "Content-Type": "application/json", "If-Match": String(version) }, body: JSON.stringify(data),
   }),
   createManualTask: (planId: number, data: object, version: number) => request<PlanData>(`/plans/${planId}/items`, { method: "POST", headers: { "Content-Type": "application/json", "If-Match": String(version) }, body: JSON.stringify(data) }),
+  previewPF: (planId: number, data: object) => request<import("./PFExpansion").PFPreview>(`/plans/${planId}/pf-preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   manualProducts: (lineId: number) => request<{ product_id: number; sku: string; name: string; speed_kg_hour: number }[]>(`/catalog/manual-products?line_id=${lineId}`),
   previewImport: async (file: File, lineId?: number, start?: string, end?: string) => {
     const data = new FormData(); data.append("file", file);
@@ -98,6 +112,8 @@ export const api = {
   }),
   adminOverview: () => request<AdminOverview>("/admin/overview"),
   plannerAdministration: () => request<import("./types").PlannerAdministration>("/planner-admin"),
+  pfMappings: () => request<import("./PFMappings").PFMappingCatalog>("/planner-admin/pf-mappings"),
+  savePFMapping: (data: import("./PFMappings").PFMapping) => request<import("./PFMappings").PFMapping>("/planner-admin/pf-mappings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   plannerSavePlacement: (data: { complete_ohl: boolean; complete_zam: boolean; plan_version?: number }) => request<{ ok: boolean; plan_recalculated: boolean }>("/planner-admin/placement", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   plannerLineTasks: (lineId: number | undefined, start: string, end: string, includeManual = false) => request<{ plan_id: number; version: number; count: number; items: import("./types").ScheduleItem[] }>(`/planner-admin/line-tasks?${lineId ? `line_id=${lineId}&` : ""}start=${start}&end=${end}&include_manual=${includeManual}`),
   plannerDirectoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/planner-admin/directory-users?query=${encodeURIComponent(query)}`),
@@ -110,8 +126,15 @@ export const api = {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),
   }),
   lineInsights: (start: string, end: string, signal?: AbortSignal) => request<import("./types").LineInsights>(`/lines/insights?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, { signal }),
+  saveActualAttendance: (lineId: number, date: string, headcount: number) =>
+    request<{ attendance: import("./types").LineActualAttendance; mail_status: string }>(`/lines/${lineId}/actual-attendance/${date}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ headcount }),
+    }),
   saveLineComment: (lineId: number, date: string, text: string) => request<{ ok: boolean; comment: import("./types").LineCommentEntry }>(`/lines/${lineId}/comments/${date}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+  }),
+  catalogAttributes: (skus: string[], signal?: AbortSignal) => request<SourceAttributesData>("/catalog/source-attributes", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ skus }), signal,
   }),
   shelfLife: (skus: string[]) => request<{ configured: boolean; values: Record<string, string | null> }>("/catalog/shelf-life", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ skus }),
@@ -120,10 +143,10 @@ export const api = {
   productionFactExportUrl: (start: string, end: string, center = "", search = "") => `${API}/production-fact/export.xlsx?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&center=${encodeURIComponent(center)}&search=${encodeURIComponent(search)}`,
   directoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/admin/directory-users?query=${encodeURIComponent(query)}`),
   mailDiagnostics: () => request<{ ok: boolean; message: string }>("/admin/mail-diagnostics"),
-  updateUserAccess: (userId: number, role: string, active = true, section_permissions?: Record<string, boolean>) => request<{ ok: boolean }>(`/admin/users/${userId}`, {
-    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, active, section_permissions }),
+  updateUserAccess: (userId: number, role: string, active = true, section_permissions?: Record<string, boolean>, line_id?: number, can_record_attendance?: boolean) => request<{ ok: boolean }>(`/admin/users/${userId}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, active, section_permissions, line_id, can_record_attendance }),
   }),
-  createUserAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean }) => request<{ ok: boolean; id: number }>("/admin/users", {
+  createUserAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean; line_id?: number }) => request<{ ok: boolean; id: number }>("/admin/users", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
   }),
   previewAdvanceConfirmation: async (file: File) => {
@@ -151,7 +174,10 @@ export const api = {
   updateMailConfiguration: (configuration: MailConfiguration) => request<{ ok: boolean; configuration: MailConfiguration }>("/admin/mail-configuration", {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),
   }),
-  mailPreview: (start: string, end: string, lineIds: number[] = [], audience = "production") => request<{ html: string; item_count: number; start: string; end: string; recipients: string[] }>(`/admin/mail-preview?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&audience=${audience}${lineIds.map(value => `&line_ids=${value}`).join("")}`),
+  updateMailAction: (key: string, rule: MailRule, previous: MailRule) => request<{ rule: MailRule }>(`/admin/mail-actions/${key}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rule, previous }),
+  }),
+  mailPreview: (start: string, end: string, lineIds: number[] = [], audience = "production") => request<{ html: string; item_count: number; start: string; end: string; recipients: string[]; routing_mode: MailRule["mode"] }>(`/admin/mail-preview?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&audience=${audience}${lineIds.map(value => `&line_ids=${value}`).join("")}`),
   emailPlan: (planId: number, recipients: string[], start: string, end: string, lineIds: number[] = [], audience = "production") => request<{ ok: boolean; status: string; recipients: string[]; item_count: number; error: string | null }>(`/plans/${planId}/email`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients, start, end, line_ids: lineIds, audience }),
   }),
@@ -167,6 +193,8 @@ export const api = {
     if (endDate) params.set("end_date", endDate);
     return `${API}/integrations/csb/download${params.size ? `?${params.toString()}` : ""}`;
   },
+  submitCsb: (from: string, to: string) => request<CsbBatch>(`/integrations/csb/orders?${new URLSearchParams({start_date: from, end_date: to})}`, {method: "POST"}),
+  csbBatch: (id: number) => request<CsbBatch>(`/integrations/csb/orders/${id}`),
   downloadCsb: async (startDate: string, endDate: string) => {
     const params = new URLSearchParams({ start_date: startDate, end_date: endDate });
     const response = await fetch(`${API}/integrations/csb/download?${params}`, { method: "POST", credentials: "include" });

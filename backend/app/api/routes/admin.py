@@ -4,32 +4,37 @@ from datetime import date
 from typing import Literal
 import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.auth_service import ldap_health, search_ldap_users
 from app.core.config import settings
-from app.core.security import SECTION_KEYS, UserContext, require_admin, require_planner, user_sections
+from app.core.security import ATTENDANCE_PERMISSION, SECTION_KEYS, UserContext, require_admin, require_planner, user_sections, user_can_record_attendance
 from app.db.session import get_db
 from app.models.entities import (
     AuditEvent, DemandItem, ExportFile, ImportedOrder, ImportFile, IntegrationRun,
-    NotificationLog, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, User,
+    NotificationLog, PortalSetting, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, User,
 )
-from app.services.notification_service import build_plan_email_html, resolve_plan_recipients, send_notification, smtp_diagnostics
+from app.services.mail_routing import ACTIONS, INHERIT, RULE_PREFIX, mail_actions
+from app.services.notification_service import build_plan_email_html, plan_delivery, send_notification, smtp_diagnostics
 from app.services.plan_service import schedule_item_dict
 from app.services.settings_service import get_mail_configuration, get_portal_configuration, save_mail_configuration, save_portal_configuration
+from app.api.routes.admin_inspection import router as inspection_router
+from app.services.admin_inspection_service import redact_details
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+router.include_router(inspection_router)
 
 
 @router.get("/mail-diagnostics")
 def mail_diagnostics(db: Session = Depends(get_db), user: UserContext = Depends(require_admin)) -> dict:
     return smtp_diagnostics(get_mail_configuration(db))
 
-PORTAL_ROLES = frozenset({"admin", "planner", "viewer"})
+PORTAL_ROLES = frozenset({"admin", "planner", "master", "viewer"})
 
 
 class DeletePlanRequest(BaseModel):
@@ -40,6 +45,8 @@ class UserAccessUpdate(BaseModel):
     role: str
     active: bool = True
     section_permissions: dict[str, bool] | None = None
+    can_record_attendance: bool | None = None
+    line_id: int | None = Field(default=None, gt=0, le=2147483647)
 
 
 class UserAccessCreate(UserAccessUpdate):
@@ -52,6 +59,16 @@ class MailConfigurationUpdate(BaseModel):
     configuration: dict
 
 
+class MailRule(BaseModel):
+    mode: Literal["inherit", "custom", "off"]
+    recipients: str = Field(default="", max_length=4000)
+
+
+class MailRuleUpdate(BaseModel):
+    rule: MailRule
+    previous: MailRule
+
+
 class PortalConfigurationUpdate(BaseModel):
     configuration: dict
 
@@ -60,7 +77,7 @@ def _audit_dict(row: AuditEvent) -> dict:
     return {
         "id": row.id, "username": row.username, "action": row.action,
         "entity_type": row.entity_type, "entity_id": row.entity_id,
-        "details": row.details, "created_at": row.created_at,
+        "details": redact_details(row.details), "created_at": row.created_at,
     }
 
 
@@ -84,8 +101,17 @@ def _integration_dict(row: IntegrationRun) -> dict:
 def _validate_portal_role(role: str) -> str:
     clean = role.strip().lower()
     if clean not in PORTAL_ROLES:
-        raise HTTPException(422, "Выберите роль: администратор, планер или просмотр")
+        raise HTTPException(422, "Выберите роль: администратор, планер, мастер или просмотр")
     return clean
+
+
+def _master_line(db: Session, role: str, line_id: int | None) -> ProductionLine | None:
+    if role != "master":
+        return None
+    line = db.get(ProductionLine, line_id) if line_id is not None else None
+    if line is None or line.status != "active":
+        raise HTTPException(422, "Выберите действующую линию для мастера")
+    return line
 
 
 @router.get("/directory-users")
@@ -128,24 +154,62 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
             "host": mail_configuration.get("smtp_host"),
         },
         "mail_configuration": mail_configuration,
+        "mail_actions": mail_actions(db, mail_configuration),
         "portal_configuration": get_portal_configuration(db),
         "downtime": {"configured": bool(settings.downtime_database_url)},
         "smtp_password_configured": bool(settings.smtp_password),
-        "csb": {"test_mode": settings.csb_test_mode, "configured": bool(settings.csb_endpoint)},
+        "csb": {"test_mode": settings.csb_test_mode, "configured": bool(settings.csb_token)},
         "users": [{
             "id": row.id, "username": row.username, "display_name": row.display_name,
-            "email": row.email, "role": row.role, "workshop_code": row.workshop_code,
+            "email": row.email, "role": row.role, "workshop_code": row.workshop_code, "auth_provider": row.auth_provider,
             "line_name": row.line_name, "active": row.active, "last_login_at": row.last_login_at,
             "section_permissions": user_sections(row),
+            "can_record_attendance": user_can_record_attendance(row),
         } for row in db.scalars(select(User).order_by(User.display_name))],
         "lines": [{
             "id": row.id, "workshop_code": row.workshop_code,
-            "workshop_name": row.workshop_name, "name": row.name,
+            "workshop_name": row.workshop_name, "name": row.name, "mail_recipients": row.mail_recipients,
         } for row in db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name))],
         "recent_audit": [_audit_dict(row) for row in db.scalars(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(15))],
         "recent_notifications": [_notification_dict(row) for row in db.scalars(select(NotificationLog).order_by(NotificationLog.created_at.desc()).limit(15))],
         "recent_integrations": [_integration_dict(row) for row in db.scalars(select(IntegrationRun).order_by(IntegrationRun.created_at.desc()).limit(15))],
     }
+
+
+@router.put("/mail-actions/{action}")
+def update_mail_action(action: str, payload: MailRuleUpdate, db: Session = Depends(get_db), user: UserContext = Depends(require_admin)) -> dict:
+    if action not in ACTIONS:
+        raise HTTPException(404, "Почтовое действие не найдено")
+    recipients = []
+    if payload.rule.mode == "custom":
+        recipients = list(dict.fromkeys(value.lower() for value in re.split(r"[,;\s]+", payload.rule.recipients.strip()) if value))
+        if not recipients or any(not re.fullmatch(r"[\w.!#$%&'*+/=?^`{|}~-]+@[\w-]+(?:\.[\w-]+)+", value) for value in recipients):
+            raise HTTPException(422, "Укажите корректные адреса получателей через запятую")
+    rule = {"mode": payload.rule.mode, "recipients": ", ".join(recipients)}
+    if len(rule["recipients"]) > 4000:
+        raise HTTPException(422, "Список адресов с разделителями должен укладываться в 4000 символов")
+    key = RULE_PREFIX + action
+    row = db.scalar(select(PortalSetting).where(PortalSetting.key == key).with_for_update())
+    current = row.value if row else INHERIT
+    if current == rule:
+        return {"rule": rule}
+    conflict = "Другой администратор изменил это правило. Обновите страницу и проверьте список."
+    if current != payload.previous.model_dump():
+        raise HTTPException(409, conflict)
+    if row:
+        row.value, row.updated_by = rule, user.username
+    else:
+        db.add(PortalSetting(key=key, value=rule, updated_by=user.username))
+    db.add(AuditEvent(username=user.username, action="mail_action_updated", entity_type="portal_setting",
+                      entity_id=key, details={"action": action, "before": current, "after": rule}))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, conflict) from exc
+    send_notification(db, "mail_configuration_updated", "PLAN Portal: изменено правило рассылки",
+                      f"{user.display_name} изменил правило рассылки «{ACTIONS[action].title}».")
+    return {"rule": rule}
 
 
 @router.put("/mail-configuration")
@@ -245,8 +309,9 @@ def mail_preview(
     items = [item for item in items if item.schedule_kind == "production" and item.status.value not in {"conflict", "unscheduled"}]
     html = build_plan_email_html(get_mail_configuration(db), plan.name, start, end, [schedule_item_dict(item) for item in items], audience)
     line_recipients = [value.strip() for item in items if item.line and item.line.mail_recipients for value in item.line.mail_recipients.replace(";", ",").replace("\n", ",").split(",") if value.strip()]
+    rule, recipients = plan_delivery(db, audience, line_recipients)
     return {"html": html, "item_count": len(items), "start": start, "end": end,
-            "recipients": resolve_plan_recipients(db, audience, line_recipients)}
+            "recipients": recipients, "routing_mode": rule["mode"]}
 
 
 @router.patch("/users/{user_id}")
@@ -259,28 +324,40 @@ def update_user_access(
     target = db.get(User, user_id)
     if not target:
         raise HTTPException(404, "Пользователь не найден")
-    role = "master" if payload.role == target.role == "master" else _validate_portal_role(payload.role)
+    role = _validate_portal_role(payload.role)
     if target.auth_provider == "service" and role != "viewer":
         raise HTTPException(422, "Сервисной учётной записи доступен только просмотр")
+    if target.auth_provider == "service" and payload.can_record_attendance:
+        raise HTTPException(422, "Сервисной учётной записи нельзя разрешить ввод количества сотрудников")
     if target.username.lower() == user.username.lower() and (not payload.active or role != "admin"):
         raise HTTPException(409, "Нельзя отключить себя или снять собственные права администратора")
     if target.role == "admin" and target.active and (not payload.active or role != "admin"):
         count = db.scalar(select(func.count(User.id)).where(User.role == "admin", User.active.is_(True))) or 0
         if count <= 1:
             raise HTTPException(409, "Нельзя отключить последнего администратора")
+    # Legacy API clients can update section permissions without resending an existing assignment.
+    if role == target.role == "master" and "line_id" not in payload.model_fields_set:
+        workshop_code, line_name = target.workshop_code, target.line_name
+    else:
+        line = _master_line(db, role, payload.line_id)
+        workshop_code, line_name = (line.workshop_code, line.name) if line else (None, None)
     target.role = role
     target.active = payload.active
+    target.workshop_code = workshop_code
+    target.line_name = line_name
     if payload.section_permissions is not None:
-        target.section_permissions = {key: value for key, value in payload.section_permissions.items() if key in SECTION_KEYS}
+        target.section_permissions = {
+            **{key: value for key, value in (target.section_permissions or {}).items() if key not in SECTION_KEYS},
+            **{key: value for key, value in payload.section_permissions.items() if key in SECTION_KEYS},
+        }
         if target.auth_provider == "service":
             from app.services.service_account_service import SERVICE_SECTIONS
             target.section_permissions = {key: bool(target.section_permissions.get(key)) and key in SERVICE_SECTIONS for key in SECTION_KEYS}
     if target.auth_provider == "service" and not payload.active:
         target.session_version += 1
-    if role != "master":
-        target.workshop_code = None
-        target.line_name = None
-    details = {"target": target.username, "role": role, "line": None, "active": target.active, "section_permissions": target.section_permissions}
+    if payload.can_record_attendance is not None:
+        target.section_permissions = {**(target.section_permissions or {}), ATTENDANCE_PERMISSION: payload.can_record_attendance}
+    details = {"target": target.username, "role": role, "line": target.line_name, "active": target.active, "section_permissions": target.section_permissions, "can_record_attendance": user_can_record_attendance(target)}
     db.add(AuditEvent(username=user.username, action="user_access_updated", entity_type="user", entity_id=str(target.id), details=details))
     db.commit()
     send_notification(db, "user_access_updated", f"PLAN Portal: изменён доступ пользователя {target.username}", f"Администратор {user.display_name} изменил роль, доступ или разрешения сотрудника {target.username}.")
@@ -300,6 +377,7 @@ def create_user_access(
     target = db.scalar(select(User).where(func.lower(User.username) == username.lower()))
     if target:
         raise HTTPException(409, "Пользователь уже добавлен")
+    line = _master_line(db, role, payload.line_id)
     target = User(
         username=username,
         display_name=payload.display_name.strip() or username,
@@ -307,12 +385,14 @@ def create_user_access(
         role=role,
         active=payload.active,
         section_permissions={key: value for key, value in (payload.section_permissions or {}).items() if key in SECTION_KEYS},
-        workshop_code=None,
-        line_name=None,
+        workshop_code=line.workshop_code if line else None,
+        line_name=line.name if line else None,
         ldap_groups=[],
     )
     db.add(target)
     db.flush()
+    if payload.can_record_attendance is not None:
+        target.section_permissions = {**(target.section_permissions or {}), ATTENDANCE_PERMISSION: payload.can_record_attendance}
     details = {"target": target.username, "role": target.role, "line": target.line_name, "active": target.active}
     db.add(AuditEvent(username=user.username, action="user_access_created", entity_type="user", entity_id=str(target.id), details=details))
     db.commit()

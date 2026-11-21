@@ -4,7 +4,7 @@ import enum
 from datetime import date, datetime, time
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Integer, LargeBinary, Numeric, String, Text, Time, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, Enum, ForeignKey, Integer, LargeBinary, Numeric, String, Text, Time, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -268,10 +268,34 @@ class ProductionPlanVersion(Base):
     plan: Mapped[ProductionPlan] = relationship(back_populates="versions")
 
 
+class CsbTaskCounter(Base):
+    __tablename__ = "csb_task_counter"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    last_number: Mapped[int] = mapped_column(Integer)
+
+
+class CsbSubmission(Base):
+    __tablename__ = "csb_submissions"
+    t63: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    payload: Mapped[dict] = mapped_column(JSON)
+    state: Mapped[str] = mapped_column(String(20))
+    requested_by: Mapped[str] = mapped_column(String(120))
+    claim: Mapped[str | None] = mapped_column(String(36))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    order_number: Mapped[str | None] = mapped_column(Text)
+    detail: Mapped[str | None] = mapped_column(Text)
+
+
 class ProductionScheduleItem(Base):
     __tablename__ = "production_schedule_items"
     id: Mapped[int] = mapped_column(primary_key=True)
+    csb_task_number: Mapped[int | None] = mapped_column(
+        Integer, CheckConstraint("csb_task_number BETWEEN 1 AND 99999"), unique=True, index=True,
+    )
+    csb_order_number: Mapped[str | None] = mapped_column(Text)
     plan_id: Mapped[int] = mapped_column(ForeignKey("production_plans.id", ondelete="CASCADE"), index=True)
+    parent_task_id: Mapped[int | None] = mapped_column(ForeignKey("production_schedule_items.id", ondelete="SET NULL"), index=True)
+    pf_details: Mapped[dict | None] = mapped_column(JSON)
     demand_item_id: Mapped[int | None] = mapped_column(ForeignKey("demand_items.id"), index=True)
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), index=True)
     line_id: Mapped[int | None] = mapped_column(ForeignKey("production_lines.id"), index=True)
@@ -456,3 +480,14 @@ class LineCommentMessage(Base):
     author_username: Mapped[str] = mapped_column(String(120))
     author_name: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LineActualAttendance(Base):
+    __tablename__ = "line_actual_attendance"
+    __table_args__ = (CheckConstraint("headcount >= 0", name="ck_line_actual_attendance_headcount"),)
+    line_id: Mapped[int] = mapped_column(ForeignKey("production_lines.id", ondelete="CASCADE"), primary_key=True)
+    attendance_date: Mapped[date] = mapped_column(Date, primary_key=True, index=True)
+    headcount: Mapped[int] = mapped_column(Integer)
+    author_username: Mapped[str] = mapped_column(String(120))
+    author_name: Mapped[str] = mapped_column(String(200))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

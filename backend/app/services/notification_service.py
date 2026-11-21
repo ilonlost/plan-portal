@@ -17,23 +17,24 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.entities import NotificationLog
+from app.services.mail_routing import action_rule, addresses, inherited_addresses, routed_addresses
 from app.services.settings_service import get_mail_configuration, get_planner_configuration
 
 
-def _recipients(configuration: dict, extra: list[str] | None = None) -> list[str]:
-    values = [value.strip().lower() for value in str(configuration.get("notification_emails", "")).split(",") if value.strip()]
-    values.extend(value.strip().lower() for value in (extra or []) if value and value.strip())
-    return list(dict.fromkeys(value for value in values if "@" in value))
-
-
 def resolve_recipients(configuration: dict, extra: list[str] | None = None) -> list[str]:
-    return _recipients(configuration, extra)
+    return addresses(configuration.get("notification_emails", ""), extra)
+
+
+def plan_delivery(db: Session, audience: str, line_recipients: list[str], extra: list[str] | None = None) -> tuple[dict, list[str]]:
+    rule = action_rule(db, f"plan_email_{audience}")
+    configuration = get_planner_configuration(db)
+    additional = [*(line_recipients if audience == "production" else []), *(extra or [])]
+    inherited = addresses(configuration["recipients"][audience], additional)
+    return rule, routed_addresses(rule, inherited)
 
 
 def resolve_plan_recipients(db: Session, audience: str, line_recipients: list[str], extra: list[str] | None = None) -> list[str]:
-    configuration = get_planner_configuration(db)
-    addresses = configuration["recipients"][audience]
-    return _recipients({"notification_emails": addresses}, [*(line_recipients if audience == "production" else []), *(extra or [])])
+    return plan_delivery(db, audience, line_recipients, extra)[1]
 
 
 def build_plan_xlsx(items: list[dict], audience: str) -> bytes:
@@ -113,6 +114,10 @@ def _duration(value: object) -> str:
     return f"{remainder} мин"
 
 
+def _product_caption(item: dict) -> str:
+    return ("ПФ · " if item.get("source_kind") == "pf" else "") + str(item.get("product_name") or "—")
+
+
 def build_plan_email_html(
     configuration: dict,
     plan_name: str,
@@ -132,7 +137,7 @@ def build_plan_email_html(
                 continue
             production_day = item.get("production_date")
             shipping_day = _shipping_date(item) or production_day
-            key = (_date(production_day), _dispatch_caption(item) if _shipping_date(item) else _date(shipping_day), str(item.get("sku") or ""), str(item.get("product_name") or ""))
+            key = (_date(production_day), _dispatch_caption(item) if _shipping_date(item) else _date(shipping_day), str(item.get("sku") or ""), _product_caption(item))
             quantity, boxes, units, mercury = grouped.get(key, (0.0, 0.0, 0.0, "—"))
             grouped[key] = (quantity + float(item.get("quantity_kg") or 0), boxes + float(item.get("box_count") or 0), units + float(item.get("quantity_units") or 0), item.get("mercury") or mercury)
         if audience == "warehouse":
@@ -154,7 +159,7 @@ def build_plan_email_html(
                 '<tr>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">№{int(row.get("sequence") or 0)}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;font-weight:700">{escape(str(row.get("sku") or "—"))}</td>'
-                f'<td style="padding:8px;border-bottom:1px solid #eceef1">{escape(str(row.get("product_name") or "—"))}{_cycle_caption(row)}</td>'
+                f'<td style="padding:8px;border-bottom:1px solid #eceef1">{escape(_product_caption(row))}{_cycle_caption(row)}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape(_dispatch_caption(row))}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;white-space:nowrap">{escape("День" if row.get("shift") == "day" else "Ночь")}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #eceef1;text-align:right;white-space:nowrap">{float(row.get("quantity_units") or 0):,.0f} шт.</td>'
@@ -237,17 +242,25 @@ def send_notification(
     html: str | None = None,
     exact_recipients: bool = False,
     attachments: list[tuple[str, bytes, str]] | None = None,
+    plan_line_recipients: list[str] | None = None,
 ) -> NotificationLog:
     configuration = get_mail_configuration(db)
-    event_group = _notification_group(event_type)
-    event_addresses = (configuration.get("event_recipients") or {}).get(event_group, "") if event_group else ""
-    recipient_source = {"notification_emails": "" if exact_recipients else event_addresses or configuration.get("notification_emails", "")}
-    recipients = _recipients(recipient_source, extra_recipients)
+    if event_type.startswith("plan_email_"):
+        rule, recipients = plan_delivery(db, event_type.removeprefix("plan_email_"), plan_line_recipients or [], extra_recipients)
+    else:
+        rule = action_rule(db, event_type)
+        inherited = addresses("", extra_recipients) if exact_recipients else inherited_addresses(configuration, event_type, extra_recipients)
+        recipients = routed_addresses(rule, inherited)
     log = NotificationLog(event_type=event_type, recipients=recipients, subject=subject, status="pending")
     db.add(log)
     db.flush()
     if not configuration.get("enabled"):
         log.status = "skipped"; log.error = "Почтовые уведомления отключены в админке"; db.commit(); return log
+    if rule["mode"] == "off":
+        log.status = "skipped"
+        log.error = "Отправка отключена для этого действия"
+        db.commit()
+        return log
     if not recipients:
         log.status = "skipped"; log.error = "В админке не указаны получатели"; db.commit(); return log
 
@@ -273,13 +286,3 @@ def send_notification(
         log.status = "failed"; log.error = str(exc)[:2000]
     db.commit()
     return log
-
-
-def _notification_group(event_type: str) -> str | None:
-    if event_type.startswith(("feedback_", "user_access_", "mail_configuration_", "portal_configuration_", "integration_", "notification_")) or event_type in {"plan_data_deleted", "csb_export_failed"}:
-        return "it"
-    if event_type.startswith(("schedule_item_", "schedule_items_", "manual_task_", "schedule_event_", "execution_status_", "line_comment_")) or event_type in {"plan_approved", "advance_confirmation_applied", "shipment_deviation"}:
-        return "planning"
-    if event_type.startswith(("catalog_", "line_schedule_", "reference_", "plan_imported", "csb_")) or event_type in {"capacity_updated", "production_parameters_updated"}:
-        return "production_management"
-    return None

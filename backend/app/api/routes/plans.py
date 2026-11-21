@@ -17,7 +17,7 @@ from app.models.entities import AuditEvent, LineCapacity, ProductionLine, Produc
 from app.schemas.common import ExecutionStatusUpdate, PlanApprovalRequest, ScheduleEventCreate, ScheduleItemUpdate
 from app.services.export_service import ExcelExportService
 from app.services.plan_service import PlanService, plan_dict, schedule_item_dict
-from app.services.notification_service import build_plan_email_html, build_plan_xlsx, resolve_plan_recipients, send_notification
+from app.services.notification_service import build_plan_email_html, build_plan_xlsx, send_notification
 from app.services.settings_service import get_mail_configuration
 from app.services.line_schedule_service import shift_hours
 from app.services.production_cycle_service import window_fields
@@ -46,6 +46,13 @@ class PlanEmailRequest(BaseModel):
     line_ids: list[int] = Field(default_factory=list)
 
 
+class PFTaskOptions(BaseModel):
+    sku: str
+    line_id: int | None = Field(default=None, gt=0)
+    production_date: date | None = None
+    speed_kg_hour: Decimal | None = Field(default=None, gt=0, le=1000000)
+
+
 class ManualTaskCreate(BaseModel):
     product_id: int
     line_id: int
@@ -54,6 +61,10 @@ class ManualTaskCreate(BaseModel):
     shift: str = "day"
     quantity: Decimal = Field(gt=0)
     source_kind: Literal["ohl", "zam", "generic", "pf"] = "generic"
+    expand_pf: bool = False
+    pf_tasks: list[PFTaskOptions] = Field(default_factory=list, max_length=100)
+    pf_mapping_revision: str | None = Field(default=None, max_length=64)
+    pf_calculation_revision: str | None = Field(default=None, max_length=64)
 
 
 class BulkDeleteRequest(BaseModel):
@@ -183,6 +194,18 @@ def update_item(plan_id: int, item_id: int, payload: ScheduleItemUpdate, db: Ses
     return plan_dict(db, plan)
 
 
+@router.post("/{plan_id}/pf-preview")
+def preview_pf_tasks(plan_id: int, payload: ManualTaskCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
+    from app.services.pf_service import preview_expansion
+
+    if not db.get(ProductionPlan, plan_id):
+        raise HTTPException(404, "План не найден")
+    try:
+        return preview_expansion(db, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.post("/{plan_id}/items", dependencies=[Depends(writable_plan)])
 def create_manual_task(plan_id: int, payload: ManualTaskCreate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
     if payload.shift not in {"day", "night"}:
@@ -295,7 +318,7 @@ def update_execution_status(
     db.commit()
     if payload.status in {"not_shipped", "partially_shipped"}:
         send_notification(
-            db, "shipment_deviation", f"PLAN Portal: отклонение отгрузки · {item.product.name if item.product else 'задание'}",
+            db, f"shipment_{payload.status}", f"PLAN Portal: отклонение отгрузки · {item.product.name if item.product else 'задание'}",
             f"Линия: {item.line.name}.\nСтатус: {payload.status}.\nПричина: {payload.note}.\nСообщил: {user.display_name}.",
         )
     return plan_dict(db, plan, user.line_name if user.role == "master" else None)
@@ -357,9 +380,9 @@ def email_plan(
     subject = {"production": "Производство", "warehouse": "Склад", "materials": "Сырьевой отдел"}[payload.audience] + " · " + subject
     line_recipients = [value.strip() for item in items if item.line and item.line.mail_recipients for value in item.line.mail_recipients.replace(";", ",").replace("\n", ",").split(",") if value.strip()]
     log = send_notification(
-        db, "production_plan_email", subject,
+        db, f"plan_email_{payload.audience}", subject,
         f"План «{plan.name}» за период {start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}. Позиций: {len(items)}.",
-        resolve_plan_recipients(db, payload.audience, line_recipients, payload.recipients), html, exact_recipients=True,
+        payload.recipients, html, plan_line_recipients=line_recipients,
         attachments=[(f"plan_{start.isoformat()}_{end.isoformat()}.xlsx", build_plan_xlsx([schedule_item_dict(item) for item in items], payload.audience), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")],
     )
     db.add(AuditEvent(username=user.username, action="production_plan_emailed", entity_type="production_plan", entity_id=str(plan.id), details={"start": start.isoformat(), "end": end.isoformat(), "line_ids": payload.line_ids, "item_count": len(items), "status": log.status, "recipients": log.recipients}))

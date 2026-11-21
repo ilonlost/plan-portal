@@ -27,17 +27,26 @@ class UserContext:
     line_name: str | None = None
     auth_method: str | None = None
     session_version: int = 0
+    can_record_attendance: bool = False
 
 
 LOCAL_USER_MARKER = "__local_development__"
 
 SECTION_KEYS = ("plan", "catalog", "import", "az", "sources", "feedback", "fact")
 
+ATTENDANCE_PERMISSION = "can_record_attendance"
+
+
+def user_can_record_attendance(user: User) -> bool:
+    if user.auth_provider == "service":
+        return False
+    return (user.section_permissions or {}).get(ATTENDANCE_PERMISSION, user.role == "master") is True
+
 def user_sections(user: User) -> dict[str, bool]:
     if user.role == "admin":
         return dict.fromkeys(SECTION_KEYS, True)
     defaults = {key: key != "fact" for key in SECTION_KEYS}
-    return {**defaults, **(user.section_permissions or {})}
+    return {**defaults, **{key: value for key, value in (user.section_permissions or {}).items() if key in SECTION_KEYS}}
 
 def check_section_access(request: Request, stored: User) -> None:
     """Enforce individual access on the server, including existing sessions."""
@@ -60,7 +69,9 @@ def check_section_access(request: Request, stored: User) -> None:
                 raise HTTPException(403, "Доступ к справочнику закрыт администратором")
         else:
             required = "catalog"
-    if path in {"/api/dashboard", "/api/lines/insights"} or "/comments/" in path:
+    if path in {"/api/dashboard", "/api/lines/insights", "/api/lines/attendance/today"} or (
+        path.startswith("/api/lines/") and ("/comments/" in path or "/actual-attendance/" in path)
+    ):
         required = "plan"
     elif path.startswith("/api/lines/") and request.method != "GET":
         required = "catalog"
@@ -226,7 +237,7 @@ def current_user(
         return UserContext(
             stored.username, stored.display_name, stored.role, stored.email or user.email,
             stored.workshop_code or user.workshop_code, stored.line_name or user.line_name,
-            user.auth_method, user.session_version,
+            user.auth_method, user.session_version, user_can_record_attendance(stored),
         )
     raise HTTPException(401, "Учётная запись сессии не найдена")
 

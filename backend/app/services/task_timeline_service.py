@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 
-from app.services.production_cycle_service import cycle_window
+from app.services.production_cycle_service import cycle_window, work_intervals
 
 
 def shift_segments(start, end):
@@ -28,22 +28,39 @@ def bind_task_timeline(items):
         if not item.excluded and item.production_date and item.line:
             groups[(item.line_id, item.production_date)].append(item)
     for rows in groups.values():
-        bounds = cycle_window(rows[0].line, rows[0].production_date)
-        if not bounds:
+        intervals = work_intervals(rows[0].line, rows[0].production_date)
+        if not intervals:
             continue
-        cursor = bounds[0]
+        opening, closing = intervals[0][0], intervals[-1][1]
+        cursor = opening
         for row in sorted(rows, key=lambda r: (r.sequence, r.id or 0)):
             explicit = None
             if row.schedule_kind != "production" and row.start_time:
-                explicit = datetime.combine(bounds[0].date(), row.start_time)
-                if explicit < bounds[0]:
+                explicit = datetime.combine(opening.date(), row.start_time)
+                if explicit < opening:
                     explicit += timedelta(days=1)
             start = max(cursor, explicit) if explicit else cursor
-            seconds = int(Decimal(row.required_hours or 0) * 3600)
-            end = start + timedelta(seconds=seconds)
+            remaining = timedelta(seconds=int(Decimal(row.required_hours or 0) * 3600))
+            segments = []
+            end = start
+            for left, right in intervals:
+                if end >= right:
+                    continue
+                end = max(end, left)
+                if not segments:
+                    start = end
+                used = min(remaining, right - end)
+                segments.extend(shift_segments(end, end + used))
+                end += used
+                remaining -= used
+                if not remaining:
+                    break
+            if remaining:
+                segments.extend(shift_segments(end, end + remaining))
+                end += remaining
             row._task_timeline = {"task_start_at": start, "task_end_at": end,
                 "calendar_production_start": start.date(), "calendar_production_end": (end - timedelta(microseconds=1)).date() if end > start else start.date(),
-                "shift_segments": shift_segments(start, end), "outside_production_window": end > bounds[1]}
+                "shift_segments": segments, "outside_production_window": end > closing}
             cursor = end
 
 

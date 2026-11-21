@@ -21,6 +21,7 @@ from app.models.entities import (
 )
 from app.schemas.common import ImportConfirmRequest, ImportPreview
 from app.services.import_service import ExcelImportService
+from app.services.import_catalog_check import check_import_catalog
 from app.services.line_schedule_service import ensure_line_capacities
 from app.services.plan_service import PlanService, plan_dict, schedule_item_dict
 from app.services.notification_service import send_notification
@@ -79,16 +80,6 @@ async def preview_import(file: UploadFile = File(...), user: UserContext = Depen
     try:
         preview = ExcelImportService().parse(content, file.filename)
         names = {line_key(line.name) for line in db.scalars(select(ProductionLine).where(ProductionLine.status == "active"))}
-        mapped_skus = {
-            sku for sku in db.scalars(
-                select(Product.sku).join(LineCapability, LineCapability.product_id == Product.id)
-                .join(ProductionLine, LineCapability.line_id == ProductionLine.id)
-                .where(
-                    Product.active.is_(True), Product.catalog_status == "active",
-                    ProductionLine.status == "active",
-                )
-            )
-        }
         for row in preview.rows:
             if row.line_hint and line_key(row.line_hint) not in names:
                 text = f"Неизвестная линия «{row.line_hint}»: линия не будет создана автоматически"
@@ -97,14 +88,27 @@ async def preview_import(file: UploadFile = File(...), user: UserContext = Depen
                     row.valid = False
                 else:
                     row.warnings.append(text)
-            elif preview.template_type in {"ohl_daily", "quarter_weekly"} and not row.line_hint and row.sku not in mapped_skus:
-                row.warnings.append("Артикул отсутствует в справочнике мощностей: он будет добавлен в список нераспределённых")
+        check_import_catalog(db, preview)
         preview.valid_rows = sum(row.valid for row in preview.rows)
         preview.invalid_rows = len(preview.rows) - preview.valid_rows
         if (start or end) and not isinstance(line_id, int):
             raise HTTPException(422, "Для загрузки за период выберите линию")
         if isinstance(line_id, int):
-            preview = filter_line_preview(db, preview, line_id, start, end)
+            line = active_line(db, line_id)
+            check_import_catalog(db, preview, line_id)
+            skipped_issues = [issue for issue in preview.catalog_issues
+                              if issue["line_hint"] and line_key(issue["line_hint"]) == line_key(line.name)]
+            try:
+                preview = filter_line_preview(db, preview, line_id, start, end)
+            except HTTPException as exc:
+                if exc.status_code == 422 and skipped_issues:
+                    detail = "; ".join(f"{issue['sku']}: {issue['reason']}" for issue in skipped_issues[:20])
+                    raise HTTPException(422, f"{exc.detail} Справочник: {detail}") from exc
+                raise
+            check_import_catalog(db, preview, line_id)
+            kept_skus = {row.sku for row in preview.rows}
+            preview.catalog_issues.extend({**issue, "reason": issue["reason"] + "; строки не отобраны для загрузки на эту линию"}
+                                          for issue in skipped_issues if issue["sku"] not in kept_skus)
             plan = PlanService(db).active_plan()
             if plan:
                 kind = {"ohl_daily": "ohl", "quarter_weekly": "zam"}.get(preview.template_type)
@@ -295,7 +299,7 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
         db.add(AuditEvent(username=user.username, action="plan_imported", entity_type="production_plan", entity_id=str(scoped_plan.id), details={"line_id": payload.line_id, "source_kind": source_kind, "file_name": preview.file_name, "rows": len(demands), "replaced_demands": len(replaced_ids)}))
         db.commit()
         line = db.get(ProductionLine, payload.line_id)
-        send_notification(db, "plan_imported", f"PLAN Portal: обновлена линия {line.name}", f"Пользователь {user.display_name} загрузил {preview.file_name} только на линию «{line.name}». Строк: {len(demands)}.")
+        send_notification(db, "plan_imported_line", f"PLAN Portal: обновлена линия {line.name}", f"Пользователь {user.display_name} загрузил {preview.file_name} только на линию «{line.name}». Строк: {len(demands)}.")
         return {"order_id": order.id, "plan": plan_dict(db, scoped_plan), "imported_rows": len(demands), "line_id": payload.line_id}
     if not payload.create_plan:
         db.add(AuditEvent(

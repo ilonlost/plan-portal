@@ -14,10 +14,13 @@ curl -f http://127.0.0.1:15500/api/health
 ```
 
 Портал откроется на `http://SERVER_IP:15500/`. В файле `.env` обязательно замените
-`POSTGRES_PASSWORD` и `SESSION_SECRET`. Заполните LDAP и SMTP-блоки значениями из
+пароль в `DATABASE_URL` и значение `SESSION_SECRET`. PostgreSQL 16 работает на отдельном сервере.
+Для нового хоста приложения скопируйте с сервера БД публичный сертификат
+`/etc/postgresql/central-tls/ca.crt` в `certs/postgresql-ca.crt` и разрешите
+подключение с адреса хоста в `pg_hba.conf`. Заполните LDAP и SMTP-блоки значениями из
 одноимённых блоков `.env` проекта ART Portal: названия общих переменных совпадают.
 Не копируйте файл ART Portal целиком: у PLAN Portal должны остаться собственные
-`POSTGRES_*`, `APP_URL`, `CORS_ORIGINS`, `SMTP_FROM` и `SMTP_FROM_NAME`.
+`DATABASE_URL`, `APP_URL`, `CORS_ORIGINS`, `SMTP_FROM` и `SMTP_FROM_NAME`.
 
 Если в ART Portal задано `LDAP_CA_FILE=/app/certs/agrohold-ca.pem` или
 `SMTP_CA_FILE=/app/certs/agrohold-ca.pem`, скопируйте тот же корпоративный CA
@@ -79,13 +82,19 @@ docker compose ps
 ```bash
 docker compose logs --tail=200 ppp-backend
 docker compose logs --tail=200 ppp-frontend
-docker compose exec ppp-postgres pg_dump -U planner production_planning > plan-portal-backup.sql
 ```
 
-Остановка без удаления данных:
+Резервную копию создавайте на сервере PostgreSQL под пользователем `postgre`.
+
+```bash
+umask 077
+sudo -u postgres pg_dump -Fc -d plan_portal > "plan_portal-$(date +%Y%m%d-%H%M%S).dump"
+```
+
+Остановка приложения с сохранением файлов:
 
 ```bash
 docker compose down
 ```
 
-Не выполняйте `docker compose down -v`, если база и загруженные планы должны сохраниться.
+Загруженные файлы хранятся в томе `ppp-files`. Ключ `-v` при остановке удаляет этот том.

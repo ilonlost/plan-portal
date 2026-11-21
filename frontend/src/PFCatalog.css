@@ -1,0 +1,9 @@
+.pf-catalog td { vertical-align: top; }
+.pf-catalog td:first-child { min-width: 200px; }
+.pf-catalog-empty { padding: 20px; }
+.pf-catalog-editor { width: min(580px, calc(100vw - 32px)); }
+.pf-catalog-editor form { padding: 20px; }
+.pf-catalog-editor fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.pf-catalog-editor label { display: grid; gap: 6px; margin-bottom: 16px; }
+.pf-catalog-editor input, .pf-catalog-editor select { width: 100%; min-width: 0; }
+.pf-catalog-editor footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }

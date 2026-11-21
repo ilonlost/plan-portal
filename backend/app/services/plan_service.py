@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 import json
@@ -368,7 +368,7 @@ class PlanService:
             cycle_dates = [d.marking_date or d.source_plan_date for d in demands if d.marking_date or d.source_plan_date] if any(production_cycle(line)["enabled"] for line in active_lines) else []
             persistent_event_dates = [
                 item.production_date for item in plan.schedule_items
-                if item.production_date and not item.excluded and item.source != "auto" and item.schedule_kind != "production"
+                if item.production_date and not item.excluded and item.source != "auto"
             ]
             plan.horizon_start = min([*(d.requested_date for d in demands), *persistent_event_dates, *([plan.horizon_start] if line_id or source_kind else [])])
             plan.horizon_end = max([*(d.due_date for d in demands), *cycle_dates, *persistent_event_dates, *([plan.horizon_end] if line_id or source_kind else [])])
@@ -426,7 +426,7 @@ class PlanService:
             if demand.product_id in mapped_product_ids and demand.validation_errors:
                 demand.validation_errors = [
                     warning for warning in demand.validation_errors
-                    if warning != missing_capability_warning
+                    if warning != missing_capability_warning and not warning.startswith("Справочник: ")
                 ]
         capacities = list(self.db.scalars(select(LineCapacity).where(
             LineCapacity.capacity_date >= plan.horizon_start,
@@ -465,7 +465,8 @@ class PlanService:
                 capability = capability_map.get((item.line_id, item.product_id))
                 if item.schedule_kind == "production" and capability:
                     if not frozen_production:
-                        item.required_hours = self._production_duration(Decimal(item.quantity), Decimal(capability.units_per_hour))
+                        speed = Decimal((item.pf_details or {}).get("speed_kg_hour", capability.units_per_hour))
+                        item.required_hours = self._production_duration(Decimal(item.quantity), speed)
                     if capability.line.workshop_code == "PC":
                         reserved_groups[(item.line_id, item.production_date, item.shift)].add(mono_group(item.product.name, item.product.mono_group))
                 reserved[(item.line_id, item.production_date, item.shift)] += Decimal(item.required_hours)
@@ -512,17 +513,26 @@ class PlanService:
             manual_cleaning_days=manual_cleaning_days,
             complete_ohl=placement["complete_ohl"], complete_zam=placement["complete_zam"],
         )
+        csb_numbers = defaultdict(list)
         for existing in list(plan.schedule_items):
             if period_start and existing.production_date and not period_start <= existing.production_date <= period_end:
                 continue
             replace_source = source_kind is None or existing.schedule_kind != "production" or existing.source_kind == source_kind
             outside_scope = preserve_other_lines and existing.line_id is not None and existing.line_id != line_id
             if existing.source == "auto" and replace_source and not outside_scope and (line_id is None or existing.line_id == line_id or existing.demand_item_id in demand_by_id):
+                if existing.schedule_kind == "production":
+                    key = (existing.demand_item_id, existing.product_id, existing.line_id, existing.production_date, existing.shift, existing.quantity)
+                    csb_numbers[key].append((existing.csb_task_number, existing.csb_order_number))
                 plan.schedule_items.remove(existing)
                 self.db.delete(existing)
         self.db.flush()
+        split_counts = Counter((item.demand_id, item.product_id, item.line_id, item.production_date, item.shift, item.quantity) for item in result)
         for item in result:
+            key = (item.demand_id, item.product_id, item.line_id, item.production_date, item.shift, item.quantity)
+            numbers = csb_numbers.get(key, [])
+            t63, order_number = numbers[0] if len(numbers) == split_counts[key] == 1 else (None, None)
             plan.schedule_items.append(ProductionScheduleItem(
+                csb_task_number=t63, csb_order_number=order_number,
                 demand_item_id=item.demand_id, product_id=item.product_id, line_id=item.line_id,
                 production_date=item.production_date, sequence=0, quantity=item.quantity,
                 source_quantity=item.source_quantity, source_unit=item.source_unit,
@@ -599,6 +609,7 @@ class PlanService:
 
     def update_item(self, item: ProductionScheduleItem, values: dict) -> ProductionPlan:
         plan = item.plan
+        previous_date = item.production_date
         if item.line_id and item.production_date and any(key in values for key in ("before_item_id", "sequence", "duration_minutes")):
             self._preserve_pc_day_order(plan, item.line_id, item.production_date)
         next_line = values.get("line_id") or item.line_id
@@ -634,12 +645,16 @@ class PlanService:
         if values.get("quantity") is not None:
             item.quantity = self._round_quantity_for_product(Decimal(values["quantity"]), item.product, capability)
             item.quantity_kg = item.quantity
+            if (item.pf_details or {}).get("quantity_source") == "bom":
+                item.source_quantity = item.quantity
+                item.source_unit = "кг"
             item.box_count = self._box_count(item.quantity, item.product)
             if capability and capability.batch_quantum_kg and Decimal(capability.batch_quantum_kg) > 0:
                 item.batch_count = (item.quantity / Decimal(capability.batch_quantum_kg)).quantize(Decimal("0.001"))
         if item.schedule_kind == "production" and item.line_id and item.product_id:
             if capability and Decimal(capability.units_per_hour) > 0:
-                item.required_hours = self._production_duration(Decimal(item.quantity), Decimal(capability.units_per_hour))
+                speed = Decimal((item.pf_details or {}).get("speed_kg_hour", capability.units_per_hour))
+                item.required_hours = self._production_duration(Decimal(item.quantity), speed)
                 item.duration_hours = item.required_hours
         if item.line_id and item.production_date:
             selected = self.db.scalar(select(LineCapacity).where(
@@ -666,6 +681,10 @@ class PlanService:
             peers.insert(index, item)
             for rank, row in enumerate(peers, start=1):
                 row.sort_rank = Decimal(rank * 10)
+        from app.services.pf_service import sync_children, ensure_task_calendar
+        if any(key in values for key in ("production_date", "quantity", "excluded")):
+            sync_children(plan, item, previous_date, values.get("quantity") is not None)
+        ensure_task_calendar(self.db, plan)
         self.refresh_sequence_and_cleanings(plan)
         self.recalculate_load(plan)
         self.create_version(plan, "manual_change", values.get("comment") or "Ручная корректировка задания")
@@ -703,13 +722,16 @@ class PlanService:
 
     @classmethod
     def _sync_manual_item_quantity(cls, item: ProductionScheduleItem, capability: LineCapability) -> None:
-        quantity = cls._round_quantity_for_product(Decimal(item.quantity_kg or item.quantity or 0), item.product, capability)
+        quantity = Decimal(item.quantity_kg or item.quantity or 0)
+        if not item.parent_task_id:
+            quantity = cls._round_quantity_for_product(quantity, item.product, capability)
         item.quantity = quantity
         item.quantity_kg = quantity
         item.box_count = cls._box_count(quantity, item.product)
         quantum = Decimal(capability.batch_quantum_kg) if capability.batch_quantum_kg else None
         item.batch_count = (quantity / quantum).quantize(Decimal("0.001")) if quantum and quantum > 0 else None
-        item.required_hours = cls._production_duration(quantity, Decimal(capability.units_per_hour))
+        speed = Decimal((item.pf_details or {}).get("speed_kg_hour", capability.units_per_hour))
+        item.required_hours = cls._production_duration(quantity, speed)
         item.duration_hours = item.required_hours
 
     @staticmethod
@@ -720,12 +742,19 @@ class PlanService:
         return (quantity / box_weight).to_integral_value(rounding=ROUND_CEILING)
 
     def create_manual_task(self, plan: ProductionPlan, values: dict) -> ProductionPlan:
+        from app.services.pf_service import preview_expansion, append_expansion, ensure_task_calendar
+
+        preview = preview_expansion(self.db, values) if values.get("expand_pf") else None
+        if preview:
+            errors = [f'{row["sku"]}: {error}' for row in preview["items"] for error in row["errors"]]
+            if errors:
+                raise ValueError("; ".join(errors))
         if values.get("source_kind", "generic") not in {"ohl", "zam", "generic", "pf"}:
             raise ValueError("Выберите источник: ОХЛ, ЗАМ, Прочее или ПФ")
         product = self.db.get(Product, values["product_id"])
         line = self.db.get(ProductionLine, values["line_id"])
-        if not product or not line:
-            raise ValueError("Выберите существующие SKU и линию")
+        if not product or not product.active or product.catalog_status != "active" or not line or line.status != "active":
+            raise ValueError("Выберите действующие SKU и линию")
         capability = self.db.scalar(select(LineCapability).where(
             LineCapability.line_id == line.id, LineCapability.product_id == product.id,
         ))
@@ -749,6 +778,10 @@ class PlanService:
             status=ScheduleStatus.PLANNED, warnings=[],
         )
         plan.schedule_items.append(item)
+        self.db.flush()
+        if preview:
+            append_expansion(self.db, plan, item, preview)
+        ensure_task_calendar(self.db, plan)
         self.db.flush()
         self.refresh_sequence_and_cleanings(plan)
         self.recalculate_load(plan)
@@ -825,6 +858,8 @@ class PlanService:
         item.excluded = True
         item.source = "manual"
         item.locked = True
+        from app.services.pf_service import sync_children
+        sync_children(plan, item, item.production_date, False)
         self.db.flush()
         self.refresh_sequence_and_cleanings(plan)
         self.recalculate_load(plan)
@@ -1076,11 +1111,14 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "reason": item.reason,
         "actual_quantity_kg": item.actual_quantity_kg,
         "source_kind": item.source_kind,
+        "parent_task_id": item.parent_task_id,
         "marking_date": item.production_date if item.source_kind == "zam" or is_bulka(item.line) else item.marking_date,
         "shipping_date": shipping_date(item),
         "shipping_time": shipping_time(item),
         "shipping_date_overridden": bool(item.shipping_date_override or item.shipping_time_override),
         "execution_status": item.execution_status,
+        "csb_task_number": item.csb_task_number,
+        "csb_order_number": item.csb_order_number,
         "execution_note": item.execution_note,
         "reported_by": item.reported_by,
         "reported_at": item.reported_at,

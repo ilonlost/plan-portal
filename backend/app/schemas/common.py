@@ -54,6 +54,8 @@ class CapacityOut(ORMModel):
 
 
 class ScheduleItemOut(ORMModel):
+    csb_task_number: int | None = None
+    csb_order_number: str | None = None
     id: int
     sequence: int = 0
     sort_rank: Decimal | None = None
@@ -197,6 +199,7 @@ class ImportRow(BaseModel):
 
 
 class ImportPreview(BaseModel):
+    catalog_issues: list[dict] = Field(default_factory=list)
     affected_tasks: list[dict] = Field(default_factory=list)
     plan_version: int | None = None
     reference_rows: list[ImportRow] = Field(default_factory=list)

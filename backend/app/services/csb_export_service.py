@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
 
+from sqlalchemy import select, text
+from sqlalchemy.orm import Session
+
+from app.models.entities import CsbTaskCounter
+
 
 DESTINATION_CODES = {
     "ДМД": "8030000024",
@@ -36,7 +41,14 @@ def _decimal(value) -> str:
     return format(number.normalize(), "f") if number else "0"
 
 
-def build_csb_text(items: list, destination: str = "ДМД") -> tuple[str, list[int]]:
+def lock_csb_counter(db: Session) -> CsbTaskCounter:
+    # The insert also acquires SQLite's write lock before reading the tasks.
+    db.execute(text("INSERT INTO csb_task_counter (id, last_number) VALUES (1, 0) ON CONFLICT (id) DO NOTHING"))
+    statement = select(CsbTaskCounter).where(CsbTaskCounter.id == 1).with_for_update()
+    return db.scalars(statement.execution_options(populate_existing=True)).one()
+
+
+def build_csb_text(items: list, counter: CsbTaskCounter, destination: str = "ДМД") -> tuple[str, list[int]]:
     """Build the DT0133 records produced by the legacy Excel ExportCSB macro."""
     destination_code = DESTINATION_CODES.get(destination.strip().upper(), destination.strip())
     lines: list[str] = []
@@ -54,6 +66,11 @@ def build_csb_text(items: list, destination: str = "ДМД") -> tuple[str, list[
             continue
         shift_prefix = "2" if item.shift == "night" else "1"
         sequence = f"{int(item.sequence or 0):03d}"
+        if item.csb_task_number is None:
+            if counter.last_number >= 99999:
+                raise ValueError("Исчерпаны номера заданий CSB (T63 от 1 до 99999)")
+            counter.last_number += 1
+            item.csb_task_number = counter.last_number
         fields = [
             f"L1+{_decimal(quantity)}",
             f"T1+{item.line.csb_line_code}",
@@ -63,6 +80,7 @@ def build_csb_text(items: list, destination: str = "ДМД") -> tuple[str, list[
             f"T34+{destination_code}",
             f"T3+{shift_prefix}{sequence}",
             f"T55+{_integer((item.line.csb_t55 or '').strip() or item.required_hours)}",
+            f"T63+{item.csb_task_number}",
             f"L8+{production_date.strftime('%Y%m%d')}",
         ]
         lines.append("DT0133+PROD-ORDER:" + ":".join(fields))

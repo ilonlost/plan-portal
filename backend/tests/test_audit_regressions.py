@@ -126,6 +126,17 @@ def make_plan(db, quantity=100):
     return plan, demand
 
 
+def test_recalculation_keeps_csb_confirmation_on_unchanged_task(db):
+    plan, demand = make_plan(db)
+    item = next(row for row in plan.schedule_items if row.schedule_kind == "production")
+    item.csb_task_number = 12
+    item.csb_order_number = "000123"
+    db.commit()
+    PlanService(db).calculate(plan, [demand])
+    rows = [row for row in plan.schedule_items if row.csb_task_number == 12]
+    assert len(rows) == 1 and rows[0].csb_order_number == "000123"
+
+
 def test_matrix_keeps_requested_weeks_outside_plan_horizon(client, db):
     plan, _ = make_plan(db)
     db.commit()

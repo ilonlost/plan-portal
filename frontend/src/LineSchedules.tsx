@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useId } from "react";
 import { api } from "./api";
-import type { LineData, LineScheduleData, UserProfile } from "./types";
+import type { LineData, LineScheduleData, ProductionCycle, UserProfile } from "./types";
 const today = () => new Date().toLocaleDateString("sv-SE");
 const canPlan = (user: Pick<UserProfile, "role">) => user.role === "admin" || user.role === "planner";
 export function CatalogLinesTable({ lines, user, onSelect, title, description }: { lines: LineData[]; user: Pick<UserProfile, "role">; onSelect: (id: number) => void; title: string; description: string }) {
@@ -8,7 +8,7 @@ export function CatalogLinesTable({ lines, user, onSelect, title, description }:
   const match = (value: unknown, key: string) => !filters[key] || String(value ?? "—").toLocaleLowerCase().includes(filters[key].toLocaleLowerCase());
   const visible = lines.filter(line => match(line.workshop_name, "workshop") && match(`${line.name} ${line.code}`, "line") && match(line.schedule_label, "schedule") && match(line.csb_line_code || "Не задан", "csb") && match(line.product_count, "products"));
   const change = (key: string, value: string) => setFilters(current => ({ ...current, [key]: value }));
-  return <section className="card catalog-card"><div className="catalog-head"><div><h2>{title}</h2><p>{description}</p></div></div><div className="table-scroll integrated-table-scroll"><table><thead><tr><CatalogFilterHeader label="Цех" values={lines.map(line => line.workshop_name)} value={filters.workshop || ""} onChange={value => change("workshop", value)} /><CatalogFilterHeader label="Линия" values={lines.map(line => `${line.name} ${line.code}`)} value={filters.line || ""} onChange={value => change("line", value)} /><CatalogFilterHeader label="График" values={lines.map(line => line.schedule_label)} value={filters.schedule || ""} onChange={value => change("schedule", value)} /><th>Производственные сутки</th><CatalogFilterHeader label="Код CSB" values={lines.map(line => line.csb_line_code || "Не задан")} value={filters.csb || ""} onChange={value => change("csb", value)} /><CatalogFilterHeader label="Артикулы" values={lines.map(line => String(line.product_count))} value={filters.products || ""} onChange={value => change("products", value)} />{canPlan(user) && <th />}</tr></thead><tbody>{visible.map(line => <tr key={line.id}><td><span className="workshop-code">{line.workshop_name}</span></td><td><b>{line.name}</b><small>{line.code}</small></td><td>{line.schedule_label}</td><td>{line.production_cycle?.enabled ? <><b>{line.production_cycle.start_time} · {duration(line.production_cycle.duration_hours)}</b><small>Завершение в дату плана / ДМ</small></> : "По календарным датам"}</td><td><strong>{line.csb_line_code || <span className="bad">Не задан</span>}</strong></td><td>{number(line.product_count)}</td>{canPlan(user) && <td><button className="button secondary" onClick={() => onSelect(line.id)}>Настроить</button></td>}</tr>)}</tbody></table></div><footer>Показано {visible.length} из {lines.length}</footer></section>;
+  return <section className="card catalog-card"><div className="catalog-head"><div><h2>{title}</h2><p>{description}</p></div></div><div className="table-scroll integrated-table-scroll"><table><thead><tr><CatalogFilterHeader label="Цех" values={lines.map(line => line.workshop_name)} value={filters.workshop || ""} onChange={value => change("workshop", value)} /><CatalogFilterHeader label="Линия" values={lines.map(line => `${line.name} ${line.code}`)} value={filters.line || ""} onChange={value => change("line", value)} /><CatalogFilterHeader label="График" values={lines.map(line => line.schedule_label)} value={filters.schedule || ""} onChange={value => change("schedule", value)} /><th>Производственные сутки</th><CatalogFilterHeader label="Код CSB" values={lines.map(line => line.csb_line_code || "Не задан")} value={filters.csb || ""} onChange={value => change("csb", value)} /><CatalogFilterHeader label="Артикулы" values={lines.map(line => String(line.product_count))} value={filters.products || ""} onChange={value => change("products", value)} />{canPlan(user) && <th />}</tr></thead><tbody>{visible.map(line => <tr key={line.id}><td><span className="workshop-code">{line.workshop_name}</span></td><td><b>{line.name}</b><small>{line.code}</small></td><td>{line.schedule_label}</td><td>{line.production_cycle?.enabled ? <><b>{line.production_cycle.start_time}–{endTime(line.production_cycle)}</b><small>{line.production_cycle.rollover_time ? `Смена даты в ${line.production_cycle.rollover_time}` : "Дата по окончанию работы"}</small></> : "По календарным датам"}</td><td><strong>{line.csb_line_code || <span className="bad">Не задан</span>}</strong></td><td>{number(line.product_count)}</td>{canPlan(user) && <td><button className="button secondary" onClick={() => onSelect(line.id)}>Настроить</button></td>}</tr>)}</tbody></table></div><footer>Показано {visible.length} из {lines.length}</footer></section>;
 }
 
 export function LineScheduleModal({ lines, initialLineId, onClose, onSaved }: { lines: LineData[]; initialLineId?: number; onClose: () => void; onSaved: () => Promise<void> }) {
@@ -43,10 +43,18 @@ export function LineScheduleModal({ lines, initialLineId, onClose, onSaved }: { 
   return <div className="modal-backdrop"><div className="modal schedule-modal"><header><div><small>ДОСТУПНЫЕ ЧАСЫ И СМЕНЫ</small><h2>График работы линий</h2><p>Шаблоны и разовые ручные изменения настраиваются отдельно.</p></div><button onClick={onClose}>×</button></header>{error && <div className="inline-error">{error}</div>}{notice && <div className="inline-success">{notice}</div>}
     <section className="schedule-common"><label>Линия<select value={lineId} onChange={e => setLineId(Number(e.target.value))}>{lines.map(line => <option value={line.id} key={line.id}>{line.workshop_name} · {line.name}</option>)}</select></label>{data && <><label>Код линии CSB<input value={data.csb_line_code} onChange={e => setData({ ...data, csb_line_code: e.target.value })} /></label><label>T55 CSB<input value={data.csb_t55} onChange={e => setData({ ...data, csb_t55: e.target.value })} /></label><label className="full">Получатели линии<input value={data.mail_recipients} onChange={e => setData({ ...data, mail_recipients: e.target.value })} placeholder="master@company.ru, line@company.ru" /></label></>}</section>
 
-    {data && <section className="production-cycle-editor"><header><h3>Часы работы и производственные сутки</h3><p>Дата в плане обозначает день завершения цикла. Окно рассчитывается от ДП. Для сэндвичей с включённым окном ДП = ДМ − 1 день; для Булки все три даты равны. На остальных линиях действует АЗ / По графику.</p></header>
-      <label className="check-label"><input type="checkbox" checked={data.production_cycle.enabled} onChange={e => setData({ ...data, production_cycle: { ...data.production_cycle, enabled: e.target.checked } })} />Использовать производственные сутки по времени линии</label>
-      <div className="form-grid"><label>Начало работы<input type="time" disabled={!data.production_cycle.enabled} value={data.production_cycle.start_time} onChange={e => setData({ ...data, production_cycle: { ...data.production_cycle, start_time: e.target.value } })} /></label><label>Длительность окна, ч<input type="number" min="0.25" max="24" step="0.25" disabled={!data.production_cycle.enabled} value={data.production_cycle.duration_hours} onChange={e => setData({ ...data, production_cycle: { ...data.production_cycle, duration_hours: Number(e.target.value) } })} /></label></div>
-      {data.production_cycle.enabled && <div className="cycle-preview"><b>Пример для ДП {shortDate(start)}</b><span>{cycleExample(start, data.production_cycle.start_time, data.production_cycle.duration_hours)}</span><small>Дата примера — ДП (день завершения окна), а не ДМ. Для сэндвичей ДМ 23.10 → ДП 22.10 → окно 21.10 18:00–22.10 18:00. Полезные часы смен задаются шаблоном или вручную ниже; они не могут превышать это окно. При полном размещении перегрузка остаётся видна.</small></div>}
+    {data && <section className="production-cycle-editor"><header><h3>Часы работы и производственные сутки</h3></header>
+      <label className="check-label"><input type="checkbox" checked={data.production_cycle.enabled} onChange={e => setData({ ...data, production_cycle: { ...data.production_cycle, enabled: e.target.checked } })} />Задать часы работы линии</label>
+      {data.production_cycle.enabled && <>
+        <div className="form-grid">
+          <label>Работает с<input type="time" value={data.production_cycle.start_time} onChange={e => setData({ ...data, production_cycle: { ...data.production_cycle, end_time: endTime(data.production_cycle), start_time: e.target.value } })} /></label>
+          <label>Работает до<input type="time" value={endTime(data.production_cycle)} onChange={e => setData({ ...data, production_cycle: { ...data.production_cycle, end_time: e.target.value } })} /></label>
+        </div>
+        <small>Одинаковое начало и окончание означают круглосуточную работу.</small>
+        <label className="check-label"><input type="checkbox" checked={data.production_cycle.rollover_time !== undefined} onChange={e => setData({ ...data, production_cycle: { ...data.production_cycle, rollover_time: e.target.checked ? data.production_cycle.start_time : undefined } })} />Задать время смены даты для ночной линии</label>
+        {data.production_cycle.rollover_time !== undefined && <label>Следующая производственная дата начинается в<input type="time" value={data.production_cycle.rollover_time} onChange={e => setData({ ...data, production_cycle: { ...data.production_cycle, rollover_time: e.target.value } })} /></label>}
+        <div className="cycle-preview"><b>Рабочие часы для даты плана {shortDate(start)}</b><span>{cycleExample(start, data.production_cycle)}</span></div>
+      </>}
     </section>}
 
     {data && <details className="line-rules"><summary>Правила планирования линии</summary><div className="form-grid"><label>Запуск линии, ч<input type="number" min="0" max="4" step="0.5" value={data.planning_settings.daily_startup_hours} onChange={e => setData({ ...data, planning_settings: { ...data.planning_settings, daily_startup_hours: Number(e.target.value) } })} /></label><label>Переход между продуктами, ч<input type="number" min="0" max="4" step="0.5" value={data.planning_settings.changeover_hours} onChange={e => setData({ ...data, planning_settings: { ...data.planning_settings, changeover_hours: Number(e.target.value) } })} /></label><label>Запуск после простоя, ч<input type="number" min="0" max="4" step="0.5" value={data.planning_settings.restart_after_downtime_hours} onChange={e => setData({ ...data, planning_settings: { ...data.planning_settings, restart_after_downtime_hours: Number(e.target.value) } })} /></label><label>Начальный квант<input type="number" min="1" max="99" value={data.planning_settings.start_batch_number} onChange={e => setData({ ...data, planning_settings: { ...data.planning_settings, start_batch_number: Number(e.target.value) } })} /></label><label className="check-label"><input type="checkbox" checked={data.planning_settings.ohl_first} onChange={e => setData({ ...data, planning_settings: { ...data.planning_settings, ohl_first: e.target.checked } })} /> ОХЛ ставить первым</label><label className="check-label"><input type="checkbox" checked={data.planning_settings.bolognese_last} onChange={e => setData({ ...data, planning_settings: { ...data.planning_settings, bolognese_last: e.target.checked } })} /> Болоньезе ставить последним</label></div></details>}
@@ -73,12 +81,37 @@ function duration(value: number | string) { const minutes = Math.max(0, Math.rou
 function shortDate(value: string) { return value ? new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short" }).format(new Date(`${value}T00:00:00`)) : "—"; }
 function weekday(value: string) { return new Intl.DateTimeFormat("ru-RU", { weekday: "short" }).format(new Date(`${value}T00:00:00`)); }
 
-function cycleExample(day: string, start: string, hours: number) {
-  if (!day || !/^\d{2}:\d{2}$/.test(start) || !Number.isFinite(hours)) return "Укажите время и длительность";
-  const [hour, minute] = start.split(":").map(Number);
-  const endMinutes = (hour * 60 + minute + Math.round(hours * 60)) % 1440;
-  const end = new Date(`${day}T00:00:00`); end.setMinutes(endMinutes);
-  const from = new Date(end); from.setMinutes(from.getMinutes() - Math.round(hours * 60));
-  const format = (value: Date) => value.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-  return `${format(from)} → ${format(end)}`;
+function clockMinutes(clock: string) {
+  if (!/^\d{2}:\d{2}$/.test(clock)) return NaN;
+  const [hour, minute] = clock.split(":").map(Number);
+  return hour * 60 + minute;
+}
+
+function endTime(cycle: ProductionCycle) {
+  if (cycle.end_time !== undefined) return cycle.end_time;
+  const end = (clockMinutes(cycle.start_time) + Math.round(cycle.duration_hours * 60)) % 1440;
+  return [Math.floor(end / 60), end % 60].map(value => String(value).padStart(2, "0")).join(":");
+}
+
+function cycleExample(day: string, cycle: ProductionCycle) {
+  const start = clockMinutes(cycle.start_time);
+  const end = clockMinutes(endTime(cycle));
+  const length = (end - start + 1440) % 1440 || 1440;
+  const cutoff = cycle.rollover_time === undefined ? null : clockMinutes(cycle.rollover_time);
+  if (!day || !Number.isFinite(start + end) || (cutoff !== null && !Number.isFinite(cutoff))) return "Укажите время";
+  if (length < 15) return "Минимальная длительность работы — 15 минут";
+  const format = (minutes: number) => {
+    const date = new Date(`${day}T00:00:00`);
+    date.setMinutes(minutes);
+    return date.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  };
+  const interval = (left: number, right: number) => `${format(left)} — ${format(right)}`;
+  if (cutoff === null) return interval(end - length, end);
+  const since = cutoff === 0 ? 0 : cutoff - 1440;
+  if (length === 1440) return interval(since, since + 1440);
+  return [-2880, -1440, 0, 1440].flatMap(offset => {
+    const left = Math.max(since, start + offset);
+    const right = Math.min(since + 1440, start + offset + length);
+    return left < right ? [interval(left, right)] : [];
+  }).join(" · ");
 }
