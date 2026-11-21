@@ -6,6 +6,7 @@ export interface UserProfile {
   access_label: string; auth_mode: string;
   section_visibility?: Record<string, boolean>;
   can_comment?: boolean;
+  can_record_attendance?: boolean;
 }
 
 export interface SessionMode { auth_mode: string; }
@@ -175,8 +176,8 @@ export interface AdminOverview {
   downtime: { configured: boolean };
   smtp_password_configured: boolean;
   csb: { test_mode: boolean; configured: boolean };
-  users: { section_permissions: Record<string, boolean>; id: number; username: string; display_name: string; email: string | null; role: string; workshop_code: string | null; line_name: string | null; active: boolean; last_login_at: string | null }[];
-  lines: { id: number; workshop_code: string; workshop_name: string; name: string }[];
+  users: { can_record_attendance?: boolean; section_permissions: Record<string, boolean>; id: number; username: string; display_name: string; email: string | null; role: string; auth_provider?: string; workshop_code: string | null; line_name: string | null; active: boolean; last_login_at: string | null }[];
+  lines: { id: number; workshop_code: string; workshop_name: string; name: string; mail_recipients?: string | null }[];
   recent_audit: AuditRow[]; recent_notifications: NotificationRow[]; recent_integrations: IntegrationRow[];
 }
 
@@ -229,7 +230,16 @@ export interface LineCommentEntry {
   author_username: string; created_at: string; updated_at: string;
 }
 
+export interface LineActualAttendance {
+  line_id: number;
+  date: string;
+  headcount: number;
+  author_name: string;
+  updated_at: string;
+}
+
 export interface LineInsights {
+  actual_attendance?: LineActualAttendance[];
   issues?: { id: string; line_id: number | null; line_name: string; message: string; start_at?: string; end_at?: string }[];
   source_status: "connected" | "not_configured" | "unavailable" | "hidden";
   partial_downtime_percent: number | null; full_downtime_percent: number | null;

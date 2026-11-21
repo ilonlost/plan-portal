@@ -125,6 +125,10 @@ export const api = {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),
   }),
   lineInsights: (start: string, end: string, signal?: AbortSignal) => request<import("./types").LineInsights>(`/lines/insights?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, { signal }),
+  saveActualAttendance: (lineId: number, date: string, headcount: number) =>
+    request<{ attendance: import("./types").LineActualAttendance; mail_status: string }>(`/lines/${lineId}/actual-attendance/${date}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ headcount }),
+    }),
   saveLineComment: (lineId: number, date: string, text: string) => request<{ ok: boolean; comment: import("./types").LineCommentEntry }>(`/lines/${lineId}/comments/${date}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
   }),
@@ -138,10 +142,10 @@ export const api = {
   productionFactExportUrl: (start: string, end: string, center = "", search = "") => `${API}/production-fact/export.xlsx?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&center=${encodeURIComponent(center)}&search=${encodeURIComponent(search)}`,
   directoryUsers: (query: string) => request<{ users: DirectoryUser[] }>(`/admin/directory-users?query=${encodeURIComponent(query)}`),
   mailDiagnostics: () => request<{ ok: boolean; message: string }>("/admin/mail-diagnostics"),
-  updateUserAccess: (userId: number, role: string, active = true, section_permissions?: Record<string, boolean>) => request<{ ok: boolean }>(`/admin/users/${userId}`, {
-    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, active, section_permissions }),
+  updateUserAccess: (userId: number, role: string, active = true, section_permissions?: Record<string, boolean>, line_id?: number, can_record_attendance?: boolean) => request<{ ok: boolean }>(`/admin/users/${userId}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, active, section_permissions, line_id, can_record_attendance }),
   }),
-  createUserAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean }) => request<{ ok: boolean; id: number }>("/admin/users", {
+  createUserAccess: (data: { username: string; display_name: string; email: string; role: string; active: boolean; line_id?: number }) => request<{ ok: boolean; id: number }>("/admin/users", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
   }),
   previewAdvanceConfirmation: async (file: File) => {

@@ -4,7 +4,7 @@ import enum
 from datetime import date, datetime, time
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Integer, LargeBinary, Numeric, String, Text, Time, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, Enum, ForeignKey, Integer, LargeBinary, Numeric, String, Text, Time, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -458,3 +458,14 @@ class LineCommentMessage(Base):
     author_username: Mapped[str] = mapped_column(String(120))
     author_name: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LineActualAttendance(Base):
+    __tablename__ = "line_actual_attendance"
+    __table_args__ = (CheckConstraint("headcount >= 0", name="ck_line_actual_attendance_headcount"),)
+    line_id: Mapped[int] = mapped_column(ForeignKey("production_lines.id", ondelete="CASCADE"), primary_key=True)
+    attendance_date: Mapped[date] = mapped_column(Date, primary_key=True, index=True)
+    headcount: Mapped[int] = mapped_column(Integer)
+    author_username: Mapped[str] = mapped_column(String(120))
+    author_name: Mapped[str] = mapped_column(String(200))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -4,14 +4,14 @@ from datetime import date
 from typing import Literal
 import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.auth_service import ldap_health, search_ldap_users
 from app.core.config import settings
-from app.core.security import SECTION_KEYS, UserContext, require_admin, require_planner, user_sections
+from app.core.security import ATTENDANCE_PERMISSION, SECTION_KEYS, UserContext, require_admin, require_planner, user_sections, user_can_record_attendance
 from app.db.session import get_db
 from app.models.entities import (
     AuditEvent, DemandItem, ExportFile, ImportedOrder, ImportFile, IntegrationRun,
@@ -32,7 +32,7 @@ router.include_router(inspection_router)
 def mail_diagnostics(db: Session = Depends(get_db), user: UserContext = Depends(require_admin)) -> dict:
     return smtp_diagnostics(get_mail_configuration(db))
 
-PORTAL_ROLES = frozenset({"admin", "planner", "viewer"})
+PORTAL_ROLES = frozenset({"admin", "planner", "master", "viewer"})
 
 
 class DeletePlanRequest(BaseModel):
@@ -43,6 +43,8 @@ class UserAccessUpdate(BaseModel):
     role: str
     active: bool = True
     section_permissions: dict[str, bool] | None = None
+    can_record_attendance: bool | None = None
+    line_id: int | None = Field(default=None, gt=0, le=2147483647)
 
 
 class UserAccessCreate(UserAccessUpdate):
@@ -87,8 +89,17 @@ def _integration_dict(row: IntegrationRun) -> dict:
 def _validate_portal_role(role: str) -> str:
     clean = role.strip().lower()
     if clean not in PORTAL_ROLES:
-        raise HTTPException(422, "Выберите роль: администратор, планер или просмотр")
+        raise HTTPException(422, "Выберите роль: администратор, планер, мастер или просмотр")
     return clean
+
+
+def _master_line(db: Session, role: str, line_id: int | None) -> ProductionLine | None:
+    if role != "master":
+        return None
+    line = db.get(ProductionLine, line_id) if line_id is not None else None
+    if line is None or line.status != "active":
+        raise HTTPException(422, "Выберите действующую линию для мастера")
+    return line
 
 
 @router.get("/directory-users")
@@ -137,9 +148,10 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
         "csb": {"test_mode": settings.csb_test_mode, "configured": bool(settings.csb_endpoint)},
         "users": [{
             "id": row.id, "username": row.username, "display_name": row.display_name,
-            "email": row.email, "role": row.role, "workshop_code": row.workshop_code,
+            "email": row.email, "role": row.role, "workshop_code": row.workshop_code, "auth_provider": row.auth_provider,
             "line_name": row.line_name, "active": row.active, "last_login_at": row.last_login_at,
             "section_permissions": user_sections(row),
+            "can_record_attendance": user_can_record_attendance(row),
         } for row in db.scalars(select(User).order_by(User.display_name))],
         "lines": [{
             "id": row.id, "workshop_code": row.workshop_code,
@@ -262,28 +274,40 @@ def update_user_access(
     target = db.get(User, user_id)
     if not target:
         raise HTTPException(404, "Пользователь не найден")
-    role = "master" if payload.role == target.role == "master" else _validate_portal_role(payload.role)
+    role = _validate_portal_role(payload.role)
     if target.auth_provider == "service" and role != "viewer":
         raise HTTPException(422, "Сервисной учётной записи доступен только просмотр")
+    if target.auth_provider == "service" and payload.can_record_attendance:
+        raise HTTPException(422, "Сервисной учётной записи нельзя разрешить ввод количества сотрудников")
     if target.username.lower() == user.username.lower() and (not payload.active or role != "admin"):
         raise HTTPException(409, "Нельзя отключить себя или снять собственные права администратора")
     if target.role == "admin" and target.active and (not payload.active or role != "admin"):
         count = db.scalar(select(func.count(User.id)).where(User.role == "admin", User.active.is_(True))) or 0
         if count <= 1:
             raise HTTPException(409, "Нельзя отключить последнего администратора")
+    # Legacy API clients can update section permissions without resending an existing assignment.
+    if role == target.role == "master" and "line_id" not in payload.model_fields_set:
+        workshop_code, line_name = target.workshop_code, target.line_name
+    else:
+        line = _master_line(db, role, payload.line_id)
+        workshop_code, line_name = (line.workshop_code, line.name) if line else (None, None)
     target.role = role
     target.active = payload.active
+    target.workshop_code = workshop_code
+    target.line_name = line_name
     if payload.section_permissions is not None:
-        target.section_permissions = {key: value for key, value in payload.section_permissions.items() if key in SECTION_KEYS}
+        target.section_permissions = {
+            **{key: value for key, value in (target.section_permissions or {}).items() if key not in SECTION_KEYS},
+            **{key: value for key, value in payload.section_permissions.items() if key in SECTION_KEYS},
+        }
         if target.auth_provider == "service":
             from app.services.service_account_service import SERVICE_SECTIONS
             target.section_permissions = {key: bool(target.section_permissions.get(key)) and key in SERVICE_SECTIONS for key in SECTION_KEYS}
     if target.auth_provider == "service" and not payload.active:
         target.session_version += 1
-    if role != "master":
-        target.workshop_code = None
-        target.line_name = None
-    details = {"target": target.username, "role": role, "line": None, "active": target.active, "section_permissions": target.section_permissions}
+    if payload.can_record_attendance is not None:
+        target.section_permissions = {**(target.section_permissions or {}), ATTENDANCE_PERMISSION: payload.can_record_attendance}
+    details = {"target": target.username, "role": role, "line": target.line_name, "active": target.active, "section_permissions": target.section_permissions, "can_record_attendance": user_can_record_attendance(target)}
     db.add(AuditEvent(username=user.username, action="user_access_updated", entity_type="user", entity_id=str(target.id), details=details))
     db.commit()
     send_notification(db, "user_access_updated", f"PLAN Portal: изменён доступ пользователя {target.username}", f"Администратор {user.display_name} изменил роль, доступ или разрешения сотрудника {target.username}.")
@@ -303,6 +327,7 @@ def create_user_access(
     target = db.scalar(select(User).where(func.lower(User.username) == username.lower()))
     if target:
         raise HTTPException(409, "Пользователь уже добавлен")
+    line = _master_line(db, role, payload.line_id)
     target = User(
         username=username,
         display_name=payload.display_name.strip() or username,
@@ -310,12 +335,14 @@ def create_user_access(
         role=role,
         active=payload.active,
         section_permissions={key: value for key, value in (payload.section_permissions or {}).items() if key in SECTION_KEYS},
-        workshop_code=None,
-        line_name=None,
+        workshop_code=line.workshop_code if line else None,
+        line_name=line.name if line else None,
         ldap_groups=[],
     )
     db.add(target)
     db.flush()
+    if payload.can_record_attendance is not None:
+        target.section_permissions = {**(target.section_permissions or {}), ATTENDANCE_PERMISSION: payload.can_record_attendance}
     details = {"target": target.username, "role": target.role, "line": target.line_name, "active": target.active}
     db.add(AuditEvent(username=user.username, action="user_access_created", entity_type="user", entity_id=str(target.id), details=details))
     db.commit()

@@ -1,14 +1,14 @@
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
 from app.core.security import UserContext, current_user, require_planner
-from app.models.entities import AuditEvent, DemandItem, LineCapacity, LineCapability, LineComment, LineCommentMessage, LineScheduleTemplate, ProductionLine, ProductionPlan, ProductionScheduleItem
+from app.models.entities import AuditEvent, DemandItem, LineActualAttendance, LineCapacity, LineCapability, LineComment, LineCommentMessage, LineScheduleTemplate, ProductionLine, ProductionPlan, ProductionScheduleItem
 from app.services.line_schedule_service import DEFAULT_ANCHOR, SCHEDULE_LABELS, ensure_line_capacities, shift_hours
 from app.services.plan_service import PlanService
 from app.services.line_attendance import ATTENDANCE_LINES, today_attendance
@@ -16,6 +16,7 @@ from app.core.line_catalog import line_key
 from app.services.downtime_service import load_downtimes, resolve_downtime_line
 from app.services.settings_service import get_portal_configuration, get_planner_configuration
 from app.services.notification_service import send_notification
+from app.services.tail_buffer_service import MOSCOW
 from app.services.production_cycle_service import production_cycle, validate_cycle, window_fields, cap_shift_hours
 
 router = APIRouter(prefix="/lines", tags=["lines"])
@@ -36,6 +37,66 @@ class LineCommentUpdate(BaseModel):
     text: str = Field(default="", max_length=2000)
 
 
+class LineActualAttendanceUpdate(BaseModel):
+    headcount: int = Field(strict=True, ge=0, le=2147483647)
+
+
+def actual_attendance_record(row: LineActualAttendance) -> dict:
+    return {
+        "line_id": row.line_id,
+        "date": row.attendance_date,
+        "headcount": row.headcount,
+        "author_name": row.author_name,
+        "updated_at": row.updated_at.replace(tzinfo=timezone.utc) if row.updated_at.tzinfo is None else row.updated_at,
+    }
+
+
+@router.put("/{line_id}/actual-attendance/{attendance_date}")
+def save_actual_attendance(
+    line_id: int, attendance_date: date, payload: LineActualAttendanceUpdate,
+    db: Session = Depends(get_db), user: UserContext = Depends(current_user),
+) -> dict:
+    if not user.can_record_attendance or user.auth_method == "service":
+        raise HTTPException(403, "Нет разрешения на ввод количества сотрудников")
+    now = datetime.now(timezone.utc)
+    if attendance_date > now.astimezone(MOSCOW).date():
+        raise HTTPException(422, "Фактическую явку можно заполнить за сегодня или прошедший день")
+    # Lock the parent line so concurrent first submissions serialize as well.
+    line = db.scalar(select(ProductionLine).where(
+        ProductionLine.id == line_id, ProductionLine.status == "active",
+    ).with_for_update())
+    if line is None:
+        raise HTTPException(404, "Линия не найдена")
+    if user.role == "master" and (line_key(user.line_name or "") != line_key(line.name) or (user.workshop_code and user.workshop_code != line.workshop_code)):
+        raise HTTPException(403, "Мастер может заполнять явку только своей линии")
+
+    row = db.get(LineActualAttendance, (line_id, attendance_date))
+    previous = row.headcount if row else None
+    if row and previous == payload.headcount and row.author_username == user.username:
+        return {"attendance": actual_attendance_record(row), "mail_status": "unchanged"}
+    if row is None:
+        row = LineActualAttendance(line_id=line_id, attendance_date=attendance_date)
+        db.add(row)
+    row.headcount = payload.headcount
+    row.author_username = user.username
+    row.author_name = user.display_name
+    row.updated_at = datetime.now(timezone.utc)
+    db.add(AuditEvent(
+        username=user.username, action="line_actual_attendance_saved", entity_type="production_line",
+        entity_id=str(line_id), details={"date": attendance_date.isoformat(), "previous": previous, "headcount": row.headcount},
+    ))
+    result = actual_attendance_record(row)
+    division, line_name = line.workshop_name, line.name
+    db.commit()
+
+    day = attendance_date.strftime("%d.%m.%Y")
+    status = send_notification(
+        db, "line_actual_attendance_saved", f"PLAN Portal — фактическая явка · {line_name} · {day}",
+        f"Дата: {day}\nЦех: {division}\nЛиния: {line_name}\nПришли по факту: {payload.headcount} чел.\nЗаполнил: {user.display_name}",
+    ).status
+    return {"attendance": result, "mail_status": status}
+
+
 @router.get("/attendance/today")
 def line_attendance(db: Session = Depends(get_db), user: UserContext = Depends(current_user)) -> dict:
     snapshot = today_attendance()
@@ -54,10 +115,16 @@ def line_insights(
         from fastapi import HTTPException
         raise HTTPException(422, "Период должен быть от 1 до 31 дня")
     comments = line_conversation(db, start, end)
+    actual_attendance = [
+        actual_attendance_record(row) for row in db.scalars(select(LineActualAttendance).where(
+            LineActualAttendance.attendance_date.between(start, end),
+        ))
+    ]
     if not DOWNTIME_INSIGHTS_ENABLED or user.role != "admin":
         return {
             "source_status": "hidden", "partial_downtime_percent": None, "full_downtime_percent": None,
             "comments": comments,
+            "actual_attendance": actual_attendance,
             "downtimes": [], "issues": [],
         }
     lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
@@ -110,6 +177,7 @@ def line_insights(
         "partial_downtime_percent": partial_percent,
         "full_downtime_percent": full_percent,
         "comments": comments,
+        "actual_attendance": actual_attendance,
         "downtimes": downtimes,
         "issues": issues,
     }
