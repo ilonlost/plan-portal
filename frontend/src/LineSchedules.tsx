@@ -8,7 +8,7 @@ export function CatalogLinesTable({ lines, user, onSelect, title, description }:
   const match = (value: unknown, key: string) => !filters[key] || String(value ?? "—").toLocaleLowerCase().includes(filters[key].toLocaleLowerCase());
   const visible = lines.filter(line => match(line.workshop_name, "workshop") && match(`${line.name} ${line.code}`, "line") && match(line.schedule_label, "schedule") && match(line.csb_line_code || "Не задан", "csb") && match(line.product_count, "products"));
   const change = (key: string, value: string) => setFilters(current => ({ ...current, [key]: value }));
-  return <section className="card catalog-card"><div className="catalog-head"><div><h2>{title}</h2><p>{description}</p></div></div><div className="table-scroll integrated-table-scroll"><table><thead><tr><CatalogFilterHeader label="Цех" values={lines.map(line => line.workshop_name)} value={filters.workshop || ""} onChange={value => change("workshop", value)} /><CatalogFilterHeader label="Линия" values={lines.map(line => `${line.name} ${line.code}`)} value={filters.line || ""} onChange={value => change("line", value)} /><CatalogFilterHeader label="График" values={lines.map(line => line.schedule_label)} value={filters.schedule || ""} onChange={value => change("schedule", value)} /><th>Производственные сутки</th><CatalogFilterHeader label="Код CSB" values={lines.map(line => line.csb_line_code || "Не задан")} value={filters.csb || ""} onChange={value => change("csb", value)} /><CatalogFilterHeader label="Артикулы" values={lines.map(line => String(line.product_count))} value={filters.products || ""} onChange={value => change("products", value)} />{canPlan(user) && <th />}</tr></thead><tbody>{visible.map(line => <tr key={line.id}><td><span className="workshop-code">{line.workshop_name}</span></td><td><b>{line.name}</b><small>{line.code}</small></td><td>{line.schedule_label}</td><td>{line.production_cycle?.enabled ? <><b>{line.production_cycle.start_time}–{endTime(line.production_cycle)}</b><small>Дата по окончанию работы</small></> : "По календарным датам"}</td><td><strong>{line.csb_line_code || <span className="bad">Не задан</span>}</strong></td><td>{number(line.product_count)}</td>{canPlan(user) && <td><button className="button secondary" onClick={() => onSelect(line.id)}>Настроить</button></td>}</tr>)}</tbody></table></div><footer>Показано {visible.length} из {lines.length}</footer></section>;
+  return <section className="card catalog-card"><div className="catalog-head"><div><h2>{title}</h2><p>{description}</p></div></div><div className="table-scroll integrated-table-scroll"><table><thead><tr><CatalogFilterHeader label="Цех" values={lines.map(line => line.workshop_name)} value={filters.workshop || ""} onChange={value => change("workshop", value)} /><CatalogFilterHeader label="Линия" values={lines.map(line => `${line.name} ${line.code}`)} value={filters.line || ""} onChange={value => change("line", value)} /><CatalogFilterHeader label="График" values={lines.map(line => line.schedule_label)} value={filters.schedule || ""} onChange={value => change("schedule", value)} /><th>Производственные сутки</th><CatalogFilterHeader label="Код CSB" values={lines.map(line => line.csb_line_code || "Не задан")} value={filters.csb || ""} onChange={value => change("csb", value)} /><CatalogFilterHeader label="Артикулы" values={lines.map(line => String(line.product_count))} value={filters.products || ""} onChange={value => change("products", value)} />{canPlan(user) && <th />}</tr></thead><tbody>{visible.map(line => <tr key={line.id}><td><span className="workshop-code">{line.workshop_name}</span></td><td><b>{line.name}</b><small>{line.code}</small></td><td>{line.schedule_label}</td><td>{line.production_cycle?.enabled ? <><b>{line.production_cycle.start_time}–{endTime(line.production_cycle)}</b><small>{line.production_cycle.rollover_time ? `Смена даты в ${line.production_cycle.rollover_time}` : "Дата по окончанию работы"}</small></> : "По календарным датам"}</td><td><strong>{line.csb_line_code || <span className="bad">Не задан</span>}</strong></td><td>{number(line.product_count)}</td>{canPlan(user) && <td><button className="button secondary" onClick={() => onSelect(line.id)}>Настроить</button></td>}</tr>)}</tbody></table></div><footer>Показано {visible.length} из {lines.length}</footer></section>;
 }
 
 export function LineScheduleModal({ lines, initialLineId, onClose, onSaved }: { lines: LineData[]; initialLineId?: number; onClose: () => void; onSaved: () => Promise<void> }) {
@@ -51,6 +51,8 @@ export function LineScheduleModal({ lines, initialLineId, onClose, onSaved }: { 
           <label>Работает до<input type="time" value={endTime(data.production_cycle)} onChange={e => setData({ ...data, production_cycle: { ...data.production_cycle, end_time: e.target.value } })} /></label>
         </div>
         <small>Одинаковое начало и окончание означают круглосуточную работу.</small>
+        <label className="check-label"><input type="checkbox" checked={data.production_cycle.rollover_time !== undefined} onChange={e => setData({ ...data, production_cycle: { ...data.production_cycle, rollover_time: e.target.checked ? data.production_cycle.start_time : undefined } })} />Задать время смены даты для ночной линии</label>
+        {data.production_cycle.rollover_time !== undefined && <label>Следующая производственная дата начинается в<input type="time" value={data.production_cycle.rollover_time} onChange={e => setData({ ...data, production_cycle: { ...data.production_cycle, rollover_time: e.target.value } })} /></label>}
         <div className="cycle-preview"><b>Рабочие часы для даты плана {shortDate(start)}</b><span>{cycleExample(start, data.production_cycle)}</span></div>
       </>}
     </section>}
@@ -95,7 +97,8 @@ function cycleExample(day: string, cycle: ProductionCycle) {
   const start = clockMinutes(cycle.start_time);
   const end = clockMinutes(endTime(cycle));
   const length = (end - start + 1440) % 1440 || 1440;
-  if (!day || !Number.isFinite(start + end)) return "Укажите время";
+  const cutoff = cycle.rollover_time === undefined ? null : clockMinutes(cycle.rollover_time);
+  if (!day || !Number.isFinite(start + end) || (cutoff !== null && !Number.isFinite(cutoff))) return "Укажите время";
   if (length < 15) return "Минимальная длительность работы — 15 минут";
   const format = (minutes: number) => {
     const date = new Date(`${day}T00:00:00`);
@@ -103,5 +106,12 @@ function cycleExample(day: string, cycle: ProductionCycle) {
     return date.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   };
   const interval = (left: number, right: number) => `${format(left)} — ${format(right)}`;
-  return interval(end - length, end);
+  if (cutoff === null) return interval(end - length, end);
+  const since = cutoff === 0 ? 0 : cutoff - 1440;
+  if (length === 1440) return interval(since, since + 1440);
+  return [-2880, -1440, 0, 1440].flatMap(offset => {
+    const left = Math.max(since, start + offset);
+    const right = Math.min(since + 1440, start + offset + length);
+    return left < right ? [interval(left, right)] : [];
+  }).join(" · ");
 }

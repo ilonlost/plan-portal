@@ -27,6 +27,9 @@ def validate_cycle(values: dict) -> dict:
         minutes = Decimal(str(values.get("duration_hours", 24))) * 60
     if not Decimal(minutes).is_finite() or not 15 <= minutes <= 1440 or minutes != int(minutes):
         raise ValueError("Длительность суток: от 15 минут до 24 часов, с точностью до минуты")
+    if values.get("rollover_time") is not None:
+        clock_minutes(values["rollover_time"])
+        result["rollover_time"] = values["rollover_time"]
     return {**result, "duration_hours": float(minutes / 60)}
 
 
@@ -34,20 +37,37 @@ def production_cycle(line) -> dict:
     return {**DEFAULT_CYCLE, **((line.planning_settings or {}).get("production_cycle") or {})}
 
 
-def cycle_window(line, day: date) -> tuple[datetime, datetime] | None:
-    """The plan column is the calendar date on which this cycle ends.
-
-    E.g. a 24h cycle at 18:00 for day 19 Oct runs 18 Oct 18:00–19 Oct 18:00.
-    Date labels (including ZAM DP=DM) remain separate from actual calendar bounds.
-    """
+def work_intervals(line, day: date) -> list[tuple[datetime, datetime]]:
+    """Working portions of one plan date in local factory time."""
     cycle = production_cycle(line)
     if not cycle["enabled"]:
-        return None
+        return []
     start = time.fromisoformat(cycle["start_time"])
     minutes = round(cycle["duration_hours"] * 60)
+    duration = timedelta(minutes=minutes)
+    if cycle.get("rollover_time"):
+        cutoff = time.fromisoformat(cycle["rollover_time"])
+        since = datetime.combine(day, cutoff)
+        if cutoff != time.min:
+            since -= timedelta(days=1)
+        until = since + timedelta(days=1)
+        if minutes == 1440:
+            return [(since, until)]
+        intervals = []
+        for offset in (-1, 0, 1):
+            opening = datetime.combine(since.date() + timedelta(days=offset), start)
+            left, right = max(since, opening), min(until, opening + duration)
+            if left < right:
+                intervals.append((left, right))
+        return intervals
     end_minutes = (start.hour * 60 + start.minute + minutes) % 1440
     end = datetime.combine(day, time(end_minutes // 60, end_minutes % 60))
-    return end - timedelta(minutes=minutes), end
+    return [(end - duration, end)]
+
+
+def cycle_window(line, day: date) -> tuple[datetime, datetime] | None:
+    intervals = work_intervals(line, day)
+    return (intervals[0][0], intervals[-1][1]) if intervals else None
 
 
 def window_fields(line, day: date | None) -> dict:

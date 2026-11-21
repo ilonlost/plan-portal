@@ -461,7 +461,8 @@ def update_line_schedule(
     rules_changed = effective_planning_settings(line) != next_settings
     line.planning_settings = next_settings
     if next_cycle["enabled"]:
-        line.production_day_start_hour = int(next_cycle["start_time"].split(":")[0])
+        boundary = next_cycle.get("rollover_time") or next_cycle["start_time"]
+        line.production_day_start_hour = int(boundary.split(":")[0])
     if plan and (pattern_changed or cycle_changed):
         for row in db.scalars(select(LineCapacity).where(
             LineCapacity.line_id == line.id,
