@@ -1,0 +1,8 @@
+.sidebar .reports-nav > button { width: 100%; }
+.sidebar .reports-nav .reports-chevron { margin-left: auto; font-size: 15px; transition: transform .15s ease; }
+.sidebar .reports-nav .reports-chevron.expanded { transform: rotate(90deg); }
+.sidebar .reports-submenu { display: grid; gap: 3px; margin: 4px 0 5px 24px; padding-left: 10px; border-left: 1px solid #3b3d44; }
+.sidebar .reports-submenu[hidden] { display: none; }
+.sidebar .reports-submenu button { width: 100%; padding: 10px 9px; font-size: 11px; line-height: 1.4; }
+.sidebar .reports-submenu button.active::before { display: none; }
+.sidebar .reports-nav button:focus-visible { outline: 2px solid var(--red); outline-offset: -2px; }

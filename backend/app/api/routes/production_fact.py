@@ -1,16 +1,78 @@
 from datetime import date
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
 from app.core.security import UserContext, current_user
 from app.services.tail_buffer_service import CENTERS, SourceError, load_summary, load_tail_buffers
 from app.services.production_fact_export import export_workbook
+from app.services import production_eol, shipment_fact
 
 router = APIRouter(prefix="/production-fact", tags=["production-fact"])
 MAX_RANGE_DAYS = 184
+
+
+@router.get("/shipment/report")
+def shipment_report(start: date | None = None, end: date | None = None,
+                    center: str = Query("", pattern=r"^\d{0,9}$"), search: str = Query("", max_length=120),
+                    offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
+                    _: UserContext = Depends(current_user)):
+    start, end = _range(start, end)
+    try:
+        data = shipment_fact.report(start, end, center, search)
+    except SourceError as error:
+        raise HTTPException(503, "; ".join(error.issues)) from None
+    data["rows"] = data["rows"][offset:offset + limit]
+    return {**data, "offset": offset, "limit": limit}
+
+
+@router.get("/shipment/report/export.xlsx")
+def shipment_export(start: date | None = None, end: date | None = None,
+                    center: str = Query("", pattern=r"^\d{0,9}$"), search: str = Query("", max_length=120),
+                    _: UserContext = Depends(current_user)):
+    start, end = _range(start, end)
+    try:
+        data = shipment_fact.report(start, end, center, search)
+        data.update(filter_center=center, filter_search=search)
+        content = production_eol.export_xlsx(data)
+    except SourceError as error:
+        raise HTTPException(503, "; ".join(error.issues)) from None
+    filename = quote(f"Факт отгрузки {start} — {end}.xlsx")
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"})
+
+
+@router.get("/report")
+def production_eol_report(start: date | None = None, end: date | None = None,
+                          center: str = Query("", pattern=r"^\d{0,9}$"), search: str = Query("", max_length=120),
+                          offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
+                          _: UserContext = Depends(current_user)):
+    start, end = _range(start, end)
+    try:
+        data = production_eol.report(start, end, center, search)
+    except SourceError as error:
+        raise HTTPException(503, "; ".join(error.issues)) from None
+    data["rows"] = data["rows"][offset:offset + limit]
+    return {**data, "offset": offset, "limit": limit}
+
+
+@router.get("/report/export.xlsx")
+def export_production_eol(start: date | None = None, end: date | None = None,
+                          center: str = Query("", pattern=r"^\d{0,9}$"), search: str = Query("", max_length=120),
+                          _: UserContext = Depends(current_user)):
+    start, end = _range(start, end)
+    try:
+        data = production_eol.report(start, end, center, search)
+        data.update(filter_center=center, filter_search=search)
+        content = production_eol.export_xlsx(data)
+    except SourceError as error:
+        raise HTTPException(503, "; ".join(error.issues)) from None
+    filename = quote(f"Факт производства {start} — {end}.xlsx")
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"})
 
 
 def _range(start: date | None, end: date | None):

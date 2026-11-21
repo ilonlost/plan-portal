@@ -38,6 +38,10 @@ async function optional<T>(path: string, options: RequestInit = {}): Promise<T |
 }
 
 export const api = {
+  productionEol: (params: string, signal?: AbortSignal) => request<import("./ProductionFact").ProductionReport>(`/production-fact/report?${params}`, { signal }),
+  productionEolExportUrl: (params: string) => `${API}/production-fact/report/export.xlsx?${params}`,
+  shipmentFact: (params: string, signal?: AbortSignal) => request<import("./ProductionFact").ProductionReport>(`/production-fact/shipment/report?${params}`, { signal }),
+  shipmentFactExportUrl: (params: string) => `${API}/production-fact/shipment/report/export.xlsx?${params}`,
   auditLog: (params: string, signal?: AbortSignal) => request<import("./AdminInspection").InspectionPage<import("./types").AuditRow>>(`/admin/audit-log?${params}`, { signal }),
   auditFilters: (signal?: AbortSignal) => request<{ actions: string[]; users: string[]; entities: string[] }>("/admin/audit-log/filters", { signal }),
   databaseTables: (signal?: AbortSignal) => request<{ read_only: boolean; tables: import("./AdminInspection").DatabaseTable[] }>("/admin/database", { signal }),

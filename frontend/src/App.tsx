@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, useRef } from "react";
 import { ApiError, api } from "./api";
 import frontendPackage from "../package.json";
 import { matchesCatalogText, normalizeCatalogSearch } from "./catalogSearch";
-import { TailBuffers } from "./TailBuffers";
+import { ProductionFact } from "./ProductionFact";
 import { ProductionImport } from "./ProductionImport";
 import { PlannerAdmin } from "./PlannerAdmin";
 import { AuditLog, DatabaseExplorer } from "./AdminInspection";
@@ -14,8 +14,10 @@ import type {
   DirectoryUser, FeedbackData, FeedbackEntry, FeedbackEvent, LineInsights, MailConfiguration, MatrixData, PortalConfiguration, ScheduleItem, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 import "./styles.css";
+import "./ReportsNav.css";
+import "./ReportsLayout.css";
 
-type Page = "plan" | "catalog" | "import" | "az" | "feedback" | "fact" | "admin" | "planner-admin";
+type Page = "plan" | "catalog" | "import" | "az" | "feedback" | "fact" | "shipment" | "admin" | "planner-admin";
 type ViewDays = 1 | 7 | 21;
 type Theme = "dark" | "light";
 type DayLayout = "cards" | "table";
@@ -27,8 +29,8 @@ const executionLabels: Record<string, string> = {
 };
 const today = () => new Date().toLocaleDateString("sv-SE");
 const canPlan = (user: UserProfile | null) => user?.role === "admin" || user?.role === "planner";
-const sectionVisible = (user: UserProfile, section: Page) => section === "planner-admin" ? canPlan(user) : user.role === "admin" || (section !== "admin" && (user.section_visibility?.[section] ?? section !== "fact"));
-const sectionLabels: Record<string, string> = { plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", feedback: "Обратная связь", fact: "Факт производства" };
+const sectionVisible = (user: UserProfile, page: Page) => { const section = page === "shipment" ? "fact" : page; return section === "planner-admin" ? canPlan(user) : user.role === "admin" || (section !== "admin" && (user.section_visibility?.[section] ?? section !== "fact")); };
+const sectionLabels: Record<string, string> = { plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", feedback: "Обратная связь", fact: "Отчёты" };
 const articleBlocked = (product: CatalogProduct) => product.catalog_status === "blocked" || /блок/i.test(product.fk_status || "");
 const articleStatus = (product: CatalogProduct) => product.catalog_status === "deleted" ? "Удалён из справочника" : articleBlocked(product) ? "Заблокирован" : !product.active ? "Отключён" : product.fk_status || "Активен";
 const portalRoles = [
@@ -63,6 +65,7 @@ export default function App() {
   const [sessionMode, setSessionMode] = useState<SessionMode | null>(null);
   const [user, setUser] = useState<UserProfile | null>(null);
   const [page, setPage] = useState<Page>("plan");
+  const [reportsOpen, setReportsOpen] = useState(false);
   const [matrix, setMatrix] = useState<MatrixData | null>(null);
   const [workshops, setWorkshops] = useState<WorkshopData[]>([]);
   const [lines, setLines] = useState<LineData[]>([]);
@@ -235,18 +238,27 @@ export default function App() {
         {canPlan(user) && sectionVisible(user, "import") && <Nav active={page === "import"} icon="⇧" label="Загрузка Excel" onClick={() => setPage("import")} />}
         {canPlan(user) && sectionVisible(user, "az") && <Nav active={page === "az"} icon="АЗ" label="Подтверждение АЗ" onClick={() => setPage("az")} />}
         {sectionVisible(user, "feedback") && <Nav active={page === "feedback"} icon="✎" label="Обратная связь" onClick={() => setPage("feedback")} />}
-        {sectionVisible(user, "fact") && <Nav active={page === "fact"} icon="◷" label="Факт производства" onClick={() => setPage("fact")} />}
+        {sectionVisible(user, "fact") && <div className="reports-nav">
+          <button type="button" className={page === "fact" || page === "shipment" ? "active" : ""} aria-expanded={reportsOpen} aria-controls="reports-submenu" onClick={() => setReportsOpen(open => !open)}>
+            <i aria-hidden="true">◷</i><span>Отчёты</span><span aria-hidden="true" className={`reports-chevron${reportsOpen ? " expanded" : ""}`}>›</span>
+          </button>
+          <div id="reports-submenu" className="reports-submenu" hidden={!reportsOpen}>
+            <button type="button" className={page === "fact" ? "active" : ""} aria-current={page === "fact" ? "page" : undefined} onClick={() => setPage("fact")}>Факт производства</button>
+            <button type="button" className={page === "shipment" ? "active" : ""} aria-current={page === "shipment" ? "page" : undefined} onClick={() => setPage("shipment")}>Факт отгрузки</button>
+          </div>
+        </div>}
         {canPlan(user) && <Nav active={page === "planner-admin"} icon="⚙" label="Управление планированием" onClick={() => setPage("planner-admin")} />}
         {user.role === "admin" && <Nav active={page === "admin"} icon="⚙" label="Администрирование планирования" onClick={() => setPage("admin")} />}
       </nav>
       {sectionVisible(user, "feedback") && <div className="sidebar-tip"><button onClick={() => setPage("feedback")}>Написать в ИТ</button></div>}
       <div className="user-card"><span>{initials(user.display_name)}</span><div><b title={user.display_name}>{user.display_name}</b><small>{user.access_label}{user.line_name ? ` · ${user.line_name}` : ""}</small></div><button title="Выйти" onClick={() => void logout()}>↪</button></div>
     </aside>
-    <main>
+    <main className={page === "fact" || page === "shipment" ? "reports-main" : undefined}>
       <header className="topbar">
         <div><small><a className="portal-return" href="/">ART PORTAL</a> · ПЛАНИРОВАНИЕ ПРОИЗВОДСТВА</small><h1>{pageTitle(page)}</h1></div>
         {page === "plan" && <div className="top-week-summary"><b>{weekNumber(viewDate)} неделя</b><span>{formatDate(startOfWeek(viewDate))} — {formatDate(addDays(startOfWeek(viewDate), 6))}</span></div>}
         <div className="top-actions">
+          {(page === "fact" || page === "shipment") && <span id="report-status" />}
           <span className="app-version" title="Версия PLAN PORTAL">v{frontendPackage.version}</span>
           <span className="live-dot">● Система работает</span>
           <button className="theme-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀ Светлая" : "◐ Тёмная"}</button>
@@ -276,6 +288,7 @@ export default function App() {
         {page === "az" && <AdvanceConfirmationView user={user} lines={lines} onApplied={async text => { setNotice(text); await refreshPlan(); }} onError={setError} />}
         {page === "feedback" && <FeedbackView user={user} onNotice={setNotice} onError={setError} />}
         {page === "fact" && sectionVisible(user, "fact") && <ProductionFactView onError={setError} />}
+        {page === "shipment" && sectionVisible(user, "shipment") && <ProductionFact key="shipment" shipment onError={setError} />}
         {page === "planner-admin" && canPlan(user) && <PlannerAdmin username={user.username} isAdmin={user.role === "admin"} onChanged={async () => { await refreshPlan(); setCatalog(null); }} />}
         {page === "admin" && user.role === "admin" && <AdminView onDeleted={async text => { setNotice(text); setMatrix(null); setPage("import"); await loadBase(user); }} onError={setError} />}
       </>}</div>
@@ -661,7 +674,7 @@ function FeedbackDetails({ entry, events, canManage, onClose, onUpdated, onError
 }
 
 function ProductionFactView({ onError }: { onError: (text: string) => void }) {
-  return <TailBuffers onError={onError} />;
+  return <ProductionFact onError={onError} />;
 }
 
 export function AdminView({ onDeleted, onError }: { onDeleted: (t: string) => Promise<void>; onError: (t: string) => void }) {
@@ -828,7 +841,7 @@ function Toast({ tone, text, close }: { tone: string; text: string; close: () =>
 }
 function Loading() { return <div className="loading"><i /><p>Загружаем производственные данные…</p></div>; }
 function Empty({ title, text, action }: { title: string; text: string; action?: React.ReactNode }) { return <section className="empty"><span>◇</span><h2>{title}</h2><p>{text}</p>{action}</section>; }
-function pageTitle(page: Page) { return ({ plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", feedback: "Обратная связь", fact: "Факт производства", admin: "Администрирование", "planner-admin": "Управление планированием" } as const)[page]; }
+function pageTitle(page: Page) { return ({ plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", feedback: "Обратная связь", fact: "Факт производства", shipment: "Факт отгрузки", admin: "Администрирование", "planner-admin": "Управление планированием" } as const)[page]; }
 function eventLabel(kind: ScheduleItem["schedule_kind"], compact = false) { const labels = { cleaning: ["Технологическая мойка", "МОЙКА"], downtime: ["Простой линии", "ПРОСТОЙ"], maintenance: ["Плановое ТО", "ТО"], trial: ["Проработка", "ПРОБА"], startup: ["Запуск линии", "ЗАПУСК"], changeover: ["Перестройка линии", "ПЕРЕСТРОЙКА"], restart: ["Запуск после простоя", "СТАРТ"], gas: ["Газ", "ГАЗ"] } as const; return kind === "production" ? "Продукция" : labels[kind][compact ? 1 : 0]; }
 function templateLabel(v: string) { return ({ ohl_daily: "Недельный план ОХЛ", quarter_weekly: "Квартальный план ЗАМ", production_reference: "Актуальный справочник ПЦ/КЦ", capacity_reference: "Мощности линий", legacy_reference: "Старый план и рецептуры", maintenance_schedule: "График ТО и событий", generic: "Универсальный шаблон" } as Record<string, string>)[v] || v; }
 function planStatus(v: string) { return ({ needs_review: "Требует проверки", calculated: "Рассчитан", approved: "Утверждён", draft: "Черновик" } as Record<string, string>)[v] || v; }
