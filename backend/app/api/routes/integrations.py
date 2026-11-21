@@ -15,7 +15,7 @@ from app.db.session import get_db
 from app.models.entities import AuditEvent, IntegrationRun, ProductionPlan, ProductionScheduleItem
 from app.services.notification_service import send_notification
 from app.services.plan_service import PlanService, schedule_item_dict
-from app.services.csb_export_service import build_csb_text
+from app.services.csb_export_service import build_csb_text, lock_csb_counter
 
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
@@ -35,7 +35,7 @@ def _production_items(db: Session, plan: ProductionPlan, start: date, end: date 
             ProductionScheduleItem.excluded.is_(False),
         ).options(
             joinedload(ProductionScheduleItem.product), joinedload(ProductionScheduleItem.line), joinedload(ProductionScheduleItem.demand_item),
-        ).order_by(ProductionScheduleItem.production_date, ProductionScheduleItem.line_id, ProductionScheduleItem.shift, ProductionScheduleItem.sequence)
+        ).order_by(ProductionScheduleItem.production_date, ProductionScheduleItem.line_id, ProductionScheduleItem.shift, ProductionScheduleItem.sequence, ProductionScheduleItem.id)
     ))
 
 
@@ -49,13 +49,15 @@ def download_csb_file(
     end = end_date or start
     if end < start:
         raise HTTPException(422, "Конечная дата выгрузки CSB не может быть раньше начальной")
+    counter = lock_csb_counter(db)
     plan = db.scalar(select(ProductionPlan).where(ProductionPlan.active.is_(True)).order_by(ProductionPlan.updated_at.desc()).with_for_update())
     if not plan:
         raise HTTPException(404, "Активный план не найден")
     items = _production_items(db, plan, start, end)
     try:
-        text, exported_ids = build_csb_text(items, destination)
+        text, exported_ids = build_csb_text(items, counter, destination)
     except ValueError as error:
+        db.rollback()
         raise HTTPException(422, str(error)) from error
     if not exported_ids:
         period = start.strftime('%d.%m.%Y') if start == end else f"{start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}"

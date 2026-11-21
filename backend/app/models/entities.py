@@ -268,9 +268,18 @@ class ProductionPlanVersion(Base):
     plan: Mapped[ProductionPlan] = relationship(back_populates="versions")
 
 
+class CsbTaskCounter(Base):
+    __tablename__ = "csb_task_counter"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    last_number: Mapped[int] = mapped_column(Integer)
+
+
 class ProductionScheduleItem(Base):
     __tablename__ = "production_schedule_items"
     id: Mapped[int] = mapped_column(primary_key=True)
+    csb_task_number: Mapped[int | None] = mapped_column(
+        Integer, CheckConstraint("csb_task_number BETWEEN 1 AND 99999"), unique=True, index=True,
+    )
     plan_id: Mapped[int] = mapped_column(ForeignKey("production_plans.id", ondelete="CASCADE"), index=True)
     parent_task_id: Mapped[int | None] = mapped_column(ForeignKey("production_schedule_items.id", ondelete="SET NULL"), index=True)
     pf_details: Mapped[dict | None] = mapped_column(JSON)
