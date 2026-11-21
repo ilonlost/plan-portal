@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     downtime_query: str = ""
     production_fact_database_url: str = ""
     production_eol_database_url: str = ""
+    skud_database_url: str = ""
     production_fact_db_schema: str = "dbo"
     production_fact_buffer_kc: str = "5498"
     production_fact_buffer_pc: str = "5898"

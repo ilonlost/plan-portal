@@ -11,6 +11,8 @@ from app.core.security import UserContext, current_user, require_planner
 from app.models.entities import AuditEvent, DemandItem, LineCapacity, LineCapability, LineComment, LineCommentMessage, LineScheduleTemplate, ProductionLine, ProductionPlan, ProductionScheduleItem
 from app.services.line_schedule_service import DEFAULT_ANCHOR, SCHEDULE_LABELS, ensure_line_capacities, shift_hours
 from app.services.plan_service import PlanService
+from app.services.line_attendance import ATTENDANCE_LINES, today_attendance
+from app.core.line_catalog import line_key
 from app.services.downtime_service import load_downtimes, resolve_downtime_line
 from app.services.settings_service import get_portal_configuration, get_planner_configuration
 from app.services.notification_service import send_notification
@@ -32,6 +34,15 @@ class CapacityDayUpdate(BaseModel):
 
 class LineCommentUpdate(BaseModel):
     text: str = Field(default="", max_length=2000)
+
+
+@router.get("/attendance/today")
+def line_attendance(db: Session = Depends(get_db), user: UserContext = Depends(current_user)) -> dict:
+    snapshot = today_attendance()
+    lines = db.execute(select(ProductionLine.id, ProductionLine.name).where(ProductionLine.status == "active"))
+    counts = {line.id: snapshot["counts"].get(key) for line in lines
+              if (key := line_key(line.name)) in ATTENDANCE_LINES}
+    return {**snapshot, "counts": counts}
 
 
 @router.get("/insights")
