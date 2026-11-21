@@ -636,6 +636,9 @@ class PlanService:
         if values.get("quantity") is not None:
             item.quantity = self._round_quantity_for_product(Decimal(values["quantity"]), item.product, capability)
             item.quantity_kg = item.quantity
+            if (item.pf_details or {}).get("quantity_source") == "bom":
+                item.source_quantity = item.quantity
+                item.source_unit = "кг"
             item.box_count = self._box_count(item.quantity, item.product)
             if capability and capability.batch_quantum_kg and Decimal(capability.batch_quantum_kg) > 0:
                 item.batch_count = (item.quantity / Decimal(capability.batch_quantum_kg)).quantize(Decimal("0.001"))

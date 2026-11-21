@@ -14,9 +14,19 @@ from app.services.plan_service import PlanService, schedule_item_dict
 from app.services.pf_service import preview_expansion, rules_for
 
 
+@pytest.fixture(autouse=True)
+def bom_for_existing_chain_tests(monkeypatch):
+    from app.services import bom_volume_service
+    # Legacy chain tests focus on scheduling; a deterministic BOM keeps their amounts.
+    monkeypatch.setattr(bom_volume_service, "fetch_bom_volume", lambda sku, volume: [
+        {"body_nr": code, "comp_qnt": str(volume), "ek_me": "кг"}
+        for code in ["4510000047", "1021002013", "1021001493", "PF-NEW"]
+    ])
+
+
 def setup_gp(db, sku="1010023231", line_name="Слойка"):
     line = db.scalar(select(ProductionLine).where(ProductionLine.name == line_name))
-    gp = Product(sku=sku, name="ГП", box_weight_kg=Decimal("1"))
+    gp = Product(sku=sku, name="ГП", box_weight_kg=Decimal("1"), unit_weight_kg=Decimal("1"))
     plan = ProductionPlan(name="PF test", horizon_start=date(2026, 11, 10), horizon_end=date(2026, 11, 10))
     db.add_all([gp, plan]); db.flush()
     db.add(LineCapability(line_id=line.id, product_id=gp.id, units_per_hour=100))

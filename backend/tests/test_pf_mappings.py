@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import select, func
 
 from test_audit_regressions import db, client
-from test_pf_expansion import setup_gp, add_pf, productions
+from test_pf_expansion import setup_gp, add_pf, productions, bom_for_existing_chain_tests
 from app.models.entities import AuditEvent, LineCapability, PortalSetting, ProductionLine, User
 from app.services.pf_service import preview_expansion
 from app.services.plan_service import PlanService

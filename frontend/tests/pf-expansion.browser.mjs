@@ -31,15 +31,17 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   let submitted;
+  let bomUnavailable = false;
   await page.route("**/api/**", async route => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith("/manual-products")) return route.fulfill({ json: [{ product_id: 1, sku: "1010027200", name: "Круассаны с шоколадно-ореховой начинкой", speed_kg_hour: 136.3 }] });
     if (url.pathname.endsWith("/pf-preview")) {
+      if (bomUnavailable) return route.fulfill({ status: 422, json: { detail: "Не удалось получить расчёт ПФ из BOM" } });
       const request = route.request().postDataJSON();
-      return route.fulfill({ json: { production_date: request.production_date, quantity_kg: request.quantity, gp_speed_kg_hour: 27.26, gp_required_hours: 3.67, gp_speed_override: true,
+      return route.fulfill({ json: { production_date: request.production_date, quantity_kg: 103.68, quantity_units: 324, calculation_revision: "bom-revision", gp_speed_kg_hour: 27.26, gp_required_hours: 3.67, gp_speed_override: true,
         items: [
-          { sku: "1021002013", name: "Круассан эконом шоколад-орех,80г — п/ф", line_id: 1, production_date: "2026-11-08", speed_kg_hour: 109.04, quantity_kg: request.quantity, date_defaulted: true, note: null, errors: [] },
-          { sku: "1021001493", name: "Начинка шоколадно-ореховая п/ф", line_id: 2, production_date: "2026-11-05", speed_kg_hour: null, quantity_kg: request.quantity, date_defaulted: false, note: "Начинка за три дня до ДП ПФ круассан", errors: ["Укажите скорость ПФ в кг/ч"] },
+          { sku: "1021002013", name: "Круассан эконом шоколад-орех,80г — п/ф", line_id: 1, production_date: "2026-11-08", speed_kg_hour: 109.04, quantity_kg: 103.68, quantity_units: 1296, date_defaulted: true, note: null, errors: [] },
+          { sku: "1021001493", name: "Начинка шоколадно-ореховая п/ф", line_id: 2, production_date: "2026-11-05", speed_kg_hour: null, quantity_kg: 13.7376, quantity_units: null, date_defaulted: false, note: "Начинка за три дня до ДП ПФ круассан", errors: ["Укажите скорость ПФ в кг/ч"] },
         ] } });
     }
     if (url.pathname.endsWith("/items")) { submitted = route.request().postDataJSON(); return route.fulfill({ json: { id: 1 } }); }
@@ -49,6 +51,8 @@ try {
   await page.goto(`http://127.0.0.1:${address.port}/.pf-review.html`);
   await page.getByLabel("Задание, кг", { exact: true }).fill("100");
   await page.getByText("Начинка шоколадно-ореховая п/ф", { exact: true }).waitFor();
+  assert.match(await page.locator(".pf-expansion").innerText(), /324 шт/);
+  assert.match(await page.locator(".pf-expansion").innerText(), /13,7376 кг/);
   assert.equal(await page.getByRole("button", { name: "Создать задание", exact: true }).isDisabled(), true);
   await page.getByLabel("Скорость ПФ, кг/ч", { exact: true }).nth(1).fill("200");
   await page.waitForFunction(() => ![...document.querySelectorAll("button")].find(b => b.textContent === "Создать задание").disabled);
@@ -62,6 +66,11 @@ try {
   assert.equal(submitted.expand_pf, true);
   assert.equal(submitted.pf_tasks.length, 2);
   assert.equal(submitted.pf_tasks[1].speed_kg_hour, 200);
+  assert.equal(submitted.pf_calculation_revision, "bom-revision");
+  bomUnavailable = true;
+  await page.getByRole("button", { name: "Обновить расчёт ПФ" }).click();
+  await page.getByRole("alert").filter({ hasText: "BOM" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Создать задание", exact: true }).isDisabled(), true);
   await page.evaluate(() => { window.saved = false; });
   await page.getByLabel("Раскручивать ПФ", { exact: true }).uncheck();
   await page.getByRole("button", { name: "Создать задание", exact: true }).click();

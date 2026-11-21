@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from functools import lru_cache
 import json
+import hashlib
 from pathlib import Path
 
 from sqlalchemy import select
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import LineCapability, Product, ProductionLine, ProductionScheduleItem, ScheduleStatus
 from app.services.task_date_service import ohl_production_date, uses_sandwich_window
+from app.services.bom_volume_service import calculate_components
 
 
 @lru_cache(maxsize=1)
@@ -77,11 +79,20 @@ def preview_expansion(db: Session, values: dict) -> dict:
     overrides = {row["sku"]: row for row in overrides_list}
     if len(overrides) != len(overrides_list) or set(overrides) - {rule["sku"] for rule in rules}:
         raise ValueError("Состав ПФ изменён. Обновите предпросмотр")
+    products = {rule["sku"]: db.scalar(select(Product).where(Product.sku == rule["sku"])) for rule in rules}
+    volume, amounts = calculate_components(product, quantity, products) if rules else (None, {})
+    calculation_revision = hashlib.sha256(json.dumps(
+        {"sku": product.sku, "quantity_kg": quantity, "volume": volume, "amounts": amounts},
+        sort_keys=True, default=str, ensure_ascii=False,
+    ).encode()).hexdigest()
+    if values.get("pf_calculation_revision") and values["pf_calculation_revision"] != calculation_revision:
+        raise ValueError("Расчёт BOM изменился. Обновите предпросмотр ПФ перед созданием задания")
     lines = list(db.scalars(select(ProductionLine).where(ProductionLine.status == "active")))
     rows = []
     for rule in rules:
         override = overrides.get(rule["sku"], {})
-        child = db.scalar(select(Product).where(Product.sku == rule["sku"]))
+        child = products[rule["sku"]]
+        amount = amounts[rule["sku"]]
         capabilities = list(db.scalars(select(LineCapability).where(LineCapability.product_id == child.id))) if child else []
         target = _target_line(rule, lines)
         if override.get("line_id") is not None:
@@ -110,12 +121,13 @@ def preview_expansion(db: Session, values: dict) -> dict:
             errors.append("Дата ПФ не может быть позже ГП")
         rows.append({"sku": rule["sku"], "name": rule["name"], "product_id": child.id if child else None,
                      "line_id": target.id if target else None, "line_name": target.name if target else None,
-                     "quantity_kg": quantity, "production_date": child_date, "speed_kg_hour": speed,
-                     "required_hours": PlanService._production_duration(quantity, speed) if speed and speed.is_finite() and speed > 0 else None,
+                     **amount, "production_date": child_date, "speed_kg_hour": speed,
+                     "required_hours": PlanService._production_duration(amount["quantity_kg"], speed) if speed and speed.is_finite() and speed > 0 else None,
                      "note": rule["note"], "date_defaulted": rule.get("date_defaulted", False), "errors": errors})
     has_gp_speed = bool(rules and mapping.get("gp_speed_kg_hour"))
     gp_speed = Decimal(str(mapping["gp_speed_kg_hour"])) if has_gp_speed else Decimal(cap.units_per_hour)
-    return {"items": rows, "quantity_kg": quantity, "production_date": production_date,
+    return {"items": rows, "quantity_kg": quantity, "quantity_units": volume, "production_date": production_date,
+            "calculation_revision": calculation_revision, "quantity_source": "bom" if rules else None,
             "gp_speed_kg_hour": gp_speed, "gp_required_hours": PlanService._production_duration(quantity, gp_speed),
             "gp_speed_override": has_gp_speed, "mapping_revision": revision}
 
@@ -145,12 +157,13 @@ def append_expansion(db: Session, plan, parent: ProductionScheduleItem, preview:
             parent_task_id=parent.id, product=product, line_id=row["line_id"],
             production_date=row["production_date"], marking_date=row["production_date"], shift=parent.shift,
             sequence=len(plan.schedule_items) + 1, quantity=quantity, quantity_kg=quantity,
-            source_quantity=quantity, source_unit="кг", box_count=PlanService._box_count(quantity, product),
+            source_quantity=row["source_quantity"], source_unit=row["source_unit"], box_count=PlanService._box_count(quantity, product),
             required_hours=row["required_hours"], duration_hours=row["required_hours"],
             source_kind="pf", schedule_kind="production", source="manual", locked=True,
             status=ScheduleStatus.PLANNED, warnings=[],
             reason=f"ПФ для ГП {parent.product.sku}, задание {parent.id}",
-            pf_details={"speed_kg_hour": str(row["speed_kg_hour"]), "source_row_sku": row["sku"]},
+            pf_details={"speed_kg_hour": str(row["speed_kg_hour"]), "source_row_sku": row["sku"],
+                        "quantity_source": "bom", "gp_quantity_units": str(preview["quantity_units"])},
         ))
 
 
@@ -162,11 +175,21 @@ def sync_children(plan, parent, previous_date, quantity_changed: bool) -> None:
     for child in children:
         if child.execution_status not in {None, "not_started"}:
             raise ValueError("Связанный ПФ уже передан в работу. Сначала скорректируйте его отдельно")
+    bom_children = [child for child in children if (child.pf_details or {}).get("quantity_source") == "bom"]
+    amounts = {}
+    if bom_children and quantity_changed and not parent.excluded:
+        volume, amounts = calculate_components(parent.product, Decimal(parent.quantity_kg),
+                                              {child.product.sku: child.product for child in bom_children})
     for child in children:
         if parent.excluded:
             child.excluded = True
         elif quantity_changed:
-            child.quantity = child.quantity_kg = child.source_quantity = parent.quantity_kg
+            amount = amounts.get(child.product.sku) if child in bom_children else None
+            child.quantity = child.quantity_kg = amount["quantity_kg"] if amount else parent.quantity_kg
+            child.source_quantity = amount["source_quantity"] if amount else parent.quantity_kg
+            child.source_unit = amount["source_unit"] if amount else "кг"
+            if amount:
+                child.pf_details = {**child.pf_details, "gp_quantity_units": str(volume)}
             child.box_count = PlanService._box_count(child.quantity, child.product)
             speed = Decimal(child.pf_details["speed_kg_hour"])
             child.required_hours = child.duration_hours = PlanService._production_duration(child.quantity, speed)

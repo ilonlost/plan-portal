@@ -64,6 +64,7 @@ class ManualTaskCreate(BaseModel):
     expand_pf: bool = False
     pf_tasks: list[PFTaskOptions] = Field(default_factory=list, max_length=100)
     pf_mapping_revision: str | None = Field(default=None, max_length=64)
+    pf_calculation_revision: str | None = Field(default=None, max_length=64)
 
 
 class BulkDeleteRequest(BaseModel):
