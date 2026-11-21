@@ -2,6 +2,8 @@ import type {
   AdminOverview, AdvanceConfirmationBatch, AdvanceConfirmationPreview, BomData, CatalogData, CsbRun, DirectoryUser, FeedbackData, FeedbackEntry, ImportPreview, LineData, MatrixData,
   LineScheduleData, MailConfiguration, PlanData, ProductionFactData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
 } from "./types";
+import type { SourceAttributesData } from "./catalogAttributes";
+
 
 const API = import.meta.env.VITE_API_URL || "/api";
 const planVersions = new Map<number, number>();
@@ -123,6 +125,9 @@ export const api = {
   lineInsights: (start: string, end: string, signal?: AbortSignal) => request<import("./types").LineInsights>(`/lines/insights?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, { signal }),
   saveLineComment: (lineId: number, date: string, text: string) => request<{ ok: boolean; comment: import("./types").LineCommentEntry }>(`/lines/${lineId}/comments/${date}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+  }),
+  catalogAttributes: (skus: string[], signal?: AbortSignal) => request<SourceAttributesData>("/catalog/source-attributes", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ skus }), signal,
   }),
   shelfLife: (skus: string[]) => request<{ configured: boolean; values: Record<string, string | null> }>("/catalog/shelf-life", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ skus }),

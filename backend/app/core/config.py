@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     bom_basis_units: int = 1000
     shelf_life_api_base_url: str = ""
     shelf_life_timeout_seconds: int = 10
+    catalog_attributes_database_url: str = ""
+    catalog_mercury_sku_column: str = "Art_NR"
+    catalog_chz_sku_column: str = "Art_NR"
     downtime_database_url: str = ""
     downtime_query: str = ""
     production_fact_database_url: str = ""

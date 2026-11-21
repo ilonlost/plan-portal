@@ -14,6 +14,7 @@ from app.core.security import UserContext, current_user, require_planner
 from app.db.session import get_db
 from app.models.entities import AuditEvent, ImportedOrder, LineCapability, Product, ProductionLine
 from app.services.catalog_workbook_service import export_catalog, import_catalog
+from app.services.catalog_attributes import load_attributes
 from app.services.notification_service import send_notification
 
 
@@ -67,6 +68,17 @@ class ProductStatusUpdate(BaseModel):
 
 class ShelfLifeRequest(BaseModel):
     skus: list[str] = Field(default_factory=list, max_length=1000)
+
+
+class SourceAttributesRequest(BaseModel):
+    skus: list[str] = Field(default_factory=list, max_length=1000)
+
+
+@router.post("/source-attributes")
+def source_attributes(payload: SourceAttributesRequest, user: UserContext = Depends(current_user)) -> dict:
+    if any(len(sku) > 80 for sku in payload.skus):
+        raise HTTPException(422, "Артикул не должен превышать 80 символов")
+    return load_attributes(payload.skus)
 
 
 def _capability_dict(item: LineCapability) -> dict:
