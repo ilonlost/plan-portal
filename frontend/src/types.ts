@@ -65,7 +65,7 @@ export interface LineData {
   planning_settings: PlanningSettings;
 }
 export interface PlanningSettings { daily_startup_hours: number; changeover_hours: number; restart_after_downtime_hours: number; ohl_first: boolean; bolognese_last: boolean; start_batch_number: number; }
-export interface ProductionCycle { enabled: boolean; start_time: string; duration_hours: number; }
+export interface ProductionCycle { enabled: boolean; start_time: string; end_time?: string; duration_hours: number; }
 export interface WorkshopData { code: string; name: string; lines: { id: number; code: string; name: string; status: string }[]; }
 
 export interface CatalogRow {

@@ -7,16 +7,27 @@ import re
 DEFAULT_CYCLE = {"enabled": False, "start_time": "00:00", "duration_hours": 24.0}
 
 
+def clock_minutes(value) -> int:
+    if not isinstance(value, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+        raise ValueError("Укажите время в формате ЧЧ:ММ")
+    hour, minute = map(int, value.split(":"))
+    return hour * 60 + minute
+
+
 def validate_cycle(values: dict) -> dict:
     if type(values.get("enabled")) is not bool:
         raise ValueError("Укажите, включены ли производственные сутки")
     start = values.get("start_time", "")
-    if not isinstance(start, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", start):
-        raise ValueError("Начало суток задаётся в формате ЧЧ:ММ")
-    hours = Decimal(str(values.get("duration_hours", 24)))
-    if not hours.is_finite() or not Decimal("0.25") <= hours <= 24 or hours * 60 != (hours * 60).to_integral_value():
+    start_minutes = clock_minutes(start)
+    result = {"enabled": values["enabled"], "start_time": start}
+    if "end_time" in values:
+        minutes = (clock_minutes(values["end_time"]) - start_minutes) % 1440 or 1440
+        result["end_time"] = values["end_time"]
+    else:
+        minutes = Decimal(str(values.get("duration_hours", 24))) * 60
+    if not Decimal(minutes).is_finite() or not 15 <= minutes <= 1440 or minutes != int(minutes):
         raise ValueError("Длительность суток: от 15 минут до 24 часов, с точностью до минуты")
-    return {"enabled": values["enabled"], "start_time": start, "duration_hours": float(hours)}
+    return {**result, "duration_hours": float(minutes / 60)}
 
 
 def production_cycle(line) -> dict:
@@ -51,5 +62,5 @@ def cap_shift_hours(line, day_hours: Decimal, night_hours: Decimal) -> tuple[Dec
         return day_hours, night_hours
     hours = Decimal(str(cycle["duration_hours"]))
     # Two shifts share a single calendar window. A day-only template may use it all.
-    limit = hours / 2 if night_hours > 0 else hours
+    limit = hours / 2 if day_hours > 0 and night_hours > 0 else hours
     return min(day_hours, limit), min(night_hours, limit)
