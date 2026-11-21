@@ -274,12 +274,25 @@ class CsbTaskCounter(Base):
     last_number: Mapped[int] = mapped_column(Integer)
 
 
+class CsbSubmission(Base):
+    __tablename__ = "csb_submissions"
+    t63: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    payload: Mapped[dict] = mapped_column(JSON)
+    state: Mapped[str] = mapped_column(String(20))
+    requested_by: Mapped[str] = mapped_column(String(120))
+    claim: Mapped[str | None] = mapped_column(String(36))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    order_number: Mapped[str | None] = mapped_column(Text)
+    detail: Mapped[str | None] = mapped_column(Text)
+
+
 class ProductionScheduleItem(Base):
     __tablename__ = "production_schedule_items"
     id: Mapped[int] = mapped_column(primary_key=True)
     csb_task_number: Mapped[int | None] = mapped_column(
         Integer, CheckConstraint("csb_task_number BETWEEN 1 AND 99999"), unique=True, index=True,
     )
+    csb_order_number: Mapped[str | None] = mapped_column(Text)
     plan_id: Mapped[int] = mapped_column(ForeignKey("production_plans.id", ondelete="CASCADE"), index=True)
     parent_task_id: Mapped[int | None] = mapped_column(ForeignKey("production_schedule_items.id", ondelete="SET NULL"), index=True)
     pf_details: Mapped[dict | None] = mapped_column(JSON)

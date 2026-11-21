@@ -59,6 +59,44 @@ def test_csb_duration_and_explicit_line_override(csb_context):
     assert ':T55+1:' in build_csb_text([rows[0]], counter)[0]
 
 
+def test_sdk_worker_batch_confirmation_and_lookup_only_retry(csb_context, monkeypatch):
+    from app.core.config import settings
+    db, client, rows, plan = csb_context
+    monkeypatch.setattr(settings, 'csb_token', 'test-worker')
+    monkeypatch.setattr(settings, 'csb_test_mode', True)
+    route = '/integrations/csb'
+    submit = route + '/orders?start_date=2026-09-22&end_date=2026-09-22'
+    claim = route + '/worker/claim'
+    headers = {'Authorization': 'Bearer test-worker'}
+    assert client.post(submit).status_code == 503
+    monkeypatch.setattr(settings, 'csb_test_mode', False)
+    assert client.post(claim).status_code == 403
+    batch = client.post(submit).json()
+    assert [job['t63'] for job in batch['jobs']] == [1, 2, 3]
+    def next_job():
+        return client.post(claim, headers=headers).json()['job']
+    def receipt(job, **body):
+        return client.post(f"{route}/worker/{job['t63']}/receipt", headers=headers, json={'claim': job['claim'], **body})
+    first = next_job()
+    assert first['action'] == 'Submit' and first['parameters']['Promotion'] == '1'
+    assert next_job() is None
+    assert receipt(first, returned_t63=2, order_number='0012').json()['state'] == 'review'
+    second = next_job()
+    assert receipt(second, returned_t63=2, order_number='0012').json()['state'] == 'confirmed'
+    assert receipt(second, returned_t63=2, order_number='0012').status_code == 200
+    third = next_job()
+    assert receipt(third, detail='Timeout').json()['state'] == 'review'
+    assert next_job() is None
+    jobs = client.get(f"{route}/orders/{batch['run_id']}").json()['jobs']
+    assert [j['order_number'] for j in jobs] == [None, '0012', None]
+    assert client.post(submit).status_code == 200
+    recovered = next_job()
+    assert recovered['action'] == 'Lookup'
+    assert receipt(recovered, returned_t63=recovered['t63'], order_number='57').json()['state'] == 'confirmed'
+    db.expire_all()
+    assert rows[1].csb_order_number == '0012'
+
+
 def test_download_marks_only_exported_not_started_tasks_and_is_repeatable(csb_context):
     db, client, rows, plan = csb_context
     before = plan.revision

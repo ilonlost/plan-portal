@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 import json
@@ -513,17 +513,26 @@ class PlanService:
             manual_cleaning_days=manual_cleaning_days,
             complete_ohl=placement["complete_ohl"], complete_zam=placement["complete_zam"],
         )
+        csb_numbers = defaultdict(list)
         for existing in list(plan.schedule_items):
             if period_start and existing.production_date and not period_start <= existing.production_date <= period_end:
                 continue
             replace_source = source_kind is None or existing.schedule_kind != "production" or existing.source_kind == source_kind
             outside_scope = preserve_other_lines and existing.line_id is not None and existing.line_id != line_id
             if existing.source == "auto" and replace_source and not outside_scope and (line_id is None or existing.line_id == line_id or existing.demand_item_id in demand_by_id):
+                if existing.schedule_kind == "production":
+                    key = (existing.demand_item_id, existing.product_id, existing.line_id, existing.production_date, existing.shift, existing.quantity)
+                    csb_numbers[key].append((existing.csb_task_number, existing.csb_order_number))
                 plan.schedule_items.remove(existing)
                 self.db.delete(existing)
         self.db.flush()
+        split_counts = Counter((item.demand_id, item.product_id, item.line_id, item.production_date, item.shift, item.quantity) for item in result)
         for item in result:
+            key = (item.demand_id, item.product_id, item.line_id, item.production_date, item.shift, item.quantity)
+            numbers = csb_numbers.get(key, [])
+            t63, order_number = numbers[0] if len(numbers) == split_counts[key] == 1 else (None, None)
             plan.schedule_items.append(ProductionScheduleItem(
+                csb_task_number=t63, csb_order_number=order_number,
                 demand_item_id=item.demand_id, product_id=item.product_id, line_id=item.line_id,
                 production_date=item.production_date, sequence=0, quantity=item.quantity,
                 source_quantity=item.source_quantity, source_unit=item.source_unit,
@@ -1108,6 +1117,8 @@ def schedule_item_dict(item: ProductionScheduleItem) -> dict:
         "shipping_time": shipping_time(item),
         "shipping_date_overridden": bool(item.shipping_date_override or item.shipping_time_override),
         "execution_status": item.execution_status,
+        "csb_task_number": item.csb_task_number,
+        "csb_order_number": item.csb_order_number,
         "execution_note": item.execution_note,
         "reported_by": item.reported_by,
         "reported_at": item.reported_at,

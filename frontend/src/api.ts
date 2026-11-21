@@ -5,6 +5,7 @@ import type {
 import type { SourceAttributesData } from "./catalogAttributes";
 
 export type LineAttendance = { date: string; status: "ok" | "unavailable"; counts: Record<number, number | null> };
+export type CsbBatch = {run_id: number; jobs: {t63: number; sku: string; state: string; order_number: string | null; detail: string | null}[]};
 
 const API = import.meta.env.VITE_API_URL || "/api";
 const planVersions = new Map<number, number>();
@@ -192,6 +193,8 @@ export const api = {
     if (endDate) params.set("end_date", endDate);
     return `${API}/integrations/csb/download${params.size ? `?${params.toString()}` : ""}`;
   },
+  submitCsb: (from: string, to: string) => request<CsbBatch>(`/integrations/csb/orders?${new URLSearchParams({start_date: from, end_date: to})}`, {method: "POST"}),
+  csbBatch: (id: number) => request<CsbBatch>(`/integrations/csb/orders/${id}`),
   downloadCsb: async (startDate: string, endDate: string) => {
     const params = new URLSearchParams({ start_date: startDate, end_date: endDate });
     const response = await fetch(`${API}/integrations/csb/download?${params}`, { method: "POST", credentials: "include" });

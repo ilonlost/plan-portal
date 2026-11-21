@@ -158,7 +158,7 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
         "portal_configuration": get_portal_configuration(db),
         "downtime": {"configured": bool(settings.downtime_database_url)},
         "smtp_password_configured": bool(settings.smtp_password),
-        "csb": {"test_mode": settings.csb_test_mode, "configured": bool(settings.csb_endpoint)},
+        "csb": {"test_mode": settings.csb_test_mode, "configured": bool(settings.csb_token)},
         "users": [{
             "id": row.id, "username": row.username, "display_name": row.display_name,
             "email": row.email, "role": row.role, "workshop_code": row.workshop_code, "auth_provider": row.auth_provider,

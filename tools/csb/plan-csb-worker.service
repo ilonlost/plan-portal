@@ -1,0 +1,13 @@
+[Unit]
+Description=PLAN Portal CSB order worker
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/plan-csb-worker.env
+ExecStart=%h/plan-csb-runtime/opt/microsoft/powershell/7/pwsh -NoProfile -NonInteractive -File /opt/plan-portal/tools/csb/portal-worker.ps1 -PortalApi http://127.0.0.1:15500/plan/api -SdkPath %h/plan-csb-runtime/CsbSoaApi.dll
+Restart=always
+RestartSec=10
+UMask=0077
+
+[Install]
+WantedBy=default.target

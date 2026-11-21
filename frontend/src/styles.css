@@ -439,11 +439,11 @@ body { min-width: 820px; }
 .daily-items { min-width:0; grid-template-columns:repeat(auto-fill,minmax(min(260px,100%),1fr)); align-items:start; }
 .sku-card,.sku-facts,.sku-facts > span { min-width:0; }
 .sku-card { position:relative; }
-.sku-card .sku-card-head { padding-right:22px; }
-.sku-card-shift { position:absolute; top:10px; right:10px; display:flex; align-items:center; }
+.sku-card .sku-card-head { grid-template-columns:auto minmax(0,1fr) minmax(0,auto) auto; }
+.sku-card-head > b,.sku-card-head > em { min-width:0; overflow-wrap:anywhere; }
+.sku-card-shift { display:flex; align-items:center; }
 .sku-card-shift .shift-mark { padding:0; background:transparent; }
 .sku-card.technical-task .sku-facts { grid-template-columns:1fr; }
-.sku-card-head { flex-wrap:wrap; }
 .line-operations { min-width:0; padding:10px; }
 .line-comment-box,.downtime-box { min-width:0; max-width:100%; }
 .line-comment-box textarea { width:100%; min-height:85px; box-sizing:border-box; }
