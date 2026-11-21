@@ -1,0 +1,7 @@
+.mail-actions h3 { margin: 1.2rem 0 .35rem; }
+.mail-action-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 1rem; border-top: 1px solid var(--line); padding: .85rem 0; }
+.mail-action-row p { margin: .25rem 0 0; }
+.mail-action-controls, .mail-action-addresses { display: grid; align-content: start; gap: .35rem; min-width: 0; }
+.mail-action-controls button { justify-self: start; }
+.mail-action-addresses { font-size: .85rem; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .mail-action-row { grid-template-columns: 1fr; gap: .5rem; } }

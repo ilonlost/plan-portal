@@ -16,6 +16,7 @@ const actionLabels: Record<string, string> = {
   user_access_updated: "Права пользователя изменены", user_access_created: "Доступ добавлен", user_access_deleted: "Доступ отозван",
   line_schedule_updated: "График линии изменён", execution_status_updated: "Исполнение изменено",
   mail_configuration_updated: "Настройки почты изменены", portal_configuration_updated: "Настройки портала изменены",
+  mail_action_updated: "Изменено правило рассылки",
   plan_data_deleted: "Планы удалены", production_plan_emailed: "План отправлен по почте",
 };
 const entityLabels: Record<string, string> = { product: "Артикул", line_capability: "Мощность SKU", production_line: "Линия", production_plan: "План", schedule_item: "Задание", user: "Пользователь", imported_order: "Источник", portal_setting: "Настройка" };

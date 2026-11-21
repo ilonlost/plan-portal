@@ -1,6 +1,6 @@
 import type {
   AdminOverview, AdvanceConfirmationBatch, AdvanceConfirmationPreview, BomData, CatalogData, CsbRun, DirectoryUser, FeedbackData, FeedbackEntry, ImportPreview, LineData, MatrixData,
-  LineScheduleData, MailConfiguration, PlanData, ProductionFactData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
+  LineScheduleData, MailConfiguration, MailRule, PlanData, ProductionFactData, ScheduleTemplate, SessionMode, UserProfile, WorkshopData,
 } from "./types";
 import type { SourceAttributesData } from "./catalogAttributes";
 
@@ -173,7 +173,10 @@ export const api = {
   updateMailConfiguration: (configuration: MailConfiguration) => request<{ ok: boolean; configuration: MailConfiguration }>("/admin/mail-configuration", {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ configuration }),
   }),
-  mailPreview: (start: string, end: string, lineIds: number[] = [], audience = "production") => request<{ html: string; item_count: number; start: string; end: string; recipients: string[] }>(`/admin/mail-preview?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&audience=${audience}${lineIds.map(value => `&line_ids=${value}`).join("")}`),
+  updateMailAction: (key: string, rule: MailRule, previous: MailRule) => request<{ rule: MailRule }>(`/admin/mail-actions/${key}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rule, previous }),
+  }),
+  mailPreview: (start: string, end: string, lineIds: number[] = [], audience = "production") => request<{ html: string; item_count: number; start: string; end: string; recipients: string[]; routing_mode: MailRule["mode"] }>(`/admin/mail-preview?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&audience=${audience}${lineIds.map(value => `&line_ids=${value}`).join("")}`),
   emailPlan: (planId: number, recipients: string[], start: string, end: string, lineIds: number[] = [], audience = "production") => request<{ ok: boolean; status: string; recipients: string[]; item_count: number; error: string | null }>(`/plans/${planId}/email`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients, start, end, line_ids: lineIds, audience }),
   }),

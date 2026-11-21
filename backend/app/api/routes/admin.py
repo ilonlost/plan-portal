@@ -7,6 +7,7 @@ import re
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.auth_service import ldap_health, search_ldap_users
@@ -15,9 +16,10 @@ from app.core.security import ATTENDANCE_PERMISSION, SECTION_KEYS, UserContext, 
 from app.db.session import get_db
 from app.models.entities import (
     AuditEvent, DemandItem, ExportFile, ImportedOrder, ImportFile, IntegrationRun,
-    NotificationLog, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, User,
+    NotificationLog, PortalSetting, Product, ProductionLine, ProductionPlan, ProductionPlanVersion, ProductionScheduleItem, User,
 )
-from app.services.notification_service import build_plan_email_html, resolve_plan_recipients, send_notification, smtp_diagnostics
+from app.services.mail_routing import ACTIONS, INHERIT, RULE_PREFIX, mail_actions
+from app.services.notification_service import build_plan_email_html, plan_delivery, send_notification, smtp_diagnostics
 from app.services.plan_service import schedule_item_dict
 from app.services.settings_service import get_mail_configuration, get_portal_configuration, save_mail_configuration, save_portal_configuration
 from app.api.routes.admin_inspection import router as inspection_router
@@ -55,6 +57,16 @@ class UserAccessCreate(UserAccessUpdate):
 
 class MailConfigurationUpdate(BaseModel):
     configuration: dict
+
+
+class MailRule(BaseModel):
+    mode: Literal["inherit", "custom", "off"]
+    recipients: str = Field(default="", max_length=4000)
+
+
+class MailRuleUpdate(BaseModel):
+    rule: MailRule
+    previous: MailRule
 
 
 class PortalConfigurationUpdate(BaseModel):
@@ -142,6 +154,7 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
             "host": mail_configuration.get("smtp_host"),
         },
         "mail_configuration": mail_configuration,
+        "mail_actions": mail_actions(db, mail_configuration),
         "portal_configuration": get_portal_configuration(db),
         "downtime": {"configured": bool(settings.downtime_database_url)},
         "smtp_password_configured": bool(settings.smtp_password),
@@ -155,12 +168,48 @@ def overview(db: Session = Depends(get_db), user: UserContext = Depends(require_
         } for row in db.scalars(select(User).order_by(User.display_name))],
         "lines": [{
             "id": row.id, "workshop_code": row.workshop_code,
-            "workshop_name": row.workshop_name, "name": row.name,
+            "workshop_name": row.workshop_name, "name": row.name, "mail_recipients": row.mail_recipients,
         } for row in db.scalars(select(ProductionLine).where(ProductionLine.status == "active").order_by(ProductionLine.workshop_code, ProductionLine.priority, ProductionLine.name))],
         "recent_audit": [_audit_dict(row) for row in db.scalars(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(15))],
         "recent_notifications": [_notification_dict(row) for row in db.scalars(select(NotificationLog).order_by(NotificationLog.created_at.desc()).limit(15))],
         "recent_integrations": [_integration_dict(row) for row in db.scalars(select(IntegrationRun).order_by(IntegrationRun.created_at.desc()).limit(15))],
     }
+
+
+@router.put("/mail-actions/{action}")
+def update_mail_action(action: str, payload: MailRuleUpdate, db: Session = Depends(get_db), user: UserContext = Depends(require_admin)) -> dict:
+    if action not in ACTIONS:
+        raise HTTPException(404, "Почтовое действие не найдено")
+    recipients = []
+    if payload.rule.mode == "custom":
+        recipients = list(dict.fromkeys(value.lower() for value in re.split(r"[,;\s]+", payload.rule.recipients.strip()) if value))
+        if not recipients or any(not re.fullmatch(r"[\w.!#$%&'*+/=?^`{|}~-]+@[\w-]+(?:\.[\w-]+)+", value) for value in recipients):
+            raise HTTPException(422, "Укажите корректные адреса получателей через запятую")
+    rule = {"mode": payload.rule.mode, "recipients": ", ".join(recipients)}
+    if len(rule["recipients"]) > 4000:
+        raise HTTPException(422, "Список адресов с разделителями должен укладываться в 4000 символов")
+    key = RULE_PREFIX + action
+    row = db.scalar(select(PortalSetting).where(PortalSetting.key == key).with_for_update())
+    current = row.value if row else INHERIT
+    if current == rule:
+        return {"rule": rule}
+    conflict = "Другой администратор изменил это правило. Обновите страницу и проверьте список."
+    if current != payload.previous.model_dump():
+        raise HTTPException(409, conflict)
+    if row:
+        row.value, row.updated_by = rule, user.username
+    else:
+        db.add(PortalSetting(key=key, value=rule, updated_by=user.username))
+    db.add(AuditEvent(username=user.username, action="mail_action_updated", entity_type="portal_setting",
+                      entity_id=key, details={"action": action, "before": current, "after": rule}))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, conflict) from exc
+    send_notification(db, "mail_configuration_updated", "PLAN Portal: изменено правило рассылки",
+                      f"{user.display_name} изменил правило рассылки «{ACTIONS[action].title}».")
+    return {"rule": rule}
 
 
 @router.put("/mail-configuration")
@@ -260,8 +309,9 @@ def mail_preview(
     items = [item for item in items if item.schedule_kind == "production" and item.status.value not in {"conflict", "unscheduled"}]
     html = build_plan_email_html(get_mail_configuration(db), plan.name, start, end, [schedule_item_dict(item) for item in items], audience)
     line_recipients = [value.strip() for item in items if item.line and item.line.mail_recipients for value in item.line.mail_recipients.replace(";", ",").replace("\n", ",").split(",") if value.strip()]
+    rule, recipients = plan_delivery(db, audience, line_recipients)
     return {"html": html, "item_count": len(items), "start": start, "end": end,
-            "recipients": resolve_plan_recipients(db, audience, line_recipients)}
+            "recipients": recipients, "routing_mode": rule["mode"]}
 
 
 @router.patch("/users/{user_id}")

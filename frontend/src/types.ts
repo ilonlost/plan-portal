@@ -167,6 +167,7 @@ export interface IntegrationRow {
   test_mode: boolean; item_count: number; response: Record<string, unknown>; created_by: string; created_at: string;
 }
 export interface AdminOverview {
+  mail_actions: MailAction[];
   counts: { plans: number; schedule_items: number; products: number; lines: number };
   active_plan: { id: number; name: string; status: string } | null;
   ldap: { status: string; configured: boolean };
@@ -179,6 +180,20 @@ export interface AdminOverview {
   users: { can_record_attendance?: boolean; section_permissions: Record<string, boolean>; id: number; username: string; display_name: string; email: string | null; role: string; auth_provider?: string; workshop_code: string | null; line_name: string | null; active: boolean; last_login_at: string | null }[];
   lines: { id: number; workshop_code: string; workshop_name: string; name: string; mail_recipients?: string | null }[];
   recent_audit: AuditRow[]; recent_notifications: NotificationRow[]; recent_integrations: IntegrationRow[];
+}
+
+export interface MailRule {
+  mode: "inherit" | "custom" | "off";
+  recipients: string;
+}
+
+export interface MailAction {
+  key: string;
+  group: "planning" | "production_management" | "it" | "manual";
+  title: string;
+  content: string;
+  inherited: string[];
+  rule: MailRule;
 }
 
 export interface PlannerAdministration {

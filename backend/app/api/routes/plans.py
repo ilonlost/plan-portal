@@ -17,7 +17,7 @@ from app.models.entities import AuditEvent, LineCapacity, ProductionLine, Produc
 from app.schemas.common import ExecutionStatusUpdate, PlanApprovalRequest, ScheduleEventCreate, ScheduleItemUpdate
 from app.services.export_service import ExcelExportService
 from app.services.plan_service import PlanService, plan_dict, schedule_item_dict
-from app.services.notification_service import build_plan_email_html, build_plan_xlsx, resolve_plan_recipients, send_notification
+from app.services.notification_service import build_plan_email_html, build_plan_xlsx, send_notification
 from app.services.settings_service import get_mail_configuration
 from app.services.line_schedule_service import shift_hours
 from app.services.production_cycle_service import window_fields
@@ -318,7 +318,7 @@ def update_execution_status(
     db.commit()
     if payload.status in {"not_shipped", "partially_shipped"}:
         send_notification(
-            db, "shipment_deviation", f"PLAN Portal: отклонение отгрузки · {item.product.name if item.product else 'задание'}",
+            db, f"shipment_{payload.status}", f"PLAN Portal: отклонение отгрузки · {item.product.name if item.product else 'задание'}",
             f"Линия: {item.line.name}.\nСтатус: {payload.status}.\nПричина: {payload.note}.\nСообщил: {user.display_name}.",
         )
     return plan_dict(db, plan, user.line_name if user.role == "master" else None)
@@ -380,9 +380,9 @@ def email_plan(
     subject = {"production": "Производство", "warehouse": "Склад", "materials": "Сырьевой отдел"}[payload.audience] + " · " + subject
     line_recipients = [value.strip() for item in items if item.line and item.line.mail_recipients for value in item.line.mail_recipients.replace(";", ",").replace("\n", ",").split(",") if value.strip()]
     log = send_notification(
-        db, "production_plan_email", subject,
+        db, f"plan_email_{payload.audience}", subject,
         f"План «{plan.name}» за период {start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}. Позиций: {len(items)}.",
-        resolve_plan_recipients(db, payload.audience, line_recipients, payload.recipients), html, exact_recipients=True,
+        payload.recipients, html, plan_line_recipients=line_recipients,
         attachments=[(f"plan_{start.isoformat()}_{end.isoformat()}.xlsx", build_plan_xlsx([schedule_item_dict(item) for item in items], payload.audience), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")],
     )
     db.add(AuditEvent(username=user.username, action="production_plan_emailed", entity_type="production_plan", entity_id=str(plan.id), details={"start": start.isoformat(), "end": end.isoformat(), "line_ids": payload.line_ids, "item_count": len(items), "status": log.status, "recipients": log.recipients}))

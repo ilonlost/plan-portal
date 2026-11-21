@@ -299,7 +299,7 @@ def confirm_import(payload: ImportConfirmRequest, db: Session = Depends(get_db),
         db.add(AuditEvent(username=user.username, action="plan_imported", entity_type="production_plan", entity_id=str(scoped_plan.id), details={"line_id": payload.line_id, "source_kind": source_kind, "file_name": preview.file_name, "rows": len(demands), "replaced_demands": len(replaced_ids)}))
         db.commit()
         line = db.get(ProductionLine, payload.line_id)
-        send_notification(db, "plan_imported", f"PLAN Portal: обновлена линия {line.name}", f"Пользователь {user.display_name} загрузил {preview.file_name} только на линию «{line.name}». Строк: {len(demands)}.")
+        send_notification(db, "plan_imported_line", f"PLAN Portal: обновлена линия {line.name}", f"Пользователь {user.display_name} загрузил {preview.file_name} только на линию «{line.name}». Строк: {len(demands)}.")
         return {"order_id": order.id, "plan": plan_dict(db, scoped_plan), "imported_rows": len(demands), "line_id": payload.line_id}
     if not payload.create_plan:
         db.add(AuditEvent(
