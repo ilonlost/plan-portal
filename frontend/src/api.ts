@@ -133,7 +133,7 @@ export const api = {
   },
   maintenanceTemplateUrl: () => `${API}/imports/maintenance-template.xlsx`,
   importPFOffer: (plan: number, order: number) => request<ImportPFOffer>(`/plans/${plan}/imports/${order}/pf`),
-  previewImportPF: (plan: number, order: number, task: number) => request<PFPreview>(`/plans/${plan}/imports/${order}/pf/${task}`),
+  previewImportPF: (plan: number, order: number, task: number, signal?: AbortSignal) => request<PFPreview>(`/plans/${plan}/imports/${order}/pf/${task}`, { signal }),
   expandImportPF: (offer: ImportPFOffer, selections: { task_id: number; pf_tasks: PFTaskOptions[]; pf_mapping_revision?: string; pf_calculation_revision?: string }[]) =>
     request<{ created: number }>(`/plans/${offer.plan_id}/imports/${offer.order_id}/pf`, { method: "POST",
       headers: { "Content-Type": "application/json", "If-Match": String(offer.version) }, body: JSON.stringify(selections) }),

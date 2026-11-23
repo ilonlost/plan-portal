@@ -1,0 +1,15 @@
+.import-pf-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:10px 16px; margin:16px 0; }
+.import-pf-toolbar .check-label { margin:0; }
+.import-pf-toolbar > span { color:var(--muted); }
+.import-pf-review .import-pf-fields > .pf-review-table { max-height:430px; }
+.import-pf-review .import-pf-fields > .pf-review-table.expanded { max-height:none; }
+.pf-review-table table { width:100%; min-width:960px; }
+.pf-review-table td { white-space:normal; overflow-wrap:anywhere; }
+.pf-review-table td:first-child { width:21%; }
+.pf-review-table td:nth-child(2) { width:17%; }
+.pf-review-table td:last-child { width:20%; }
+.pf-review-table td small { display:block; margin-top:3px; }
+.pf-review-table input[type=date] { width:128px; }
+.pf-review-table input[type=number] { width:85px; }
+.pf-review-table select { max-width:180px; }
+.pf-review-table .pf-retry { display:block; margin:5px 0 0; padding:0; background:transparent; border:0; color:var(--text); text-decoration:underline; cursor:pointer; }
