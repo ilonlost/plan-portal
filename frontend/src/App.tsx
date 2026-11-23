@@ -36,7 +36,13 @@ const executionLabels: Record<string, string> = {
 };
 const today = () => new Date().toLocaleDateString("sv-SE");
 const canPlan = (user: UserProfile | null) => user?.role === "admin" || user?.role === "planner";
-const sectionVisible = (user: UserProfile, page: Page) => { const section = page === "shipment" ? "fact" : page; return section === "planner-admin" ? canPlan(user) : user.role === "admin" || (section !== "admin" && (user.section_visibility?.[section] ?? section !== "fact")); };
+const sectionVisible = (user: UserProfile, page: Page) => {
+  const section = page === "shipment" ? "fact" : page;
+  if (section === "planner-admin") return canPlan(user);
+  if ((section === "import" || section === "az") && !canPlan(user)) return false;
+  return user.role === "admin" || (section !== "admin" && (user.section_visibility?.[section] ?? section !== "fact"));
+};
+const excelSectionLabel = "Загрузка Excel и подтверждение АЗ";
 const sectionLabels: Record<string, string> = { plan: "План производства", catalog: "Справочник", import: "Загрузка Excel", az: "Подтверждение АЗ", feedback: "Обратная связь", fact: "Отчёты" };
 const articleBlocked = (product: CatalogProduct) => product.catalog_status === "blocked" || /блок/i.test(product.fk_status || "");
 const articleStatus = (product: CatalogProduct) => product.catalog_status === "deleted" ? "Удалён из справочника" : articleBlocked(product) ? "Заблокирован" : !product.active ? "Отключён" : product.fk_status || "Активен";
@@ -219,8 +225,8 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    if (!sectionVisible(user, page) || (["import", "az"].includes(page) && !canPlan(user))) {
-      const fallback = (["plan", "catalog", "feedback", "fact"] as Page[]).find(value => sectionVisible(user, value));
+    if (!sectionVisible(user, page)) {
+      const fallback = (["plan", "catalog", "import", "az", "feedback", "fact"] as Page[]).find(value => sectionVisible(user, value));
       if (fallback) setPage(fallback);
     }
   }, [user, page]);
@@ -231,6 +237,10 @@ export default function App() {
     catch (reason) { setError(message(reason)); setLoading(false); }
   }} />;
 
+  const canImport = sectionVisible(user, "import");
+  const canConfirm = sectionVisible(user, "az");
+  const excelOpen = page === "import" || page === "az";
+  const excelLabel = canImport && canConfirm ? excelSectionLabel : sectionLabels[canImport ? "import" : "az"];
   const logout = async () => { await api.logout(); await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => undefined); window.location.assign("/"); };
   const navigateDate = (delta: number) => setViewDate(addDays(viewDate, delta * viewDays));
   const selectDate = (value: string) => setViewDate(viewDays !== 1 ? startOfWeek(value) : value);
@@ -243,9 +253,7 @@ export default function App() {
       <nav>
         {sectionVisible(user, "plan") && <Nav active={page === "plan"} icon="▦" label="План производства" onClick={() => setPage("plan")} />}
         {sectionVisible(user, "catalog") && <Nav active={page === "catalog"} icon="≡" label="Справочник" onClick={() => setPage("catalog")} />}
-        {canPlan(user) && sectionVisible(user, "import") && <Nav active={page === "import"} icon="⇧" label="Загрузка Excel" onClick={() => setPage("import")} />}
-        {canPlan(user) && sectionVisible(user, "az") && <Nav active={page === "az"} icon="АЗ" label="Подтверждение АЗ" onClick={() => setPage("az")} />}
-        {sectionVisible(user, "feedback") && <Nav active={page === "feedback"} icon="✎" label="Обратная связь" onClick={() => setPage("feedback")} />}
+        {(canImport || canConfirm) && <Nav active={excelOpen} icon="⇧" label={excelLabel} onClick={() => setPage(!canImport || (canConfirm && page === "az") ? "az" : "import")} />}
         {sectionVisible(user, "fact") && <div className="reports-nav">
           <button type="button" className={page === "fact" || page === "shipment" ? "active" : ""} aria-expanded={reportsOpen} aria-controls="reports-submenu" onClick={() => setReportsOpen(open => !open)}>
             <i aria-hidden="true">◷</i><span>Отчёты</span><span aria-hidden="true" className={`reports-chevron${reportsOpen ? " expanded" : ""}`}>›</span>
@@ -258,12 +266,12 @@ export default function App() {
         {canPlan(user) && <Nav active={page === "planner-admin"} icon="⚙" label="Управление планированием" onClick={() => setPage("planner-admin")} />}
         {user.role === "admin" && <Nav active={page === "admin"} icon="⚙" label="Администрирование планирования" onClick={() => setPage("admin")} />}
       </nav>
-      {sectionVisible(user, "feedback") && <div className="sidebar-tip"><button onClick={() => setPage("feedback")}>Написать в ИТ</button></div>}
+      {sectionVisible(user, "feedback") && <div className="sidebar-tip"><button aria-current={page === "feedback" ? "page" : undefined} onClick={() => setPage("feedback")}>Обратная связь</button></div>}
       <div className="user-card"><span>{initials(user.display_name)}</span><div><b title={user.display_name}>{user.display_name}</b><small>{user.access_label}{user.line_name ? ` · ${user.line_name}` : ""}</small></div><button title="Выйти" onClick={() => void logout()}>↪</button></div>
     </aside>
     <main className={page === "fact" || page === "shipment" ? "reports-main" : undefined}>
       <header className="topbar">
-        <div><small><a className="portal-return" href="/">ART PORTAL</a> · ПЛАНИРОВАНИЕ ПРОИЗВОДСТВА</small><h1>{pageTitle(page)}</h1></div>
+        <div><small><a className="portal-return" href="/">ART PORTAL</a> · ПЛАНИРОВАНИЕ ПРОИЗВОДСТВА</small><h1>{excelOpen ? excelLabel : pageTitle(page)}</h1></div>
         {page === "plan" && <div className="top-week-summary"><b>{weekNumber(viewDate)} неделя</b><span>{formatDate(startOfWeek(viewDate))} — {formatDate(addDays(startOfWeek(viewDate), 6))}</span></div>}
         <div className="top-actions">
           {(page === "fact" || page === "shipment") && <span id="report-status" />}
@@ -293,8 +301,14 @@ export default function App() {
           onItem={setSelectedItem} onUpload={() => setPage("import")}
           onRecalculate={async () => { try { const result = await api.recalculatePlan(); await refreshPlan(); setNotice(`План пересчитан. Неразмещённых позиций осталось: ${result.unscheduled_count}`); } catch (reason) { setError(message(reason)); } }} /></div>}
         {page === "catalog" && !catalog && <Loading />}{page === "catalog" && catalog && <CatalogView onCreateTask={async (productId, lineId) => { try { const next = await api.matrix(matrixParams()); setMatrix(next); setManualInitial({ productId, lineId }); setManualTaskMode("production"); setManualTaskOpen(true); } catch (reason) { setError(message(reason)); } }} data={catalog} lines={lines} user={user} focusProductId={catalogFocusProductId} onFocusHandled={() => setCatalogFocusProductId(null)} onSaved={async text => { const [nextCatalog, nextLines] = await Promise.all([api.catalog(), api.lines()]); updateCatalog(nextCatalog); setLines(nextLines); setNotice(text); }} />}
-        {page === "import" && canPlan(user) && <ProductionImport lines={lines.filter(line => line.status === "active")} onImported={async text => { setNotice(text); await refreshPlan(); setPage("plan"); }} />}
-        {page === "az" && <AdvanceConfirmationView user={user} lines={lines} onApplied={async text => { setNotice(text); await refreshPlan(); }} onError={setError} />}
+        {excelOpen && <div className="stack">
+          {canImport && canConfirm && <nav className="view-switch" aria-label="Операции с Excel">
+            <button className={page === "import" ? "active" : ""} aria-pressed={page === "import"} onClick={() => setPage("import")}>{sectionLabels.import}</button>
+            <button className={page === "az" ? "active" : ""} aria-pressed={page === "az"} onClick={() => setPage("az")}>{sectionLabels.az}</button>
+          </nav>}
+          {canImport && <div hidden={page !== "import"}><ProductionImport lines={lines.filter(line => line.status === "active")} onImported={async text => { setNotice(text); await refreshPlan(); setPage("plan"); }} /></div>}
+          {canConfirm && <div hidden={page !== "az"}><AdvanceConfirmationView active={page === "az"} user={user} lines={lines} onApplied={async text => { setNotice(text); await refreshPlan(); }} onError={setError} /></div>}
+        </div>}
         {page === "feedback" && <FeedbackView user={user} onNotice={setNotice} onError={setError} />}
         {page === "fact" && sectionVisible(user, "fact") && <ProductionFactView onError={setError} />}
         {page === "shipment" && sectionVisible(user, "shipment") && <ProductionFact key="shipment" shipment onError={setError} />}
@@ -357,7 +371,7 @@ function PlanView({ matrix, workshops, lines, user, selectedWorkshop, selectedLi
     void synchronize();
     return () => { controller.abort(); window.clearTimeout(timer); };
   }, [insightsScope]);
-  if (!matrix) return <Empty title="Производственный план не загружен" text="Справочник сохранён. Загрузите недельный ОХЛ или квартальный ЗАМ, чтобы сформировать новый план." action={canPlan(user) ? <button className="button primary" onClick={onUpload}>Загрузить Excel</button> : undefined} />;
+  if (!matrix) return <Empty title="Производственный план не загружен" text="Справочник сохранён. Загрузите недельный ОХЛ или квартальный ЗАМ, чтобы сформировать новый план." action={sectionVisible(user, "import") ? <button className="button primary" onClick={onUpload}>Загрузить Excel</button> : undefined} />;
   const cells = matrix.workshops.flatMap(w => w.lines.flatMap(l => l.cells));
   const items = cells.flatMap(c => c.items);
   const productionItems = items.filter(item => item.schedule_kind === "production");
@@ -690,13 +704,13 @@ function CatalogEditor({ row, lines, onClose, onSaved }: { row: CatalogRow; line
 }
 
 
-function AdvanceConfirmationView({ user, lines, onApplied, onError }: { user: UserProfile; lines: LineData[]; onApplied: (text: string) => Promise<void>; onError: (text: string) => void }) {
+function AdvanceConfirmationView({ active, user, lines, onApplied, onError }: { active: boolean; user: UserProfile; lines: LineData[]; onApplied: (text: string) => Promise<void>; onError: (text: string) => void }) {
   const [preview, setPreview] = useState<AdvanceConfirmationPreview | null>(null);
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [history, setHistory] = useState<AdvanceConfirmationBatch[]>([]);
   const [busy, setBusy] = useState(false);
   const loadHistory = async () => { try { setHistory(await api.advanceConfirmationHistory()); } catch (reason) { onError(message(reason)); } };
-  useEffect(() => { void loadHistory(); }, []);
+  useEffect(() => { if (active) void loadHistory(); }, [active]);
   if (!canPlan(user)) return <Empty title="Раздел АЗ недоступен" text="Для корректировки нужен доступ планера или администратора." />;
   const choose = async (file?: File) => {
     if (!file) return;

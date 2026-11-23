@@ -229,7 +229,7 @@ input::placeholder,textarea::placeholder { color: var(--muted); opacity: 1; }
 @media (max-width: 980px) { .access-create { grid-template-columns: 1fr 1fr; }.access-directory-picker { grid-column: 1 / -1; }.role-guide { grid-template-columns: 1fr; } }
 
 /* Помощь и профиль образуют нижнюю зону меню, как в ART Portal. */
-.sidebar-tip { margin: auto 11px 12px; }.sidebar-tip button + button { margin-top: 6px; color: #fff; border-color: var(--red); background: var(--red); }.sidebar .user-card { margin-top: 0; }
+.sidebar-tip { margin: auto 11px 12px; }.sidebar-tip button[aria-current="page"] { box-shadow: inset 3px 0 var(--red); }.sidebar-tip button + button { margin-top: 6px; color: #fff; border-color: var(--red); background: var(--red); }.sidebar .user-card { margin-top: 0; }
 
 /* Блок помощи всегда остаётся частью тёмного сайдбара, в том числе в светлой теме. */
 [data-theme="light"] .sidebar-tip { color: #f3f4f6; border-color: #34363b; background: #202126; }
