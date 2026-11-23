@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "./api";
-import { PFMappings } from "./PFMappings";
+import { newPFMapping, PFMappingEditor, type PFMapping, type PFMappingItem, type PFMappingCatalog } from "./PFMappings";
 import { matchesCatalogText } from "./catalogSearch";
 import type { CatalogProduct, LineData } from "./types";
 import "./PFCatalog.css";
@@ -14,54 +14,113 @@ type PFCatalogProps = {
   products: CatalogProduct[]; lines: LineData[]; canEdit: boolean; onSaved: (text: string) => Promise<void>;
 };
 
-export function PFCatalog(props: PFCatalogProps) {
-  const [view, setView] = useState<"products" | "mappings">("products");
-  return <div className="stack">
-    {props.canEdit && <nav className="view-switch" aria-label="Разделы ПФ">
-      <button className={view === "products" ? "active" : ""} aria-pressed={view === "products"} onClick={() => setView("products")}>Артикулы ПФ</button>
-      <button className={view === "mappings" ? "active" : ""} aria-pressed={view === "mappings"} onClick={() => setView("mappings")}>Связи ГП → ПФ</button>
-    </nav>}
-    {props.canEdit && view === "mappings" ? <PFMappings /> : <PFProducts {...props} />}
-  </div>;
+type Link = { mapping: PFMapping; item: PFMappingItem | null };
+type PFEntry = { key: string; sku: string; name: string; product?: CatalogProduct; links: Link[] };
+
+function catalogEntries(products: CatalogProduct[], mappings: PFMapping[]) {
+  const entries = new Map<string, PFEntry>();
+  for (const product of products) {
+    if (isPFSku(product.sku) && product.catalog_status !== "deleted") {
+      entries.set(product.sku, { key: product.sku, sku: product.sku, name: product.product_name, product, links: [] });
+    }
+  }
+  for (const mapping of mappings) {
+    if (!mapping.items.length) {
+      const key = JSON.stringify([mapping.gp_sku, mapping.gp_line_id]);
+      entries.set(key, { key, sku: "", name: "ПФ не назначены", links: [{ mapping, item: null }] });
+    }
+    for (const item of mapping.items) {
+      const entry = entries.get(item.sku) || { key: item.sku, sku: item.sku, name: item.name, links: [] as Link[] };
+      entry.links.push({ mapping, item });
+      entries.set(item.sku, entry);
+    }
+  }
+  return [...entries.values()].sort((a, b) => Number(!!b.product?.capabilities.length) - Number(!!a.product?.capabilities.length));
 }
 
-function PFProducts({ products, lines, canEdit, onSaved }: PFCatalogProps) {
+export function PFCatalog({ products, lines, canEdit, onSaved }: PFCatalogProps) {
   const [query, setQuery] = useState("");
   const [lineFilter, setLineFilter] = useState("");
+  const [gpLine, setGPLine] = useState("");
   const [editor, setEditor] = useState<Editor | null>(null);
+  const [catalog, setCatalog] = useState<PFMappingCatalog | null>(null);
+  const [mappingEditor, setMappingEditor] = useState<PFMapping | null>(null);
+  const [revision, setRevision] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [error, setError] = useState("");
-  const all = products.filter(product => isPFSku(product.sku) && product.catalog_status !== "deleted");
-  const visible = all.filter(product => matchesCatalogText(`${product.sku} ${product.product_name} ${product.line_names.join(" ")}`, query)
-    && (!lineFilter || (lineFilter === "missing" ? !product.capabilities.length : product.capabilities.some(cap => cap.line_id === Number(lineFilter)))))
-    .sort((a, b) => Number(a.capabilities.length === 0) - Number(b.capabilities.length === 0));
+  const [notice, setNotice] = useState("");
+  useEffect(() => {
+    let current = true;
+    if (canEdit) {
+      setLoading(true); setLoadError("");
+      api.pfMappings().then(value => { if (current) setCatalog(value); })
+        .catch(() => { if (current) setLoadError("Не удалось загрузить связи ГП. Обновите список, чтобы повторить."); })
+        .finally(() => { if (current) setLoading(false); });
+    }
+    return () => { current = false; };
+  }, [canEdit, revision]);
+  const all = catalogEntries(products, canEdit ? catalog?.mappings || [] : []);
+  const visible = all.flatMap(entry => {
+    const caps = entry.product?.capabilities || [];
+    if (lineFilter === "missing" && caps.length) return [];
+    if (lineFilter && lineFilter !== "missing" && !caps.some(cap => cap.line_id === Number(lineFilter))) return [];
+    const pfMatch = matchesCatalogText([entry.sku, entry.name, ...caps.map(cap => cap.line_name)].join(" "), query);
+    const links = entry.links.filter(({ mapping }) => {
+      if (gpLine && !(mapping.gp_line_id ? mapping.gp_line_id === Number(gpLine) :
+        catalog?.products.find(p => p.sku === mapping.gp_sku)?.capabilities.some(cap => cap.line_id === Number(gpLine)))) return false;
+      return pfMatch || matchesCatalogText(`${mapping.gp_sku} ${mapping.gp_name || ""}`, query);
+    });
+    return (gpLine || !pfMatch) && !links.length ? [] : [{ ...entry, links }];
+  });
+  const lineName = (id: number) => catalog?.lines.find(line => line.id === id)?.name || String(id);
   const saved = async () => {
-    setEditor(null);
-    setError("");
+    setEditor(null); setError(""); setRevision(n => n + 1);
     try { await onSaved("Параметры ПФ сохранены в справочнике"); }
     catch { setError("ПФ сохранён, но список не удалось обновить. Обновите страницу."); }
   };
+  const editMapping = (mapping: PFMapping) => { setNotice(""); setMappingEditor(mapping); };
+  const mappingSaved = (saved: PFMapping) => {
+    setCatalog(current => current && ({ ...current, mappings: [...current.mappings.filter(m => m.gp_sku !== saved.gp_sku || m.gp_line_id !== saved.gp_line_id), saved] }));
+    setMappingEditor(null); setNotice("Связи сохранены.");
+    setRevision(n => n + 1);
+  };
   return <section className="card catalog-card pf-catalog">
-    <div className="catalog-head"><div><h2>ПФ</h2><p>Артикула ПФ для раскрутки</p></div>
-      <div className="filters"><input aria-label="Поиск ПФ" placeholder="Артикул, название или линия…" value={query} onChange={event => setQuery(event.target.value)} />
-        <select aria-label="Фильтр линии ПФ" value={lineFilter} onChange={event => setLineFilter(event.target.value)}><option value="">Все линии</option><option value="missing">Без линии</option>{lines.filter(line => line.status === "active").map(line => <option key={line.id} value={line.id}>{line.workshop_name} · {line.name}</option>)}</select>
-        {canEdit && <button className="button primary" onClick={() => setEditor({ product: null, capability: null })}>Создать ПФ</button>}
+    <div className="catalog-head"><div><h2>ПФ</h2></div>
+      <div className="filters"><input aria-label="Поиск ПФ" placeholder="Артикул, название ГП / ПФ или линия…" value={query} onChange={e => setQuery(e.target.value)} />
+        <select aria-label="Фильтр линии ПФ" value={lineFilter} onChange={e => setLineFilter(e.target.value)}><option value="">Все линии ПФ</option><option value="missing">Без линии</option>{lines.filter(line => line.status === "active").map(line => <option key={line.id} value={line.id}>{line.workshop_name} · {line.name}</option>)}</select>
+        {canEdit && <>
+          <select aria-label="Фильтр линии ГП" value={gpLine} onChange={e => setGPLine(e.target.value)}><option value="">Все линии ГП</option>{catalog?.lines.filter(line => line.status === "active").map(line => <option key={line.id} value={line.id}>{line.workshop_name} · {line.name}</option>)}</select>
+          <button className="button secondary" disabled={loading} onClick={() => setRevision(n => n + 1)}>Обновить связи</button>
+          <button className="button secondary" disabled={!catalog || loading} onClick={() => editMapping(newPFMapping())}>Добавить сопоставление</button>
+          <button className="button primary" onClick={() => setEditor({ product: null, capability: null })}>Создать ПФ</button>
+        </>}
       </div>
     </div>
-    {error && <p className="inline-error" role="alert">{error}</p>}
-    <div className="table-scroll integrated-table-scroll"><table><thead><tr><th>Артикул / ПФ</th><th>Цех / линия</th><th>Скорость, кг/ч</th><th>Статус</th>{canEdit && <th>Настройка</th>}</tr></thead>
-      <tbody>{visible.map(product => {
-        const caps: (Capability | null)[] = product.capabilities.length ? product.capabilities.filter(cap => !lineFilter || lineFilter === "missing" || cap.line_id === Number(lineFilter)) : [null];
-        return caps.map((cap, index) => <tr key={`${product.product_id}-${cap?.capability_id || "missing"}`}>
-          <td><b>{product.sku}</b><small>{product.product_name}</small></td>
+    {(error || (canEdit && loadError)) && <p className="inline-error" role="alert">{error || loadError}</p>}
+    {notice && <p className="planner-message good" role="status">{notice}</p>}
+    <div className="table-scroll integrated-table-scroll"><table><thead><tr><th>Артикул / ПФ</th><th>Цех / линия ПФ</th><th>Скорость, кг/ч</th><th>Статус</th>{canEdit && <><th>Связанные ГП</th><th>Настройка ПФ</th></>}</tr></thead>
+      <tbody>{visible.map(({ key, sku, name, product, links }) => {
+        const caps: (Capability | null)[] = product?.capabilities.length ? product.capabilities.filter(cap => !lineFilter || cap.line_id === Number(lineFilter)) : [null];
+        return caps.map((cap, index) => <tr key={JSON.stringify([key, cap?.capability_id])}>
+          <td><b>{sku}</b><small>{name}</small></td>
           <td>{cap ? <><b>{cap.workshop_name}</b><small>{cap.line_name}</small></> : <span className="bad">Линия не назначена</span>}</td>
-          <td>{cap ? `${number(cap.speed_kg_hour)} кг/ч` : "Не задана"}</td>
-          <td><span className={`status-chip ${product.active && product.catalog_status === "active" ? "good" : "warning"}`}>{product.active && product.catalog_status === "active" ? "Активный" : "Заблокирован"}</span></td>
-          {canEdit && <td><div className="inline-actions"><button className="button secondary" onClick={() => setEditor({ product, capability: cap })}>{cap ? "Изменить" : "Задать линию и скорость"}</button>{index === 0 && !!cap && <button className="button secondary" onClick={() => setEditor({ product, capability: null })}>Добавить линию</button>}</div></td>}
+          <td>{cap ? `${number(cap.speed_kg_hour)} кг/ч` : "—"}</td>
+          <td>{product ? <span className={`status-chip ${product.active && product.catalog_status === "active" ? "good" : "warning"}`}>{product.active && product.catalog_status === "active" ? "Активный" : "Заблокирован"}</span> : "Только в связях"}</td>
+          {canEdit && index === 0 && <td rowSpan={caps.length}>
+            {links.map(({ mapping, item }) => <div className="pf-gp-link" key={JSON.stringify([mapping.gp_sku, mapping.gp_line_id])}>
+              <button className="button secondary" disabled={loading} onClick={() => editMapping(mapping)}>{mapping.gp_sku} · {mapping.gp_name || "ГП"}</button>
+              <small>{mapping.gp_line_id ? `Линия ГП: ${lineName(mapping.gp_line_id)}` : "Все линии ГП"}{item && ` · ${item.lead_days === 0 ? "День в день" : `За ${item.lead_days} дн.`}${item.line_id ? ` · ПФ: ${lineName(item.line_id)}` : ""}${item.speed_kg_hour ? ` · ${number(Number(item.speed_kg_hour))} кг/ч` : ""}${item.enabled ? "" : " · Отключено"}`}</small>
+            </div>)}
+            {sku && <button className="button secondary" disabled={!catalog || loading} onClick={() => editMapping({ ...newPFMapping(), items: [{ sku, name, kind: "pf", line_id: null, speed_kg_hour: null, lead_days: 2, enabled: true, note: "" }] })}>Связать с ГП</button>}
+          </td>}
+          {canEdit && <td>{product && <div className="inline-actions"><button className="button secondary" onClick={() => setEditor({ product, capability: cap })}>{cap ? "Изменить" : "Задать линию и скорость"}</button>{index === 0 && !!cap && <button className="button secondary" onClick={() => setEditor({ product, capability: null })}>Добавить линию</button>}</div>}</td>}
         </tr>);
       })}</tbody></table></div>
-    {!visible.length && <p className="pf-catalog-empty">{all.length ? "По выбранным фильтрам ПФ не найдены." : "В справочнике пока нет артикулов ПФ с префиксом 102 или 4."}</p>}
-    <footer>Показано {visible.length} из {all.length} ПФ · Без линии: {all.filter(product => !product.capabilities.length).length}</footer>
+    {!visible.length && <p className="pf-catalog-empty">По выбранным условиям записей нет.</p>}
+    <footer>Показано {visible.length} из {all.length} · Без линии: {all.filter(entry => entry.sku && !entry.product?.capabilities.length).length}</footer>
     {canEdit && editor && <PFEditor {...editor} products={products} lines={lines} onClose={() => setEditor(null)} onSaved={saved} />}
+    {canEdit && catalog && mappingEditor && <PFMappingEditor data={catalog} initial={mappingEditor} onSaved={mappingSaved} onClose={() => setMappingEditor(null)} />}
   </section>;
 }
 

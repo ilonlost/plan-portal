@@ -24,6 +24,7 @@ createRoot(document.getElementById('root')).render(React.createElement(Test));</
   let submitted;
   await page.route("**/api/**", async route => {
     const req = route.request(); const pathname = new URL(req.url()).pathname;
+    if (pathname.endsWith("/planner-admin/pf-mappings")) return route.fulfill({ json: { products: [], mappings: [], lines } });
     if (pathname.endsWith("/test-products")) return route.fulfill({ json: products });
     if (pathname.endsWith("/catalog/source-attributes")) return route.fulfill({ json: { values: {}, sources: { mercury: "not_configured", chz: "not_configured", details: "not_configured" }, checked_at: new Date().toISOString() } });
     if (req.method() === "PATCH") {
@@ -47,7 +48,7 @@ createRoot(document.getElementById('root')).render(React.createElement(Test));</
   await page.getByLabel("Поиск ПФ").fill("");
   assert.equal(await table.getByText("1010001", { exact: true }).count(), 0);
   assert.equal(await table.getByText("2102000", { exact: true }).count(), 0);
-  await table.locator("tr").filter({ hasText: "4510001" }).getByRole("button").click();
+  await table.locator("tr").filter({ hasText: "4510001" }).getByRole("button", { name: "Задать линию и скорость" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Линия ПФ", { exact: true }).selectOption("1");
   await dialog.getByLabel("Скорость ПФ, кг/ч").fill("0");
@@ -89,7 +90,7 @@ createRoot(document.getElementById('root')).render(React.createElement(Test));</
   await page.goto(`${url}?role=viewer`);
   await page.getByRole("navigation", { name: "Представление справочника" }).getByRole("button", { name: /^ПФ 3$/ }).click();
   assert.equal(await page.locator(".pf-catalog button").count(), 0);
-  assert.equal(await page.getByRole("button", { name: "Связи ГП → ПФ" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Добавить сопоставление" }).count(), 0);
   assert.deepEqual(errors, []);
   console.log("PF catalog: prefixes, unmapped PF, line/speed save, multiple lines, creation, filters, viewer and mobile passed");
 } finally { await browser?.close(); await server?.close(); await fs.unlink(fixture).catch(() => {}); }
