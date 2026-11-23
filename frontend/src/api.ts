@@ -8,6 +8,10 @@ import type { PFPreview, PFTaskOptions } from "./PFExpansion";
 
 export type LineAttendance = { date: string; status: "ok" | "unavailable"; counts: Record<number, number | null> };
 export type CsbBatch = {run_id: number; jobs: {t63: number; sku: string; state: string; order_number: string | null; detail: string | null}[]};
+export type CatalogChange =
+  | { action: "set_status"; status: "active" | "blocked" }
+  | { action: "set_date_status"; advance_status: "АЗ" | "По графику" }
+  | { action: "add_line"; line_id: number; units_per_hour: number };
 
 const API = import.meta.env.VITE_API_URL || "/api";
 const planVersions = new Map<number, number>();
@@ -88,6 +92,26 @@ export const api = {
   deleteProduct: (id: number) => request<{ ok: boolean; deleted: boolean }>(`/catalog/products/${id}`, { method: "DELETE" }),
   productBom: (id: number) => request<BomData>(`/catalog/products/${id}/bom`),
   catalogExportUrl: () => `${API}/catalog/export.xlsx`,
+  updateCatalogSelection: (product_ids: number[], change: CatalogChange) =>
+    request<{ changed: number; plan_recalculated: boolean }>("/catalog/selection/update", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ product_ids, change }),
+    }),
+  exportCatalogSelection: async (product_ids: number[]) => {
+    const response = await fetch(`${API}/catalog/selection/export.xlsx`, {
+      credentials: "include", method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ product_ids }),
+    });
+    if (!response.ok) {
+      if (response.status === 401) window.dispatchEvent(new Event("portal-session-expired"));
+      const error = await response.json().catch(() => ({}));
+      throw new ApiError(typeof error.detail === "string" ? error.detail : "Не удалось скачать выбранные артикулы", response.status);
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "Выбранные артикулы.xlsx";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+  },
   importCatalog: async (file: File) => { const data = new FormData(); data.append("file", file); return request<{ ok: boolean; products_created: number; products_updated: number; capabilities_created: number; capabilities_updated: number }>("/catalog/import.xlsx", { method: "POST", body: data }); },
   updateItem: (planId: number, itemId: number, data: object, version?: number) => request<PlanData>(`/plans/${planId}/items/${itemId}`, {
     method: "PATCH", headers: { "Content-Type": "application/json", ...(version == null ? {} : { "If-Match": String(version) }) }, body: JSON.stringify(data),

@@ -51,16 +51,21 @@ def _style_sheet(sheet, widths: list[int]) -> None:
     sheet.column_dimensions["A"].hidden = True
 
 
-def export_catalog(db: Session) -> bytes:
-    products = list(db.scalars(
-        select(Product).where(Product.catalog_status != "deleted").order_by(Product.sku)
-    ))
-    capabilities = list(db.scalars(
+def export_catalog(db: Session, product_ids: set[int] | None = None) -> bytes:
+    article_query = select(Product).where(Product.catalog_status != "deleted").order_by(Product.sku)
+    parameter_query = (
         select(LineCapability).join(LineCapability.product).join(LineCapability.line)
         .where(Product.catalog_status != "deleted", ProductionLine.status == "active")
         .options(joinedload(LineCapability.product), joinedload(LineCapability.line))
         .order_by(Product.sku, ProductionLine.name)
-    ))
+    )
+    if product_ids is not None:
+        article_query = article_query.where(Product.id.in_(product_ids))
+        parameter_query = parameter_query.where(Product.id.in_(product_ids))
+    products = list(db.scalars(article_query))
+    if product_ids is not None and len(products) != len(product_ids):
+        raise ValueError("Состав справочника изменился. Обновите выбор артикулов.")
+    capabilities = list(db.scalars(parameter_query))
     workbook = Workbook()
     info = workbook.active
     info.title = "Инструкция"

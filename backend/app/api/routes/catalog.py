@@ -1,11 +1,12 @@
 from decimal import Decimal
 from pathlib import Path
+from typing import Annotated, Literal
 from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PositiveInt
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -64,6 +65,30 @@ class ProductCreate(ProductUpdate):
 
 class ProductStatusUpdate(BaseModel):
     status: str
+
+
+class CatalogSelection(BaseModel):
+    product_ids: set[PositiveInt] = Field(min_length=1)
+
+
+class SetCatalogStatus(BaseModel):
+    action: Literal["set_status"]
+    status: Literal["active", "blocked"]
+
+
+class SetDateStatus(BaseModel):
+    action: Literal["set_date_status"]
+    advance_status: Literal["АЗ", "По графику"]
+
+
+class AddCatalogLine(BaseModel):
+    action: Literal["add_line"]
+    line_id: PositiveInt
+    units_per_hour: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+
+
+class BulkCatalogUpdate(CatalogSelection):
+    change: Annotated[SetCatalogStatus | SetDateStatus | AddCatalogLine, Field(discriminator="action")]
 
 
 class ShelfLifeRequest(BaseModel):
@@ -322,6 +347,15 @@ def update_product(
     return {"ok": True, "product_id": product.id, "capability_id": capability.id if capability else None, "plan_recalculated": recalculated}
 
 
+def _set_catalog_status(product: Product, status: str) -> None:
+    product.catalog_status = status
+    product.active = status == "active"
+    if status == "blocked":
+        product.fk_status = "Блокирован"
+    elif "блок" in (product.fk_status or "").casefold():
+        product.fk_status = "Активный"
+
+
 @router.patch("/products/{product_id}/status")
 def update_product_status(
     product_id: int, payload: ProductStatusUpdate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner),
@@ -332,12 +366,7 @@ def update_product_status(
     status = payload.status.strip().lower()
     if status not in {"active", "blocked"}:
         raise HTTPException(422, "Допустимые состояния: active или blocked")
-    product.catalog_status = status
-    product.active = status == "active"
-    if status == "blocked":
-        product.fk_status = "Блокирован"
-    elif (product.fk_status or "").lower() == "блокирован":
-        product.fk_status = "Активный"
+    _set_catalog_status(product, status)
     db.add(AuditEvent(username=user.username, action=f"product_{status}", entity_type="product", entity_id=str(product.id), details={"sku": product.sku}))
     recalculated = _recalculate_active_plan(db)
     db.commit()
@@ -448,6 +477,64 @@ def shelf_life(payload: ShelfLifeRequest, user: UserContext = Depends(current_us
 def download_catalog(db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> Response:
     content = export_catalog(db)
     return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="plan-portal-catalog.xlsx"'})
+
+
+@router.post("/selection/export.xlsx")
+def export_catalog_selection(payload: CatalogSelection, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> Response:
+    try:
+        content = export_catalog(db, payload.product_ids)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="catalog-selection.xlsx"'})
+
+
+@router.post("/selection/update")
+def update_catalog_selection(payload: BulkCatalogUpdate, db: Session = Depends(get_db), user: UserContext = Depends(require_planner)) -> dict:
+    products = list(db.scalars(select(Product).where(
+        Product.id.in_(payload.product_ids), Product.catalog_status != "deleted",
+    ).order_by(Product.id).with_for_update()))
+    if len(products) != len(payload.product_ids):
+        raise HTTPException(409, "Состав справочника изменился. Обновите выбор артикулов.")
+
+    change = payload.change
+    existing_links = set()
+    if isinstance(change, AddCatalogLine):
+        line = db.scalar(select(ProductionLine).where(ProductionLine.id == change.line_id).with_for_update())
+        if not line or line.status != "active":
+            raise HTTPException(409, "Выбранная линия больше не доступна.")
+        existing_links = set(db.scalars(select(LineCapability.product_id).where(
+            LineCapability.line_id == line.id, LineCapability.product_id.in_(payload.product_ids),
+        )))
+
+    changed = 0
+    details = change.model_dump(mode="json")
+    for product in products:
+        if isinstance(change, AddCatalogLine):
+            if product.id in existing_links:
+                continue
+            db.add(LineCapability(line_id=change.line_id, product_id=product.id, units_per_hour=change.units_per_hour))
+        elif isinstance(change, SetDateStatus):
+            if product.advance_status == change.advance_status:
+                continue
+            product.advance_status = change.advance_status
+        else:
+            before = (product.catalog_status, product.active, product.fk_status)
+            _set_catalog_status(product, change.status)
+            if before == (product.catalog_status, product.active, product.fk_status):
+                continue
+        db.add(AuditEvent(username=user.username, action=f"catalog_bulk_{change.action}", entity_type="product",
+                          entity_id=str(product.id), details={"sku": product.sku, **details}))
+        changed += 1
+    if changed:
+        recalculated = _recalculate_active_plan(db)
+        db.commit()
+        event = f"catalog_product_{change.status}" if isinstance(change, SetCatalogStatus) else "catalog_product_updated"
+        send_notification(db, event, "PLAN Portal: массовое изменение справочника",
+                          f"{user.display_name} обновил карточки артикулов. Изменено: {changed}.")
+    else:
+        recalculated = False
+    return {"changed": changed, "plan_recalculated": recalculated}
 
 
 @router.post("/import.xlsx")

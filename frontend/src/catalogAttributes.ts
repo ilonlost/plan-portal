@@ -10,9 +10,12 @@ export type SourceAttributesData = {
   sources: Record<"mercury" | "chz" | "details", "ok" | "not_configured" | "unavailable">;
   checked_at: string;
 };
-export const sourceColumns = [
-  ["mercury", "Меркурий"], ["chz", "ЧЗ"], ["shelf_life", "Срок годности"], ["unit", "ЕИ"],
+const detailColumns = [
+  ["mercury", "Меркурий"], ["chz", "ЧЗ"], ["shelf_life", "Срок годности"],
 ] as const;
+const unitColumn = ["unit", "ЕИ"] as const;
+export const sourceColumns = [...detailColumns, unitColumn] as const;
+export const articleSourceColumns = [unitColumn, ...detailColumns] as const;
 
 export function useCatalogAttributes(skus: string[], refreshKey: unknown) {
   const skuKey = JSON.stringify([...new Set(skus)].sort());

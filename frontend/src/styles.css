@@ -241,6 +241,18 @@ input::placeholder,textarea::placeholder { color: var(--muted); opacity: 1; }
 .catalog-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 18px; }
 .catalog-toolbar h2 { margin: 3px 0; font-size: 16px; }.catalog-toolbar p { margin: 0; color: var(--muted); font-size: 9px; }.catalog-toolbar > div:first-child > small { color: var(--red); font-size: 8px; font-weight: 800; letter-spacing: .1em; }
 .catalog-head .filters { flex-wrap: wrap; }.catalog-head .filters .button { min-height: 34px; white-space: nowrap; }
+.catalog-select-cell { width: 32px; text-align: center; vertical-align: middle; }
+.catalog-select-cell input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; accent-color: var(--red); cursor: pointer; }
+.catalog-card .catalog-selected-row td { background: color-mix(in srgb,var(--red) 13%,var(--surface)); }
+.catalog-card .catalog-selected-row td:first-child { box-shadow: inset 3px 0 var(--red); }
+.article-head { align-items: center; gap: 12px; }
+.article-head > :first-child { flex: none; white-space: nowrap; }
+.article-head .article-tools { flex-flow: row nowrap; align-items: center; min-width: 0; height: 44px; overflow-x: auto; scrollbar-width: thin; }
+.article-tools > * { flex: none; }
+.article-tools > input { width: clamp(150px, 17vw, 260px); }
+.catalog-bulk-form { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.catalog-bulk-form select { width: auto; max-width: 200px; }
+.catalog-bulk-form input { width: 110px; }
 .clickable-row { cursor: pointer; }.clickable-row:hover td { background: color-mix(in srgb,var(--red) 5%,var(--surface)); }.blocked-row { opacity: .7; }
 .blocked-row td { background: color-mix(in srgb,#e6a528 7%,var(--surface)); }.status-chip.warning { display: inline-block; margin-top: 5px; color: #8a5b00; background: #fff1cb; }
 .recipe-button { min-width: 130px; }
@@ -403,7 +415,7 @@ body { min-width: 820px; }
 .matrix-scrollbar { position:sticky; z-index:22; height:15px; overflow-x:auto; overflow-y:hidden; border:1px solid var(--line); background:var(--surface-alt); scrollbar-color:var(--red) var(--surface-alt); }.matrix-scrollbar i { display:block; height:1px; }.matrix-scrollbar.top { top:57px; }.matrix-scrollbar.bottom { bottom:0; }.matrix-scroll { scrollbar-width:none; }.matrix-scroll::-webkit-scrollbar { display:none; }.matrix-corner,.date-head { position:sticky; z-index:18; top:72px; }.matrix-corner { left:0; z-index:20; }.line-name { position:sticky; left:0; z-index:9; }.line-name em { display:block; margin-top:4px; color:var(--muted); font-size:7px; font-style:normal; }
 .drawer-head-actions { display:flex; align-items:center; gap:8px; }.drawer-head-actions .button { width:auto!important; min-height:31px; padding:7px 10px; font-size:8px; }
 .catalog-issues { padding:12px 15px; }.catalog-issues summary { cursor:pointer; font-weight:800; }.catalog-issues p { color:var(--muted); font-size:8px; }.catalog-issues > div { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:5px; }.catalog-issues > div button { display:flex; gap:8px; padding:7px; border:1px solid var(--line); border-radius:4px; color:var(--text); background:var(--surface-soft); text-align:left; }.catalog-issues span { overflow:hidden; color:var(--muted); font-size:8px; text-overflow:ellipsis; white-space:nowrap; }
-.article-statuses { display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }.article-statuses .status-chip { padding:3px 5px; font-size:6px; }.status-chip.good { color:#47a975; background:color-mix(in srgb,#47a975 13%,var(--surface)); }
+.catalog-card td .status-chip { display: inline-block; padding: 3px 6px; white-space: nowrap; }.status-chip.good { color:#47a975; background:color-mix(in srgb,#47a975 13%,var(--surface)); }
 .bom-modal { width:min(1200px,94vw); }.bom-tree tbody tr { background:color-mix(in srgb,var(--surface-soft) calc(var(--bom-depth) * 8%),var(--surface)); }.bom-tree-name { padding-left:calc(10px + var(--bom-depth) * 22px)!important; font-weight:700; }.bom-branch { margin-right:7px; color:var(--red); }
 .az-editor .table-scroll { max-height:none!important; overflow-y:visible!important; }.az-remove { width:28px; height:28px; border:1px solid color-mix(in srgb,var(--red) 50%,var(--line)); border-radius:4px; color:var(--red); background:transparent; font-size:17px; }.az-remove:hover { color:#fff; background:var(--red); }
 .portal-settings { display:grid; gap:15px; }.section-visibility-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }.section-visibility-grid .check-label { margin:0; padding:10px; border:1px solid var(--line); border-radius:5px; background:var(--surface-soft); }.integration-state { margin:0; font-size:8px; }
