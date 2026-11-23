@@ -18,7 +18,8 @@ export function PFCatalog({ products, lines, canEdit, onSaved }: {
   const [error, setError] = useState("");
   const all = products.filter(product => isPFSku(product.sku) && product.catalog_status !== "deleted");
   const visible = all.filter(product => matchesCatalogText(`${product.sku} ${product.product_name} ${product.line_names.join(" ")}`, query)
-    && (!lineFilter || (lineFilter === "missing" ? !product.capabilities.length : product.capabilities.some(cap => cap.line_id === Number(lineFilter)))));
+    && (!lineFilter || (lineFilter === "missing" ? !product.capabilities.length : product.capabilities.some(cap => cap.line_id === Number(lineFilter)))))
+    .sort((a, b) => Number(a.capabilities.length === 0) - Number(b.capabilities.length === 0));
   const saved = async () => {
     setEditor(null);
     setError("");

@@ -9,7 +9,7 @@ const fixture = path.join(root, ".pf-catalog-review.html");
 const lines = [{ id: 1, name: "Слойка", workshop_code: "PC", workshop_name: "ПЦ", status: "active" }, { id: 2, name: "Начинка", workshop_code: "PC", workshop_name: "ПЦ", status: "active" }];
 const cap = (id, line, speed) => ({ capability_id: id, line_id: line.id, line_name: line.name, workshop_code: line.workshop_code, workshop_name: line.workshop_name, speed_kg_hour: speed });
 const product = (id, sku, caps = []) => ({ product_id: id, sku, product_name: `Продукция ${sku}`, state: null, active: true, catalog_status: "active", capabilities: caps, capability_count: caps.length, line_names: caps.map(cap => cap.line_name) });
-let products = [product(1, "1010001"), product(2, "1020001", [cap(21, lines[0], 120), cap(22, lines[1], 50)]), product(3, "4510001"), product(4, "1020002"), product(5, "2102000")];
+let products = [product(4, "1020002"), product(2, "1020001", [cap(21, lines[0], 120), cap(22, lines[1], 50)]), product(3, "4510001"), product(1, "1010001"), product(5, "2102000")];
 let server, browser;
 try {
   await fs.writeFile(fixture, `<!doctype html><html lang="ru"><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body><div id="root" style="padding:24px;max-width:1400px;margin:auto"></div><script type="module">
@@ -40,6 +40,11 @@ createRoot(document.getElementById('root')).render(React.createElement(Test));</
   await page.getByRole("navigation", { name: "Представление справочника" }).getByRole("button", { name: /^ПФ 3$/ }).click();
   const table = page.locator(".pf-catalog table");
   assert.equal(await table.locator("tbody tr").count(), 4);
+  const displayedSkus = () => table.locator("tbody tr td:first-child b").allTextContents();
+  assert.deepEqual(await displayedSkus(), ["1020001", "1020001", "1020002", "4510001"]);
+  await page.getByLabel("Поиск ПФ").fill("102");
+  assert.deepEqual(await displayedSkus(), ["1020001", "1020001", "1020002"]);
+  await page.getByLabel("Поиск ПФ").fill("");
   assert.equal(await table.getByText("1010001", { exact: true }).count(), 0);
   assert.equal(await table.getByText("2102000", { exact: true }).count(), 0);
   await table.locator("tr").filter({ hasText: "4510001" }).getByRole("button").click();
@@ -51,6 +56,8 @@ createRoot(document.getElementById('root')).render(React.createElement(Test));</
   await dialog.getByRole("button", { name: "Сохранить", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
   assert.deepEqual(submitted, { line_id: 1, units_per_hour: 75.5 });
+  await table.getByText("75,5 кг/ч", { exact: true }).waitFor();
+  assert.deepEqual(await displayedSkus(), ["1020001", "1020001", "4510001", "1020002"]);
   await table.locator("tr").filter({ hasText: "1020001" }).filter({ hasText: "120 кг/ч" }).getByRole("button", { name: "Изменить", exact: true }).click();
   assert.equal(await dialog.getByLabel("Линия ПФ", { exact: true }).locator('option[value="2"]').count(), 0);
   await dialog.getByLabel("Скорость ПФ, кг/ч").fill("130");
