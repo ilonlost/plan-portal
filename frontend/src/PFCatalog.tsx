@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "./api";
+import { PFMappings } from "./PFMappings";
 import { matchesCatalogText } from "./catalogSearch";
 import type { CatalogProduct, LineData } from "./types";
 import "./PFCatalog.css";
@@ -9,9 +10,22 @@ type Capability = CatalogProduct["capabilities"][number];
 type Editor = { product: CatalogProduct | null; capability: Capability | null };
 const number = (value: number) => Number(value).toLocaleString("ru-RU", { maximumFractionDigits: 3 });
 
-export function PFCatalog({ products, lines, canEdit, onSaved }: {
+type PFCatalogProps = {
   products: CatalogProduct[]; lines: LineData[]; canEdit: boolean; onSaved: (text: string) => Promise<void>;
-}) {
+};
+
+export function PFCatalog(props: PFCatalogProps) {
+  const [view, setView] = useState<"products" | "mappings">("products");
+  return <div className="stack">
+    {props.canEdit && <nav className="view-switch" aria-label="Разделы ПФ">
+      <button className={view === "products" ? "active" : ""} aria-pressed={view === "products"} onClick={() => setView("products")}>Артикулы ПФ</button>
+      <button className={view === "mappings" ? "active" : ""} aria-pressed={view === "mappings"} onClick={() => setView("mappings")}>Связи ГП → ПФ</button>
+    </nav>}
+    {props.canEdit && view === "mappings" ? <PFMappings /> : <PFProducts {...props} />}
+  </div>;
+}
+
+function PFProducts({ products, lines, canEdit, onSaved }: PFCatalogProps) {
   const [query, setQuery] = useState("");
   const [lineFilter, setLineFilter] = useState("");
   const [editor, setEditor] = useState<Editor | null>(null);

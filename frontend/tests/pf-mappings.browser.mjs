@@ -16,8 +16,8 @@ const data = {
 let server, browser;
 try {
   await fs.writeFile(fixture, `<!doctype html><html lang="ru"><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body><div id="root" style="padding:24px;max-width:1200px;margin:auto"></div><script type="module">
-import React from 'react'; import {createRoot} from 'react-dom/client'; import {PFMappings} from '/src/PFMappings.tsx'; import '/src/styles.css';
-createRoot(document.getElementById('root')).render(React.createElement(PFMappings));</script></body></html>`);
+import React from 'react'; import {createRoot} from 'react-dom/client'; import {CatalogView} from '/src/App.tsx';
+createRoot(document.getElementById('root')).render(React.createElement(CatalogView,{data:{products:[],rows:[],unmapped_products:[],summary:{products:0,lines:0,capabilities:0,with_recipes:0}},lines:[],user:{role:'planner'},onFocusHandled:()=>{},onSaved:async()=>{}}));</script></body></html>`);
   server = await createServer({ root, configFile: path.join(root, "vite.config.ts"), server: { host: "127.0.0.1", port: 0 } });
   await server.listen();
   browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || "chrome" });
@@ -25,6 +25,10 @@ createRoot(document.getElementById('root')).render(React.createElement(PFMapping
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   let submitted;
+  const openMappings = async () => {
+    await page.getByRole("navigation", { name: "Представление справочника" }).getByRole("button", { name: /^ПФ/ }).click();
+    await page.getByRole("navigation", { name: "Разделы ПФ" }).getByRole("button", { name: "Связи ГП → ПФ" }).click();
+  };
   await page.route("**/api/planner-admin/pf-mappings", async route => {
     if (route.request().method() === "GET") return route.fulfill({ json: data });
     submitted = route.request().postDataJSON();
@@ -33,6 +37,7 @@ createRoot(document.getElementById('root')).render(React.createElement(PFMapping
     return route.fulfill({ json: saved });
   });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/.pf-mapping-review.html`);
+  await openMappings();
   await page.getByRole("button", { name: "Изменить", exact: true }).click();
   await page.getByRole("spinbutton", { name: "Срок ПФ 1", exact: true }).fill("4");
   await page.getByRole("spinbutton", { name: "Скорость ПФ 1", exact: true }).fill("150");
@@ -43,6 +48,7 @@ createRoot(document.getElementById('root')).render(React.createElement(PFMapping
   assert.equal(submitted.revision, 0);
   assert.equal("catalog_speed_kg_hour" in submitted.items[0], false);
   await page.reload();
+  await openMappings();
   await page.getByRole("button", { name: "Изменить", exact: true }).click();
   assert.equal(await page.getByRole("spinbutton", { name: "Срок ПФ 1", exact: true }).inputValue(), "4");
   await page.getByRole("combobox", { name: "Линия ГП", exact: true }).selectOption("1");

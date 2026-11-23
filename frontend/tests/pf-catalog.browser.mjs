@@ -89,6 +89,7 @@ createRoot(document.getElementById('root')).render(React.createElement(Test));</
   await page.goto(`${url}?role=viewer`);
   await page.getByRole("navigation", { name: "Представление справочника" }).getByRole("button", { name: /^ПФ 3$/ }).click();
   assert.equal(await page.locator(".pf-catalog button").count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Связи ГП → ПФ" }).count(), 0);
   assert.deepEqual(errors, []);
   console.log("PF catalog: prefixes, unmapped PF, line/speed save, multiple lines, creation, filters, viewer and mobile passed");
 } finally { await browser?.close(); await server?.close(); await fs.unlink(fixture).catch(() => {}); }
