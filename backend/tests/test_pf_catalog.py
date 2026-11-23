@@ -1,7 +1,7 @@
 from decimal import Decimal
 from sqlalchemy import select
 from test_audit_regressions import db, client
-from test_pf_expansion import setup_gp, add_pf
+from test_pf_expansion import setup_gp, bom_for_existing_chain_tests
 from app.models.entities import LineCapability
 from app.services.pf_service import preview_expansion
 
